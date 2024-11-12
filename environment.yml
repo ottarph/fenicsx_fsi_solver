@@ -1,0 +1,19 @@
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python
+  - fenics-dolfinx >= 0.9
+  - mpich
+  - gmsh
+  - python-gmsh
+  - pyvista
+  - adios2
+  - pdbpp
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - ipykernel
+  - tqdm
