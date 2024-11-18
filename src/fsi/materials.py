@@ -26,7 +26,14 @@ class Fluid:
         sigma = rho * nu * (ufl.grad(v) * ufl.inv(F) + ufl.inv(F).T * ufl.grad(v).T)
         return sigma
     
+    def NS_velocity_eulerian(v: dfx.fem.Function, nu: dfx.fem.Constant, rho: dfx.fem.Constant):
+        sigma = rho * nu * (ufl.grad(v) + ufl.grad(v).T)
+        return sigma
+    
     def NS(u: dfx.fem.Function, v: dfx.fem.Function, p: dfx.fem.Function, nu: dfx.fem.Constant, rho: dfx.fem.Constant):
         return Fluid.NS_velocity(u, v, nu, rho) + Fluid.NS_pressure(p)
+    
+    def NS_eulerian(v: dfx.fem.Function, p: dfx.fem.Function, nu: dfx.fem.Constant, rho: dfx.fem.Constant):
+        return Fluid.NS_velocity_eulerian(v, nu, rho) + Fluid.NS_pressure(p)
     
     
