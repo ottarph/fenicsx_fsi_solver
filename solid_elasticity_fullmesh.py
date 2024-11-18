@@ -40,7 +40,6 @@ def main():
 
     # create submeshes for fluid and solid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
     solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
 
     if comm.rank == 0:
@@ -53,33 +52,46 @@ def main():
     # transfer meshtags to submeshes
 
     from tools.transfer_meshtags import transfer_meshtags_to_submesh
-    fluid_facet_tags, fluid_facet_map = transfer_meshtags_to_submesh(mesh, facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
     solid_facet_tags, solid_facet_map = transfer_meshtags_to_submesh(mesh, facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
-
-    if comm.rank == 0:
-        print(f"{solid_facet_tags.indices.shape = }, {np.unique(solid_facet_tags.values) = }")
-
-    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.union1d(facet_tags.values, [0])), "Transferred facet tags do not match"
 
 
     # Create measure with  meshtags
 
-    dx = ufl.Measure("dx", domain=solid_mesh)
-    ds = ufl.Measure("ds", domain=solid_mesh, subdomain_data=solid_facet_tags)
+    dx = ufl.Measure("dx", domain=mesh, subdomain_data=cell_tags)(PHYSICAL_MARKERS["solid"])
+
+    
+    # Create measure for interface / solid-fluid boundary
+
+    from tools.interior_facet_measure import create_consistent_interior_facet_measure
+
+    new_tag = 100
+    new_measure = create_consistent_interior_facet_measure(mesh, facet_tags, cell_tags,
+                        PHYSICAL_MARKERS["solid_fluid_interface"], PHYSICAL_MARKERS["solid"], new_tag)
+    ds_interface = new_measure(new_tag)
+
+
+    # create entity maps for mixed mesh integration
+
+    cell_map = mesh.topology.index_map(mesh.topology.dim)
+    num_cells_local = cell_map.size_local + cell_map.num_ghosts
+    mesh_to_solid_entity = np.full(num_cells_local, -1, dtype=np.int32)
+    mesh_to_solid_entity[solid_cell_map] = np.arange(len(solid_cell_map), dtype=np.int32)
+
+    entity_maps = {solid_mesh: mesh_to_solid_entity}
 
 
     # create problem parameters
 
-    rho_s = dfx.fem.Constant(solid_mesh, 0.8e3)
-    lambda_s = dfx.fem.Constant(solid_mesh, 1e5)
-    mu_s = dfx.fem.Constant(solid_mesh, 2e7)
+    rho_s = dfx.fem.Constant(mesh, 0.8e3)
+    lambda_s = dfx.fem.Constant(mesh, 1e5)
+    mu_s = dfx.fem.Constant(mesh, 2e7)
 
-    dt = dfx.fem.Constant(solid_mesh, 0.0025)
+    dt = dfx.fem.Constant(mesh, 0.0025)
     t0 = 0.0
     T = 0.2
 
-    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81*4))
-    traction = dfx.fem.Constant(solid_mesh, (0.0, 0.0))
+    g = dfx.fem.Constant(mesh, (0.0, -9.81*4))
+    traction = dfx.fem.Constant(mesh, (0.0, 0.0))
 
     
     # create function spaces
@@ -106,9 +118,9 @@ def main():
 
     from fsi.materials import Solid
 
-    F = ufl.Identity(solid_mesh.geometry.dim) + ufl.grad(u)
+    F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
     J = ufl.det(F)
-    n = ufl.FacetNormal(solid_mesh)
+    n = ufl.FacetNormal(mesh)
     
 
     # create Dirichlet boundary condition
@@ -128,17 +140,17 @@ def main():
     residual += rho_s * ufl.inner(dv_dt, dv) * dx
     residual += J * ufl.inner(Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx
     residual -= ufl.inner(rho_s * g, dv) * dx
-    residual -= ufl.inner(traction, dv) * ds(PHYSICAL_MARKERS["solid_fluid_interface"])
+    residual -= ufl.inner(traction, dv) * ds_interface
 
     residual_blocked = ufl.extract_blocks(residual)
-    residual_comp = dfx.fem.form(residual_blocked)
+    residual_comp = dfx.fem.form(residual_blocked, entity_maps=entity_maps)
 
     
     # create Jacobian form
 
     jacobian = ufl.derivative(residual, u, delta_u) + ufl.derivative(residual, v, delta_v)
     jacobian_blocked = ufl.extract_blocks(jacobian)
-    jacobian_comp = dfx.fem.form(jacobian_blocked)
+    jacobian_comp = dfx.fem.form(jacobian_blocked, entity_maps=entity_maps)
 
 
     # create matrix and vector for linear algebra
@@ -162,7 +174,7 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/solid_elasticity.bp", [u])
+    writer = dfx.io.VTXWriter(comm, "output/solid_elasticity_fm.bp", [u])
 
     t = t0
 
