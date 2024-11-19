@@ -32,19 +32,19 @@ def main():
 
     # load mesh and meshtags
 
-    mesh_path = "data/meshes/dfg2d/mesh.xdmf"
+    # mesh_path = "data/meshes/dfg2d/mesh.xdmf"
+    # mesh_path = "data/meshes/dfg2d_alt/mesh_tri.xdmf"
+    mesh_path = "data/meshes/dfg2d_alt/mesh_quad.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         fluid_mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(fluid_mesh, name= "Cell tags")
         fluid_mesh.topology.create_connectivity(1, 2)
         fluid_facet_tags = infile.read_meshtags(fluid_mesh, name= "Facet tags")
 
-    assert len(np.setdiff1d(np.union1d(cell_tags.values, fluid_facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
     
-
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
+        print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
 
 
     # Create measure with  meshtags
@@ -63,8 +63,8 @@ def main():
     H = 0.41
 
     t0 = 0.0
-    T = 4.0
-    # T = 8.0                    # Final time
+    # T = 1.0
+    T = 8.0                    # Final time
     # dt_val = 1 / 1600
     dt_val = 1 / 400
     dt = dfx.fem.Constant(fluid_mesh, dt_val)
@@ -136,7 +136,7 @@ def main():
 
     # create residual form
 
-    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.grad(v_theta)), dv) * dx
+    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.nabla_grad(v_theta)), dv) * dx
     residual += ufl.inner(Fluid.NS_velocity_eulerian(v_theta, nu_f, rho_f), ufl.grad(dv)) * dx
     residual += ufl.inner(Fluid.NS_pressure(p), ufl.grad(dv)) * dx
 
@@ -178,8 +178,8 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/dfg_2d_3.bp", [v])
-    writer_p = dfx.io.VTXWriter(comm, "output/dfg_2d_3_p.bp", [p])
+    writer = dfx.io.VTXWriter(comm, "output/dfg_2d_3/dfg_2d_3.bp", [v])
+    writer_p = dfx.io.VTXWriter(comm, "output/dfg_2d_3/dfg_2d_3_p.bp", [p])
 
     from timeit import default_timer as timer
 
@@ -246,8 +246,8 @@ def main():
 
             return
         
-    drag_hook = Drag("output/dfg_2d_3_drag.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
-    lift_hook = Lift("output/dfg_2d_3_lift.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
+    drag_hook = Drag("output/dfg_2d_3/dfg_2d_3_drag.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
+    lift_hook = Lift("output/dfg_2d_3/dfg_2d_3_lift.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     # drag_hook = Drag([], fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     # lift_hook = Lift([], fluid_mesh, PHYSICAL_MARKERS["obstacle"])
 
@@ -358,13 +358,31 @@ def main():
         plt.plot(drag_arr[:, 0], drag_arr[:, 1], 'k-')
         plt.xlabel("Time")
         plt.ylabel("Drag")
-        plt.savefig("output/dfg_2d_3_drag.png")
+        plt.savefig("output/dfg_2d_3/dfg_2d_3_drag.png")
 
         plt.figure()
         plt.plot(lift_arr[:, 0], lift_arr[:, 1], 'k-')
         plt.xlabel("Time")
         plt.ylabel("Lift")
-        plt.savefig("output/dfg_2d_3_lift.png")
+        plt.savefig("output/dfg_2d_3/dfg_2d_3_lift.png")
+
+        
+        # Compare with values at https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html
+
+        drag_coeff = -2 / 0.1 * drag_arr[:, 1]
+        lift_coeff = 2 / 0.1 * lift_arr[:, 1]
+
+        plt.figure(figsize=(25,8))
+        plt.plot(drag_arr[:, 0], drag_coeff, 'k-', label="drag coefficient")
+        plt.grid()
+        plt.legend()
+        plt.savefig("output/dfg_2d_3/dfg_2d_3_drag_coeff.png")
+
+        plt.figure(figsize=(25,8))
+        plt.plot(lift_arr[:, 0], lift_coeff, 'k-', label="lift coefficient")
+        plt.grid()
+        plt.legend()
+        plt.savefig("output/dfg_2d_3/dfg_2d_3_lift_coeff.png")
 
 
 

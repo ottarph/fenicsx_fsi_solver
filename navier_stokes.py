@@ -142,7 +142,7 @@ def main():
 
     # create residual form
 
-    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.grad(v_theta)), dv) * dx
+    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.nabla_grad(v_theta)), dv) * dx
     residual += ufl.inner(Fluid.NS_velocity_eulerian(v_theta, nu_f, rho_f), ufl.grad(dv)) * dx
     residual += ufl.inner(Fluid.NS_pressure(p), ufl.grad(dv)) * dx
 
