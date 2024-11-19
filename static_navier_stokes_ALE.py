@@ -94,8 +94,8 @@ def main():
     
     def u_func(x):
         values = np.zeros_like(x[:2,:])
-        values[0] = -1 * x[1]**2
-        values[1] = 0.05 * x[0]**2
+        values[0] = -1 * x[1]**2 * x[0] * (2.5 - x[0])**2 / 2.5**3
+        values[1] = 0.05 * x[0] * (2.5 - x[0])**2
         return values
     u.interpolate(u_func)
 
@@ -140,14 +140,13 @@ def main():
 
     # create residual form
 
-    residual = J * ufl.inner(Fluid.NS(u, v, p, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx
+    residual = J * rho_f * ufl.inner(ufl.inv(F) * ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
+    residual += J * ufl.inner(Fluid.NS(u, v, p, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx
 
     residual += ufl.div(J * ufl.inv(F) * v) * dp * dx
 
     # Do-nothing condition
-    # For simplicity, it is assumed that the ALE mapping does not influence the form of the added term
-    # for the outflow condition. This looks okay when testing on a mesh deformed by u_func.
-    # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
+    residual -= rho_f * nu_f * ufl.inner(ufl.dot(ufl.inv(F).T * ufl.grad(v).T, ufl.inv(F).T * n), dv) * ds(PHYSICAL_MARKERS["outflow"])
 
 
     residual_blocked = ufl.extract_blocks(residual)
@@ -237,7 +236,7 @@ def main():
         writer.close()
         raise RuntimeError("Nonlinear solver did not converge")
     
-    writer.write(1.0)
+    writer.write(0.0)
 
 
     A.destroy()

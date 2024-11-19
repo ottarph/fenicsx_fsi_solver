@@ -129,7 +129,8 @@ def main():
 
     # create residual form
 
-    residual = ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f), ufl.grad(dv)) * dx
+    residual = rho_f * ufl.inner(ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
+    residual += ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f), ufl.grad(dv)) * dx
 
     residual += ufl.div(v) * dp * dx
 
@@ -223,7 +224,7 @@ def main():
         writer.close()
         raise RuntimeError("Nonlinear solver did not converge")
     
-    writer.write(1.0)
+    writer.write(0.0)
 
 
     A.destroy()
