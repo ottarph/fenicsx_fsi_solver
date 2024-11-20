@@ -104,7 +104,7 @@ def biharmonic(u_bc: dfx.fem.Function):
     uh_pure.interpolate(uh)
     vh_pure.interpolate(vh)
 
-    return uh_pure, vh_pure
+    return uh_pure, vh_pure, prob
 
 
 
@@ -126,7 +126,7 @@ def main():
     u_bc = dfx.fem.Function(V)
     u_bc.interpolate(bc_func)
 
-    uh_pure, vh_pure = biharmonic(u_bc)
+    uh_pure, vh_pure, prob = biharmonic(u_bc)
 
     with dfx.io.VTXWriter(comm, "output/biharm/uh.bp", [uh_pure, vh_pure]) as writer:
         writer.write(0.0)

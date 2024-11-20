@@ -142,7 +142,7 @@ def main():
 
 
     from biharm import biharmonic
-    uh_pure, vh_pure = biharmonic(u_bc)
+    uh_pure, *_ = biharmonic(u_bc)
     u.interpolate(uh_pure)
 
 
