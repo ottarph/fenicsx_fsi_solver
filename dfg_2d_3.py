@@ -143,6 +143,8 @@ def main():
     residual += ufl.div(v) * dp * dx
 
     # Do-nothing condition
+    # Effect on measured drag and lift is negligible compared to the 
+    # do-nothing condition where the term is dropped.
     residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
 
