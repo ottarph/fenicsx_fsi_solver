@@ -57,10 +57,11 @@ def biharmonic(u_bc: dfx.fem.Function):
     # uh = wh.sub(0)
     # vh = wh.sub(1)
 
-    # prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
-    #                                                         "pc_factor_mat_solver_type": "mumps"})
     prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
-                                                            "pc_factor_mat_solver_type": "umfpack"})
+                                                            "pc_factor_mat_solver_type": "mumps", "ksp_error_if_not_converged": True,
+                                                            "mat_mumps_icntl_14": 30})
+    # prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
+    #                                                         "pc_factor_mat_solver_type": "umfpack"})
     prob.solve()
 
     # print(f"{np.abs(prob._b.array).max() = }")
@@ -130,6 +131,57 @@ def main():
 
     with dfx.io.VTXWriter(comm, "output/biharm/uh.bp", [uh_pure, vh_pure]) as writer:
         writer.write(0.0)
+
+
+    U = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    V = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    W = ufl.MixedFunctionSpace(U, V)
+
+    u, v = ufl.TrialFunctions(W)
+    phi_u, phi_v = ufl.TestFunctions(W)
+
+    bc_facets = dfx.mesh.exterior_facet_indices(mesh.topology)
+    bc_dofs = dfx.fem.locate_dofs_topological(U, 1, bc_facets)
+    u_bc = dfx.fem.Function(U)
+    u_bc.interpolate(bc_func)
+    bc = dfx.fem.dirichletbc(u_bc, bc_dofs)
+
+    dx = ufl.Measure("dx", domain=mesh)
+    f = dfx.fem.Constant(mesh, (0.0, 0.0))
+
+    a  = ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * dx - ufl.inner(v, phi_v) * dx 
+    a += ufl.inner(ufl.grad(v), ufl.grad(phi_u)) * dx
+    a += ufl.inner(dfx.fem.Constant(mesh, 0.0) * u, phi_u) * dx
+    
+    L = ufl.inner(f, phi_u) * dx + ufl.inner(f, phi_v) * dx
+
+    a_block = ufl.extract_blocks(a)
+    L_block = ufl.extract_blocks(L)
+
+    a_form = dfx.fem.form(a_block)
+    L_form = dfx.fem.form(L_block)
+
+    A = dfpetsc.assemble_matrix_block(a_form, bcs=[bc])
+    A.assemble()
+    b = dfpetsc.assemble_vector_block(L_form, a_form, bcs=[bc])
+    x = A.createVecRight()
+    
+    ksp = PETSc.KSP().create()
+    ksp.setOperators(A)
+    ksp.setType("preonly")
+    ksp.getPC().setType("lu")
+    ksp.getPC().setFactorSolverType("mumps")
+    ksp.getPC().getFactorMatrix().setMumpsIcntl(14, 200)
+    ksp.setErrorIfNotConverged(True)
+
+    ksp.solve(b, x)
+
+    uh = dfx.fem.Function(U)
+    uh.x.array[:] = x.array[:len(x.array)//2]
+
+    with dfx.io.VTXWriter(comm, "biharm.bp", [uh]) as writer:
+        writer.write(0.0)
+
 
     return 
 

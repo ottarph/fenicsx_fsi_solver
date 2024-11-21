@@ -103,7 +103,7 @@ def main():
     msh_x = np.load(bd_dset_path + "msh_x.npy")
     msh_conn = np.load(bd_dset_path + "msh_conn.npy")
     uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
-    # uh_bd_fsi2 = uh_bd_fsi2[:20,:]
+    # uh_bd_fsi2 = uh_bd_fsi2[:5,:]
 
     u_bih_arr = np.zeros((uh_bd_fsi2.shape[0], u.x.array.shape[0]), dtype=u.x.array.dtype)
 
@@ -141,17 +141,15 @@ def main():
     myprob.assemble_matrix()
 
     from tqdm import tqdm
-    with dfx.io.VTXWriter(comm, "tmpp.bp", [u]) as writer:
-        for t in tqdm(range(uh_bd_fsi2.shape[0]), desc="Precomputing ale deformations..."):
-            u_from.x.array[:] = uh_bd_fsi2[t,:]
-            u_to.interpolate_nonmatching(u_from, bd_interp_cells, bd_interp_data)
-            u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
-            uD.interpolate(u_bc)
-            myprob.bcs[0].g.x.array[:] = uD.x.array
-            myprob.solve()
-            u.interpolate(prob.u.sub(0))
-            u_bih_arr[t,:] = u.x.array
-            writer.write(t)
+    for t in tqdm(range(uh_bd_fsi2.shape[0]), desc="Precomputing ale deformations..."):
+        u_from.x.array[:] = uh_bd_fsi2[t,:]
+        u_to.interpolate_nonmatching(u_from, bd_interp_cells, bd_interp_data)
+        u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
+        uD.interpolate(u_bc)
+        myprob.bcs[0].g.x.array[:] = uD.x.array
+        myprob.solve()
+        u.interpolate(prob.u.sub(0))
+        u_bih_arr[t,:] = u.x.array
         
 
     u.x.array[:] = u_bih_arr[0-1,:]
