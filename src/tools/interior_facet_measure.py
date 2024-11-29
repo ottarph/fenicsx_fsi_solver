@@ -130,5 +130,15 @@ if __name__ == "__main__":
         ufl.inner( correct_normal, ufl.FacetNormal(msh) ) * my_ds_fluid(new_tag)
     )):.3e}")
 
+    fluid_mesh, fluid_ent_map, *_ = dfx.mesh.create_submesh(msh, 2, cell_tags.find(fluid_tag))
+    integration_ent = np.full(msh.topology.index_map(2).size_local, -1, dtype=np.int32)
+    integration_ent[fluid_ent_map] = np.arange(fluid_ent_map.shape[0], dtype=np.int32)
+    U_fluid = dfx.fem.functionspace(msh, ("CG", 1, (2, )))
+    u_fluid = dfx.fem.Function(U_fluid)
+    u_fluid.x.array[:] = 1.0
+    print(dfx.fem.assemble_scalar(dfx.fem.form(
+        ufl.inner(ufl.FacetNormal(msh), u_fluid) * my_ds_fluid(new_tag), entity_maps={fluid_mesh: integration_ent},
+    )))
+
 
 
