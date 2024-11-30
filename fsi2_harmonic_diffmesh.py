@@ -29,7 +29,9 @@ def main():
 
     # load mesh and meshtags
 
-    mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
+    # mesh_path = "data/meshes/fsi2/mesh_quad.xdmf"
+    mesh_path = "data/meshes/fsi2/mesh_quad_fine_sec.xdmf"
+    # mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -88,7 +90,6 @@ def main():
     mu_s = dfx.fem.Constant(mesh, 5.0e5)
     nu_s = dfx.fem.Constant(mesh, 0.4)
     lambda_s = dfx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
-    assert np.isclose(lambda_s.value, 2e6), "Lambda value is not as expected"
     # lambda_s = dfx.fem.Constant(mesh, 2e6)
 
     U_bar = 1.0
@@ -107,19 +108,18 @@ def main():
 
     U = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
     V = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
-    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Z = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
-    W = ufl.MixedFunctionSpace(U, V, P, Z)
+    P = dfx.fem.functionspace(fluid_mesh, ("DG", 1))
+    W = ufl.MixedFunctionSpace(U, V, P)
 
 
     # create functions
 
-    u, v, p, z = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p"), dfx.fem.Function(Z, name="z")
+    u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
     u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
 
     
-    du, dv, dp, dz = ufl.TestFunctions(W)
-    delta_u, delta_v, delta_p, delta_z = ufl.TrialFunctions(W)
+    du, dv, dp = ufl.TestFunctions(W)
+    delta_u, delta_v, delta_p = ufl.TrialFunctions(W)
 
 
     # create Dirichlet boundary condition
@@ -177,9 +177,6 @@ def main():
     bcs = [u_bc, inflow_bc, noslip_bc]
 
 
-    delta = dfx.fem.Constant(mesh, 1.0e7)
-
-
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
@@ -205,21 +202,16 @@ def main():
 
         return residual
     
-    def A_I(u, v, z):
+    def A_I(u, v, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
         normal = ufl.FacetNormal(mesh)
 
-        alpha_u0 = dfx.fem.Constant(mesh, 1.0e-9)
+        alpha_u0 = dfx.fem.Constant(mesh, 1e-9)
         alpha_u = alpha_u0
 
-        residual  = alpha_u * ufl.inner(z, dz) * dx_fluid
-        residual -= alpha_u * ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
-
-        residual += alpha_u * ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
-        residual += dfx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_fluid
-
-        residual -= ufl.inner(alpha_u * ufl.grad(z) * normal, du) * ds_interface_fluid
+        residual  = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
+        residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
         
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
@@ -248,7 +240,7 @@ def main():
         return residual
 
     residual  = A_T(u, u_old, v, v_old)
-    residual += A_I(u, v, z)
+    residual += A_I(u, v, p)
     residual += A_P(u, p)
     residual += theta * A_E(u, v)
     residual += (1.0 - theta) * A_E(u_old, v_old)
@@ -269,7 +261,6 @@ def main():
     jacobian  = ufl.derivative(residual, u, delta_u)
     jacobian += ufl.derivative(residual, v, delta_v)
     jacobian += ufl.derivative(residual, p, delta_p)
-    jacobian += ufl.derivative(residual, z, delta_z)
 
     jacobian_blocked = ufl.extract_blocks(jacobian)
     jacobian_comp = dfx.fem.form(jacobian_blocked, entity_maps=entity_maps)
@@ -288,7 +279,6 @@ def main():
 
     offset_1 = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
     offset_2 = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-    offset_3 = P.dofmap.index_map.size_local * P.dofmap.index_map_bs
 
 
     ksp = PETSc.KSP().create(mesh.comm)
@@ -296,7 +286,7 @@ def main():
     ksp.setType("preonly")
     ksp.getPC().setType("lu")
     ksp.getPC().setFactorSolverType("mumps")
-    ksp.getPC().getFactorMatrix().setMumpsIcntl(14, 300)
+    ksp.getPC().getFactorMatrix().setMumpsIcntl(14, 80)
     ksp.setErrorIfNotConverged(False)
 
     max_iter = 20
@@ -305,10 +295,10 @@ def main():
 
 
     policy = dfx.io.VTXMeshPolicy.reuse
-    writer = dfx.io.VTXWriter(comm, "output/fsi2_biharm_dm.bp", [u,v], mesh_policy=policy)
-    writer_p = dfx.io.VTXWriter(comm, "output/fsi2_biharm_p_dm.bp", [p], mesh_policy=policy)
+    writer = dfx.io.VTXWriter(comm, "output/fsi2_harm_dm.bp", [u,v], mesh_policy=policy)
+    writer_p = dfx.io.VTXWriter(comm, "output/fsi2_harm_p_dm.bp", [p], mesh_policy=policy)
 
-    qoi_path = "output/fsi2_biharm_qoi.txt"
+    qoi_path = "output/fsi2_harm_dm_qoi.txt"
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
@@ -356,8 +346,7 @@ def main():
 
         x.array[:offset_1] = u.x.array[:offset_1]
         x.array[offset_1:(offset_1+offset_2)] = v.x.array[:offset_2]
-        x.array[(offset_1+offset_2):(offset_1+offset_2+offset_3)] = p.x.array[:offset_3]
-        x.array[(offset_1+offset_2+offset_3):] = z.x.array[:len(x.array_r) - (offset_1+offset_2+offset_3)]
+        x.array[(offset_1+offset_2):] = p.x.array[:len(x.array_r) - (offset_1+offset_2)]
         x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
 
 
@@ -413,12 +402,10 @@ def main():
 
             u.x.array[:offset_1] = x.array[:offset_1]
             v.x.array[:offset_2] = x.array[offset_1:(offset_1+offset_2)]
-            p.x.array[:offset_3] = x.array[(offset_1+offset_2):(offset_1+offset_2+offset_3)]
-            z.x.array[:len(x.array_r) - (offset_1+offset_2+offset_3)] = x.array[(offset_1+offset_2+offset_3):]
+            p.x.array[:(len(x.array_r) - (offset_1+offset_2))] = x.array[(offset_1+offset_2):]
             u.x.scatter_forward()
             v.x.scatter_forward()
             p.x.scatter_forward()
-            z.x.scatter_forward()
 
 
         if comm.rank == 0:
@@ -439,7 +426,6 @@ def main():
 
         step += 1
         t += dt.value
-        
 
     end = timer()
     if comm.rank == 0:
