@@ -28,7 +28,8 @@ else:
     resolution_close = resolution_far / 5
     resolution_ultra_far = H / 8
 
-QUADS = False
+QUADS = True
+SEMI_STRUCTURED_QUAD = True
 if QUADS:
     resolution_far *= 2
     resolution_close *= 2
@@ -182,7 +183,7 @@ for point_tag in point_tags:
         if np.isclose(point_x[0], 0.0) or np.isclose(point_x[1], 0.0) or np.isclose(point_x[1], H):
             gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_far)
 
-    if QUADS:
+    if QUADS and not SEMI_STRUCTURED_QUAD:
         if np.all(np.isclose(point_x, np.array([flag_right, C_y+0.5*h, 0.0]), atol=1e-3)):
             gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_close / 2)
         elif np.all(np.isclose(point_x, np.array([flag_right, C_y-0.5*h, 0.0]), atol=1e-3)):
@@ -207,9 +208,12 @@ for point_tag in point_tags:
 
 
 if QUADS:
-    gmsh.option.setNumber("Mesh.Algorithm", 8)
+    if SEMI_STRUCTURED_QUAD:
+        gmsh.option.setNumber("Mesh.Algorithm", 11)
+    else:
+        gmsh.option.setNumber("Mesh.Algorithm", 8)
+        gmsh.option.setNumber("Mesh.RecombineAll", 1)
     gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
-    gmsh.option.setNumber("Mesh.RecombineAll", 1)
     # gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)
 
 
@@ -238,7 +242,7 @@ if mesh_comm.rank == gmsh_model_rank:
     print(f"{domain.geometry.x.shape = }")
 
 from pathlib import Path
-mesh_path = Path(f"data/meshes/fsi2/mesh{'_quad' if QUADS else ''}{'_fine' if FINE else ''}{'_sec' if SECOND_ORDER else ''}.xdmf")
+mesh_path = Path(f"data/meshes/fsi2/mesh{'_quad' if QUADS else ''}{'_ssq' if SEMI_STRUCTURED_QUAD else ''}{'_fine' if FINE else ''}{'_sec' if SECOND_ORDER else ''}.xdmf")
 
 from dolfinx.io import XDMFFile
 with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
