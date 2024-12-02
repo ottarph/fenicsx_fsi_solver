@@ -17,15 +17,22 @@ E_2_left = 0.9
 
 theta = np.pi / 3
 
-resolution_far = 0.025
-resolution_close = resolution_far / 5
-resolution_ultra_far = H / 8
+FINE = False
+
+if FINE:
+    resolution_far = 0.0125
+    resolution_close = resolution_far / 5
+    resolution_ultra_far = H / 16
+else:    
+    resolution_far = 0.025
+    resolution_close = resolution_far / 5
+    resolution_ultra_far = H / 8
 
 QUADS = False
-# if QUADS:
-#     resolution_far *= 2
-#     resolution_close *= 2
-#     resolution_ultra_far *= 2
+if QUADS:
+    resolution_far *= 2
+    resolution_close *= 2
+    resolution_ultra_far *= 2
 
 flag_tl_point = gmsh.model.occ.addPoint(flag_left, flag_top, 0.0)
 flag_tr_point = gmsh.model.occ.addPoint(flag_right, flag_top, 0.0)
@@ -175,6 +182,16 @@ for point_tag in point_tags:
         if np.isclose(point_x[0], 0.0) or np.isclose(point_x[1], 0.0) or np.isclose(point_x[1], H):
             gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_far)
 
+    if QUADS:
+        if np.all(np.isclose(point_x, np.array([flag_right, C_y+0.5*h, 0.0]), atol=1e-3)):
+            gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_close / 2)
+        elif np.all(np.isclose(point_x, np.array([flag_right, C_y-0.5*h, 0.0]), atol=1e-3)):
+            gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_close / 2)
+        elif np.all(np.isclose(point_x, np.array([flag_left, C_y+0.5*h, 0.0]), atol=1e-3)):
+            gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_close / 2)
+        elif np.all(np.isclose(point_x, np.array([flag_left, C_y-0.5*h, 0.0]), atol=1e-3)):
+            gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_close / 2)
+
 
 # 1: MeshAdapt
 # 2: Automatic
@@ -200,8 +217,11 @@ gmsh.model.occ.synchronize()
 
 gmsh.model.mesh.generate(gdim)
 
-# Use second order mesh
-# gmsh.model.mesh.setOrder(2)
+
+SECOND_ORDER = True
+if SECOND_ORDER:
+    # Use second order mesh
+    gmsh.model.mesh.setOrder(2)
 
 
 # gmsh.write("test.msh")
@@ -218,7 +238,7 @@ if mesh_comm.rank == gmsh_model_rank:
     print(f"{domain.geometry.x.shape = }")
 
 from pathlib import Path
-mesh_path = Path("data/meshes/fsi2/mesh.xdmf")
+mesh_path = Path(f"data/meshes/fsi2/mesh{'_quad' if QUADS else ''}{'_fine' if FINE else ''}{'_sec' if SECOND_ORDER else ''}.xdmf")
 
 from dolfinx.io import XDMFFile
 with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
@@ -226,5 +246,5 @@ with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
     xdmf.write_meshtags(cell_markers, domain.geometry)
     xdmf.write_meshtags(facet_markers, domain.geometry)
 
-# gmsh.fltk.finalize()
-# gmsh.fltk.run()
+gmsh.fltk.finalize()
+gmsh.fltk.run()
