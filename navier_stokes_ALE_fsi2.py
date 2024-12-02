@@ -217,27 +217,17 @@ def main():
     # with pressure treated fully implicitly and secant evaluation rule
     # for cross temporal-spatial differential terms.
 
-    # Another option that seems like it works
-
-    # residual  = rho_f * J_mid * ufl.inner(dv_dt, dv) * dx
-    # residual += rho_f * J * ufl.inner(ufl.inv(F) * ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
-    # residual -= rho_f * J_mid * ufl.inner(ufl.inv(F) * ufl.dot(du_dt, ufl.nabla_grad(v)), dv) * dx
-
-    # residual += J_mid * ufl.inner(Fluid.NS(u_theta, v_theta, p, nu_f, rho_f) * ufl.inv(F_mid).T, ufl.grad(dv)) * dx
-
-    # residual += ufl.div(J * ufl.inv(F) * v) * dp * dx
-
     #--------------------------------------------
     
     # v time derivative term
     residual  = rho_f * J_mid * ufl.inner(dv_dt, dv) * dx
 
     # v-contribution convective term
-    residual += theta * rho_f * J * ufl.inner(ufl.inv(F) * ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
-    residual += (1.0 - theta) * rho_f * J_old * ufl.inner(ufl.inv(F_old) * ufl.dot(v_old, ufl.nabla_grad(v_old)), dv) * dx
+    residual  += theta * rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx
+    residual  += (1.0 - theta) * rho_f * J_old * ufl.inner(ufl.grad(v_old) * ufl.inv(F_old) * v_old, dv) * dx
 
     # du_dt-contribution convective term
-    residual -= rho_f * J_mid * ufl.inner(ufl.inv(F_mid) * ufl.dot(du_dt, ufl.nabla_grad(v_theta)), dv) * dx
+    residual -= rho_f * J_mid * ufl.inner(ufl.grad(v_theta) * ufl.inv(F_mid) * du_dt, dv) * dx
 
     # stress pressure-component term done implicitly
     residual += J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx

@@ -188,7 +188,7 @@ def main():
 
     # create residual form
 
-    residual = J * rho_f * ufl.inner(ufl.inv(F) * ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
+    residual = J * rho_f * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx
     residual += J * ufl.inner(Fluid.NS(u, v, p, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx
 
     residual += ufl.div(J * ufl.inv(F) * v) * dp * dx

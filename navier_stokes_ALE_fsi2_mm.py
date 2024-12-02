@@ -243,11 +243,11 @@ def main():
     residual  = rho_f * J_mid * ufl.inner(dv_dt, dv) * dx
 
     # v-contribution convective term
-    residual += theta * rho_f * J * ufl.inner(ufl.inv(F) * ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
-    residual += (1.0 - theta) * rho_f * J_old * ufl.inner(ufl.inv(F_old) * ufl.dot(v_old, ufl.nabla_grad(v_old)), dv) * dx
+    residual  += theta * rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx
+    residual  += (1.0 - theta) * rho_f * J_old * ufl.inner(ufl.grad(v_old) * ufl.inv(F_old) * v_old, dv) * dx
 
     # du_dt-contribution convective term
-    residual -= rho_f * J_mid * ufl.inner(ufl.inv(F_mid) * ufl.dot(du_dt, ufl.nabla_grad(v_theta)), dv) * dx
+    residual -= rho_f * J_mid * ufl.inner(ufl.grad(v_theta) * ufl.inv(F_mid) * du_dt, dv) * dx
 
     # stress pressure-component term done implicitly
     residual += J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx
@@ -372,7 +372,7 @@ def main():
             u.x.array[:offset_1] = x.array[:offset_1]
             v.x.array[:offset_2] = x.array[offset_1:(offset_1+offset_2)]
             p.x.array[:(len(x.array_r) - (offset_1+offset_2))] = x.array[(offset_1+offset_2):]
-            u.x.scatter_forward
+            u.x.scatter_forward()
             v.x.scatter_forward()
             p.x.scatter_forward()
 
