@@ -26,9 +26,6 @@ def biharmonic(u_bc: dfx.fem.Function):
     phi_u, phi_v = ufl.split(phi_uv)
 
     f = dfx.fem.Constant(mesh, (0.0, 0.0))
-    # a = ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * ufl.dx - ufl.inner(v, phi_v) * ufl.dx + \
-    #     ufl.inner(ufl.grad(v), ufl.grad(phi_u)) * ufl.dx
-    # a -= ufl.inner(ufl.grad(v) * ufl.FacetNormal(mesh), phi_u) * ufl.ds
     a = -ufl.inner(v, phi_v) * ufl.dx + ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * ufl.dx
     a += ufl.inner(ufl.grad(v), ufl.grad(phi_u)) * ufl.dx
     L = ufl.inner(f, phi_u) * ufl.dx + \
@@ -38,66 +35,19 @@ def biharmonic(u_bc: dfx.fem.Function):
     bc_facets = dfx.mesh.exterior_facet_indices(mesh.topology)
     boundary_dofs = dfx.fem.locate_dofs_topological((Fspace.sub(0), fspace), 1, bc_facets)
 
-    # print(f"{np.array(boundary_dofs).shape = }")
     u_D = dfx.fem.Function(fspace)
     
     u_D.interpolate(u_bc)
     bc = dfx.fem.dirichletbc(u_D, boundary_dofs, Fspace.sub(0))
 
-    # u_D_pure = dfx.fem.Function(u_bc.function_space, name="u_D_pure")
-    # u_D_pure.interpolate(u_D)
-    # with dfx.io.VTXWriter(comm, "output/biharm/u_D_pure.bp", [u_D_pure]) as writer:
-    #     writer.write(0.0)
-
-    # print(f"{np.linalg.norm(u_bc.x.array) = }")
-    # print(f"{np.linalg.norm(u_D.x.array) = }")
-    # print(f"{np.linalg.norm(u_D_pure.x.array) = }")
-
-    # wh = dfx.fem.Function(Fspace)
-    # uh = wh.sub(0)
-    # vh = wh.sub(1)
 
     prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
                                                             "pc_factor_mat_solver_type": "mumps", "ksp_error_if_not_converged": True,
                                                             "mat_mumps_icntl_14": 30})
-    # prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
-    #                                                         "pc_factor_mat_solver_type": "umfpack"})
     prob.solve()
-
-    # print(f"{np.abs(prob._b.array).max() = }")
-    # print(f"{np.abs(prob._b.array).min() = }")
-    # print(f"{prob._A.norm() = }")
-    # print(f"{prob._x.norm() = }")
-
-    # # np.save("old_b.npy", prob._b.array)
-    # np.save("new_b.npy", prob._b.array)
-    # i, j, v = prob._A.getValuesCSR()
-    # # np.save("old_i.npy", i)
-    # # np.save("old_j.npy", j)
-    # # np.save("old_v.npy", v)
-    
-    # np.save("new_i.npy", i)
-    # np.save("new_j.npy", j)
-    # np.save("new_v.npy", v)
-    
 
     uh = prob.u.sub(0)
     vh = prob.u.sub(1)
-
-    # print(f"{prob.u.x.array.max() = }")
-    # print(f"{uh.x.array.max() = }")
-
-    # import scipy.sparse as sp
-    # import scipy.sparse.linalg as spla
-
-    # A_dfx = dfx.fem.assemble_matrix(prob._a, prob.bcs)
-    # A_sp = A_dfx.to_scipy()
-    # print(f"{spla.norm(A_sp) = }")
-
-    # b_np = prob._b.array
-    # x_np = spla.spsolve(A_sp, b_np)
-    # print(f"{x_np.max() = }")
-    # # prob._x.array[:] = x_np
 
     
     uh_pure = dfx.fem.Function(u_bc.function_space, name="uh")
@@ -126,11 +76,6 @@ def main():
     
     u_bc = dfx.fem.Function(V)
     u_bc.interpolate(bc_func)
-
-    uh_pure, vh_pure, prob = biharmonic(u_bc)
-
-    with dfx.io.VTXWriter(comm, "output/biharm/uh.bp", [uh_pure, vh_pure]) as writer:
-        writer.write(0.0)
 
 
     U = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
@@ -177,10 +122,19 @@ def main():
     ksp.solve(b, x)
 
     uh = dfx.fem.Function(U)
-    uh.x.array[:] = x.array[:len(x.array)//2]
+    uh.x.array[:len(x.array)//2] = x.array[:len(x.array)//2]
+    uh.x.scatter_forward()
 
     with dfx.io.VTXWriter(comm, "biharm.bp", [uh]) as writer:
         writer.write(0.0)
+
+    uh_pure, _, _ = biharmonic(u_bc)
+
+    uh_pure.x.petsc_vec.array[:] -= uh.x.petsc_vec.array
+    difference = uh_pure.x.petsc_vec.norm()
+
+    if comm.rank == 0:
+        print(f"Norm of differnce in two biharmonic solvers: {difference:.2e}")
 
 
     return 
