@@ -31,6 +31,12 @@ def transfer_meshtags_to_submesh(
 
     """
 
+    # NOTE: This function is an early implementation of the function
+    # scifem.transfer_meshtags_to_submesh(). The two implementations differ
+    # in that non-marked entities are given the value 0 in this function
+    # and -1 in the scifem-implementation and also in the ordering of
+    # input arguments.
+
     tdim = mesh.topology.dim
     cell_imap = mesh.topology.index_map(tdim)
     num_cells = cell_imap.size_local + cell_imap.num_ghosts

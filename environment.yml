@@ -6,14 +6,14 @@ dependencies:
   - python
   - fenics-dolfinx >= 0.9
   - mpich
+  - scifem >= 0.3.0
   - gmsh
   - python-gmsh
   - pyvista
   - adios2
   - pdbpp
   - pip
-  - numpy
+  - numpy < 2.0
   - scipy
   - matplotlib
-  - ipykernel
   - tqdm
