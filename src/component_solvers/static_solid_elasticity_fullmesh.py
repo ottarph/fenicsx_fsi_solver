@@ -45,8 +45,8 @@ def main():
     
     # transfer meshtags to submesh
     
-    from tools.transfer_meshtags import transfer_meshtags_to_submesh
-    solid_facet_tags, solid_facet_map = transfer_meshtags_to_submesh(mesh, facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    import scifem
+    solid_facet_tags, solid_facet_map = scifem.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
 
 
     # Create measure with  meshtags
