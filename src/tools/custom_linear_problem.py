@@ -1,3 +1,7 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import dolfinx.fem
 import dolfinx.fem.petsc
 from petsc4py import PETSc

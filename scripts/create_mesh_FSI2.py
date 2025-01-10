@@ -1,3 +1,7 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import gmsh, sys
 gmsh.initialize(sys.argv)
 import numpy as np

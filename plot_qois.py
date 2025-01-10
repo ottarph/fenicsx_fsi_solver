@@ -1,3 +1,7 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path

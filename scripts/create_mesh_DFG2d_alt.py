@@ -1,6 +1,10 @@
+# Copyright (C) 2023-2025 Jørgen S. Dokken, Ottar Hellan
+#
+# SPDX-License-Identifier: CC-BY-4.0
+
 # Code adapted from https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html,
-# by Jørgen S. Dokken under 
-# Creative Commons Attribution 4.0 International License https://creativecommons.org/licenses/by/4.0/.
+# by Jørgen S. Dokken under Creative Commons Attribution 4.0 International License 
+# https://creativecommons.org/licenses/by/4.0/.
 
 
 import gmsh

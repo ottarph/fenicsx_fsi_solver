@@ -1,3 +1,7 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import numpy as np
 
 def translate_point_file(in_filename, out_filename):

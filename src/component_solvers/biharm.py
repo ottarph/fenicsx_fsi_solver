@@ -1,3 +1,7 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import dolfinx as dfx
 import dolfinx.fem.petsc as dfpetsc
 import numpy as np
