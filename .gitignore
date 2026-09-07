@@ -13,6 +13,7 @@ figures/
 *.png
 
 .claude
+offline_docs
 
 *.egg-info/
 .pytest_cache/
