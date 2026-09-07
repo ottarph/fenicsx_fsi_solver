@@ -60,7 +60,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
 
     # Create measure for interface / solid-fluid boundary
 
-    from tools.interior_facet_measure import create_consistent_interior_facet_measure
+    from xfsi_solver.tools.interior_facet_measure import create_consistent_interior_facet_measure
 
     new_tag_fluid = 101
     new_tag_solid = 102
@@ -171,7 +171,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
     
-    from fsi.materials import Fluid, Solid
+    from xfsi_solver.fsi.materials import Fluid, Solid
 
     # create residual form
 

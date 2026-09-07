@@ -26,7 +26,7 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path):
+def solve(mesh_path, output_path, t):
 
 
     # load mesh and meshtags
@@ -46,7 +46,6 @@ def solve(mesh_path, T, dt_val, output_path):
 
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
-        print(f"{fluid_cell_map.shape = }")
 
     fluid_mesh.topology.create_connectivity(1, 2)
 
@@ -74,12 +73,7 @@ def solve(mesh_path, T, dt_val, output_path):
     U_bar = 1.0
     H = 0.41
 
-    t0 = 0.0
-    dt = dfx.fem.Constant(mesh, dt_val)
 
-    theta = dfx.fem.Constant(mesh, 0.5)
-
-    
     # create function spaces
 
     V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
@@ -90,27 +84,18 @@ def solve(mesh_path, T, dt_val, output_path):
     # create functions
 
     v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
-    v_old = dfx.fem.Function(V)
-
-    
-    # Crank-Nicolson discretization of Navier-Stokes, with pressure treated fully implicitly
-    # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
-    
-    dv_dt = (v - v_old) / dt
-
-    v_theta = theta * v + (1.0 - theta) * v_old
     
     dv, dp = ufl.TestFunctions(W)
     delta_v, delta_p = ufl.TrialFunctions(W)
 
 
-    # Eulerian formulation of transient Navier-Stokes
+    # Eulerian formulation of static Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
     n = ufl.FacetNormal(fluid_mesh)
-    
+
 
     # create Dirichlet boundary condition
 
@@ -134,7 +119,7 @@ def solve(mesh_path, T, dt_val, output_path):
             values[0] = np.where(np.isclose(x[0], 0.0), 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2, 0.0)
             values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
             return values
-    bc_func.interpolate(BCFunc(t0))
+    bc_func.interpolate(BCFunc(t))
 
     bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
 
@@ -143,9 +128,8 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # create residual form
 
-    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.nabla_grad(v_theta)), dv) * dx
-    residual += ufl.inner(Fluid.NS_velocity_eulerian(v_theta, nu_f, rho_f), ufl.grad(dv)) * dx
-    residual += ufl.inner(Fluid.NS_pressure(p), ufl.grad(dv)) * dx
+    residual = rho_f * ufl.inner(ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
+    residual += ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f), ufl.grad(dv)) * dx
 
     residual += ufl.div(v) * dp * dx
 
@@ -186,72 +170,60 @@ def solve(mesh_path, T, dt_val, output_path):
 
 
     writer = dfx.io.VTXWriter(comm, output_path, [v])
+    
 
-    t = t0
-
-    while t < T:
-
-        t += dt.value
-        bc_func.interpolate(BCFunc(t))
-
-        v_old.x.array[:] = v.x.array
-        v_old.x.scatter_forward()
-
-        x.array[:offset] = v.x.array[:offset]
-        x.array[offset:] = p.x.array[:(len(x.array_r) - offset)]
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
+    x.array[:offset] = v.x.array[:offset]
+    x.array[offset:] = p.x.array[:(len(x.array_r) - offset)]
+    x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
 
 
-        if comm.rank == 0:
-            print(f"\n{t = :.3f}", end="\t")
+    if comm.rank == 0:
+        print(f"\n{t = :.3f}", end="\t")
 
-        n = 0
-        res0 = 1.0
-        while n < max_iter:
+    n = 0
+    res0 = 1.0
+    while n < max_iter:
 
 
-            with b.localForm() as b_loc:
-                b_loc.set(0)
+        with b.localForm() as b_loc:
+            b_loc.set(0)
 
-            dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
-            b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
+        dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
+        b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
 
-            res = b.norm()
-            if n == 0:
-                res0 = res
-                if comm.rank == 0:
-                    print(f"{res0 = :.3e}")
-
+        res = b.norm()
+        if n == 0:
+            res0 = res
             if comm.rank == 0:
-                print(f"{n = :2d}:\t\t{res  = :.3e}")
-
-            if res < atol or res < rtol * res0:
-                break
-
-            A.zeroEntries()
-            dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
-            A.assemble()
-
-
-            ksp.solve(b, delta_x)
-
-            x.axpy(-1.0, delta_x)
-
-            v.x.array[:offset] = x.array_r[:offset]
-            p.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
-            v.x.scatter_forward()
-            p.x.scatter_forward()
-
-            n += 1
+                print(f"{res0 = :.3e}")
 
         if comm.rank == 0:
-            sys.stdout.flush()
+            print(f"{n = :2d}:\t\t{res  = :.3e}")
 
-        if n == max_iter:
-            writer.close()
-            raise RuntimeError("Nonlinear solver did not converge")
-        
-        writer.write(t)
+        if res < atol or res < rtol * res0:
+            break
+
+        A.zeroEntries()
+        dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
+        A.assemble()
+
+
+        ksp.solve(b, delta_x)
+
+        x.axpy(-1.0, delta_x)
+
+        v.x.array[:offset] = x.array_r[:offset]
+        p.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
+        v.x.scatter_forward()
+        p.x.scatter_forward()
+
+        n += 1
+
+    if n == max_iter:
+        writer.close()
+        raise RuntimeError("Nonlinear solver did not converge")
+    
+    writer.write(0.0)
 
 
     A.destroy()
@@ -267,9 +239,8 @@ def solve(mesh_path, T, dt_val, output_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        T=2.0,
-        dt_val=0.02,
-        output_path="output/pv/navier_stokes.bp",
+        output_path="output/pv/static_navier_stokes.bp",
+        t=2.0,
     )
 
 

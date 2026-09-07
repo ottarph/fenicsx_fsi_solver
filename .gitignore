@@ -13,3 +13,7 @@ figures/
 *.png
 
 .claude
+
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

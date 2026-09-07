@@ -102,7 +102,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     # Eulerian formulation of transient Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
     n = ufl.FacetNormal(fluid_mesh)
     

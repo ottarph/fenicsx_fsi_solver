@@ -1,9 +1,15 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
 import dolfinx as dfx
 import dolfinx.fem.petsc as dfpetsc
 import numpy as np
 import basix.ufl
 import ufl
 from petsc4py import PETSc
+
+import sys
 
 from mpi4py.MPI import COMM_WORLD as comm
 
@@ -20,7 +26,7 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, output_path):
+def solve(mesh_path, T, dt_val, output_path):
 
 
     # load mesh and meshtags
@@ -31,7 +37,6 @@ def solve(mesh_path, output_path):
         mesh.topology.create_connectivity(1, 2)
         facet_tags = infile.read_meshtags(mesh, name= "Facet tags")
 
-
     assert len(np.setdiff1d(np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
     
 
@@ -39,10 +44,9 @@ def solve(mesh_path, output_path):
 
     fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
     solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
-    
+
     if comm.rank == 0:
         print(f"{solid_mesh.geometry.x.shape = }")
-        print(f"{solid_cell_map.shape = }")
 
     solid_mesh.topology.create_connectivity(1, 2)
 
@@ -71,23 +75,36 @@ def solve(mesh_path, output_path):
     lambda_s = dfx.fem.Constant(solid_mesh, 1e5)
     mu_s = dfx.fem.Constant(solid_mesh, 2e7)
 
-    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81*4))
+    dt = dfx.fem.Constant(solid_mesh, dt_val)
+    t0 = 0.0
 
+    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81*4))
     traction = dfx.fem.Constant(solid_mesh, (0.0, 0.0))
+
     
-    # create function space
+    # create function spaces
 
     U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
+    V = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
+    W = ufl.MixedFunctionSpace(U, V)
 
 
     # create functions
 
-    u = dfx.fem.Function(U)
-    du = ufl.TestFunction(U)
-    delta_u = ufl.TrialFunction(U)
+    u, v = dfx.fem.Function(U), dfx.fem.Function(V)
+    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+
+    du, dv = ufl.TestFunctions(W)
+    delta_u, delta_v = ufl.TrialFunctions(W)
 
 
-    from fsi.materials import Solid
+    # Implicit Euler discretization of STVK under influence of gravitational body force and
+    # fixed Dirichlet BC on left boundary and otherwise zero traction.
+    
+    du_dt = (u - u_old) / dt
+    dv_dt = (v - v_old) / dt
+
+    from xfsi_solver.fsi.materials import Solid
 
     F = ufl.Identity(solid_mesh.geometry.dim) + ufl.grad(u)
     J = ufl.det(F)
@@ -106,51 +123,32 @@ def solve(mesh_path, output_path):
 
     # create residual form
 
-    residual = J * ufl.inner(Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(du)) * dx
-    residual -= ufl.inner(rho_s * g, du) * dx
-    residual -= ufl.inner(traction, du) * ds(PHYSICAL_MARKERS["solid_fluid_interface"])
+    residual = rho_s * ufl.inner(du_dt - v, du) * dx
 
-    residual_comp = dfx.fem.form(residual)
+    residual += rho_s * ufl.inner(dv_dt, dv) * dx
+    residual += J * ufl.inner(Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx
+    residual -= ufl.inner(rho_s * g, dv) * dx
+    residual -= ufl.inner(traction, dv) * ds(PHYSICAL_MARKERS["solid_fluid_interface"])
+
+    residual_blocked = ufl.extract_blocks(residual)
+    residual_comp = dfx.fem.form(residual_blocked)
 
     
     # create Jacobian form
 
-    jacobian = ufl.derivative(residual, u, delta_u)
-    jacobian_comp = dfx.fem.form(jacobian)
+    jacobian = ufl.derivative(residual, u, delta_u) + ufl.derivative(residual, v, delta_v)
+    jacobian_blocked = ufl.extract_blocks(jacobian)
+    jacobian_comp = dfx.fem.form(jacobian_blocked)
 
-
-    # vtx writer for output
-    writer = dfx.io.VTXWriter(comm, output_path, [u])
-
-
-    # test with built-in Newton solver
-
-    nlprob = dfpetsc.NonlinearProblem(residual_comp, u, bcs=bcs, J=jacobian_comp)
-    
-    import dolfinx.nls.petsc as nls
-    nlsolv = nls.NewtonSolver(comm, nlprob)
-
-
-    nlsolv.atol = 1e-8
-    nlsolv.rtol = 1e-8
-    # nlsolv.convergence_criterion = "incremental"
-    nlsolv.convergence_criterion = "residual"
-    nlsolv.error_on_nonconvergence = False
-    nlsolv.max_it = 20
-    
-    nlsolv.solve(u)
-    writer.write(0)
-
-    u.x.array[:] = 0.0
-    u.x.scatter_forward()
-
-    g.value = (0.0, +9.81*4)
 
     # create matrix and vector for linear algebra
 
-    A = dfpetsc.create_matrix(jacobian_comp)
-    b = dfpetsc.create_vector(residual_comp)
-    x = dfpetsc.create_vector(residual_comp)
+    A = dfpetsc.create_matrix_block(jacobian_comp)
+    b = dfpetsc.create_vector_block(residual_comp)
+    x = dfpetsc.create_vector_block(residual_comp)
+    delta_x = dfpetsc.create_vector_block(residual_comp)
+
+    offset = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
 
 
     ksp = PETSc.KSP().create(solid_mesh.comm)
@@ -164,58 +162,80 @@ def solve(mesh_path, output_path):
     rtol = 1.0e-8
 
 
-    n = 0
-    res0 = 1.0
-    while n < max_iter:
+    writer = dfx.io.VTXWriter(comm, output_path, [u])
 
+    t = t0
 
-        with b.localForm() as b_loc:
-            b_loc.set(0)
+    while t < T:
 
-        dfpetsc.assemble_vector(b, residual_comp)
+        t += dt.value
 
-        dfpetsc.apply_lifting(b, [jacobian_comp], bcs=[bcs], x0=[u.x.petsc_vec], alpha=-1.0)
-        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-        dfpetsc.set_bc(b, bcs, x0=u.x.petsc_vec, alpha=-1.0)
+        u_old.x.array[:] = u.x.array
+        v_old.x.array[:] = v.x.array
+        u_old.x.scatter_forward()
+        v_old.x.scatter_forward()
 
-        b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
+        x.array[:offset] = u.x.array[:offset]
+        x.array[offset:] = v.x.array[:(len(x.array_r) - offset)]
+        x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
 
-        res = b.norm()
-        if n == 0:
-            res0 = res
-            if comm.rank == 0:
-                print(f"{res0 = :.3e}")
 
         if comm.rank == 0:
-            print(f"{n = :2d}:\t\t{res = :.3e}")
+            print(f"\n{t = :.3f}", end="\t")
 
-        if res < atol or res < rtol * res0:
-            break
-
-        A.zeroEntries()
-        dfpetsc.assemble_matrix(A, jacobian_comp, bcs=bcs)
-        A.assemble()
+        n = 0
+        res0 = 1.0
+        while n < max_iter:
 
 
-        ksp.solve(b, x)
+            with b.localForm() as b_loc:
+                b_loc.set(0)
 
-        u.x.petsc_vec.axpy(-1.0, x)
-        u.x.scatter_forward()
+            dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
+            b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
 
-        n += 1
+            res = b.norm()
+            if n == 0:
+                res0 = res
+                if comm.rank == 0:
+                    print(f"{res0 = :.3e}")
+
+            if comm.rank == 0:
+                print(f"{n = :2d}:\t\t{res  = :.3e}")
+
+            if res < atol or res < rtol * res0:
+                break
+
+            A.zeroEntries()
+            dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
+            A.assemble()
 
 
-    if n > max_iter:
-        writer.close()
-        raise RuntimeError("Nonlinear solver did not converge")
-    
-    writer.write(1)
-            
+            ksp.solve(b, delta_x)
+
+            x.axpy(-1.0, delta_x)
+
+            u.x.array[:offset] = x.array_r[:offset]
+            v.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
+            u.x.scatter_forward()
+            v.x.scatter_forward()
+
+            n += 1
+
+        if comm.rank == 0:
+            sys.stdout.flush()
+
+        if n == max_iter:
+            writer.close()
+            raise RuntimeError("Nonlinear solver did not converge")
+        
+        writer.write(t)
 
 
     A.destroy()
     b.destroy()
     x.destroy()
+    delta_x.destroy()
     writer.close()
 
 
@@ -225,7 +245,9 @@ def solve(mesh_path, output_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        output_path="output/pv/static_solid_elasticity.bp",
+        T=0.2,
+        dt_val=0.0025,
+        output_path="output/pv/solid_elasticity.bp",
     )
 
 

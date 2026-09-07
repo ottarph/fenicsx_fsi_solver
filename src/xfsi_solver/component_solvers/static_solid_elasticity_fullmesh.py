@@ -58,7 +58,7 @@ def solve(mesh_path, output_path):
     
     # Create measure for interface / solid-fluid boundary
 
-    from tools.interior_facet_measure import create_consistent_interior_facet_measure
+    from xfsi_solver.tools.interior_facet_measure import create_consistent_interior_facet_measure
 
     new_tag = 100
     new_measure = create_consistent_interior_facet_measure(mesh, facet_tags, cell_tags,
@@ -98,7 +98,7 @@ def solve(mesh_path, output_path):
     delta_u = ufl.TrialFunction(U)
 
 
-    from fsi.materials import Solid
+    from xfsi_solver.fsi.materials import Solid
 
     F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
     J = ufl.det(F)

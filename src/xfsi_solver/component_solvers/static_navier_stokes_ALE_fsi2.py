@@ -26,8 +26,9 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, output_path, t):
+def solve(mesh_path, t, bd_dset_path, output_path):
 
+    assert comm.size == 1, "This example only works in serial"
 
     # load mesh and meshtags
 
@@ -46,7 +47,6 @@ def solve(mesh_path, output_path, t):
 
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
-        print(f"{fluid_cell_map.shape = }")
 
     fluid_mesh.topology.create_connectivity(1, 2)
 
@@ -92,17 +92,63 @@ def solve(mesh_path, output_path, t):
     # Assume static mesh for now
     u = dfx.fem.Function(V, name="u")
     
-    def u_func(x):
-        values = np.zeros_like(x[:2,:])
-        values[0] = -1 * x[1]**2 * x[0] * (2.5 - x[0])**2 / 2.5**3
-        values[1] = 0.05 * x[0] * (2.5 - x[0])**2
-        return values
-    u.interpolate(u_func)
+    
+    # Load FSI2 deformation from boundary dataset
+
+    try:
+
+        msh_x = np.load(bd_dset_path + "msh_x.npy")
+        msh_conn = np.load(bd_dset_path + "msh_conn.npy")
+        uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
+
+        c_el = ufl.Mesh(basix.ufl.element("Lagrange", "interval", 1, shape=(msh_x.shape[1],)))
+        bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, msh_x, c_el)
+
+        bd_to_mesh, bd_to_cell_map, bd_to_vertex_map, _ = dfx.mesh.create_submesh(fluid_mesh, 1, dfx.mesh.locate_entities_boundary(fluid_mesh, 1, lambda x: np.full(x.shape[1], True)))
+        bd_to_cells = bd_to_mesh.topology.index_map(1)
+        bd_cells_on_proc = bd_to_cells.size_local + bd_to_cells.num_ghosts
+        bd_interp_cells = np.arange(bd_cells_on_proc, dtype=np.int32)
+
+        V_from = dfx.fem.functionspace(bd_from_mesh, ("CG", 2, (2, )))
+        V_to = dfx.fem.functionspace(bd_to_mesh, ("CG", 2, (2, )))
+
+        bd_interp_data = dfx.fem.create_interpolation_data(V_to, V_from, 
+                                cells=bd_interp_cells, padding=1e-6)
+        
+        u_from = dfx.fem.Function(V_from, name="u_from")
+        u_to = dfx.fem.Function(V_to, name="u_to")
+        u_from.x.array[:] = uh_bd_fsi2[0,:]
+        u_to.interpolate_nonmatching(u_from, bd_interp_cells, bd_interp_data)
+
+        whole_cells = fluid_mesh.topology.index_map(2)
+        whole_cells_on_proc = whole_cells.size_local + whole_cells.num_ghosts
+        whole_interp_cells = np.arange(whole_cells_on_proc, dtype=np.int32)
+        whole_interp_data = dfx.fem.create_interpolation_data(V, V_to, whole_interp_cells, padding=1e-8)
+
+        u_bc = dfx.fem.Function(V, name="u_whole")
+        u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
+    
+    
+    except:
+        def u_func(x):
+            values = np.zeros_like(x[:2,:])
+            values[0] = -1 * x[1]**2 * x[0] * (2.5 - x[0])**2 / 2.5**3
+            values[1] = 0.05 * x[0] * (2.5 - x[0])**2
+            return values
+        
+        u_bc.interpolate(u_func)
+
+
+    from xfsi_solver.component_solvers.biharm import biharmonic
+    uh_pure, *_ = biharmonic(u_bc)
+    u.interpolate(uh_pure)
+
+
 
     # ALE formulation of static Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
     F = ufl.Identity(fluid_mesh.geometry.dim) + ufl.grad(u)
     J = ufl.det(F)
@@ -252,8 +298,9 @@ def solve(mesh_path, output_path, t):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        output_path="output/pv/static_navier_stokes_ale.bp",
         t=2.0,
+        bd_dset_path="data/fsi2_boundary/",
+        output_path="output/pv/static_navier_stokes_ale.bp",
     )
 
 

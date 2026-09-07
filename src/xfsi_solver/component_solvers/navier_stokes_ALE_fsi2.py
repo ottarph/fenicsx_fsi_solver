@@ -26,7 +26,7 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
+def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles):
 
     assert comm.size == 1, "This example only works in serial"
 
@@ -47,7 +47,6 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
-        print(f"{fluid_cell_map.shape = }")
 
     fluid_mesh.topology.create_connectivity(1, 2)
 
@@ -75,7 +74,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     U_bar = 1.0
     H = 0.41
 
-    t0 = t0_val
+    t0 = 0.0
     dt = dfx.fem.Constant(mesh, dt_val)
 
     theta = dfx.fem.Constant(mesh, 0.5)
@@ -86,23 +85,27 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     U = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
     V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
     P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
-    W = ufl.MixedFunctionSpace(U, V, P)
+    W = ufl.MixedFunctionSpace(V, P)
 
 
     # create functions
 
-    u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
-    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+    v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
+    v_old = dfx.fem.Function(V)
+
+    u, u_old = dfx.fem.Function(U, name="u"), dfx.fem.Function(U)
     
 
-    # Prepare boundary deformations for ale fields for all time steps
+    # Precompute ale fields for all time steps
+
+    from xfsi_solver.component_solvers.biharm import biharmonic
 
     msh_x = np.load(bd_dset_path + "msh_x.npy")
     msh_conn = np.load(bd_dset_path + "msh_conn.npy")
     uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
-    # uh_bd_fsi2 = uh_bd_fsi2[:20,:]
-    uh_bd_fsi2 *= 0.4
+    # uh_bd_fsi2 = uh_bd_fsi2[:5,:]
 
+    u_bih_arr = np.zeros((uh_bd_fsi2.shape[0], u.x.array.shape[0]), dtype=u.x.array.dtype)
 
     c_el = ufl.Mesh(basix.ufl.element("Lagrange", "interval", 1, shape=(msh_x.shape[1],)))
     bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, msh_x, c_el)
@@ -128,60 +131,47 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
     u_bc = dfx.fem.Function(V, name="u_whole")
 
+    *_, prob = biharmonic(u_bc)
+    uD = dfx.fem.Function(prob.u.function_space.sub(0).collapse()[0])
+    
+    from xfsi_solver.tools.custom_linear_problem import MyLinearProblem
+    myprob = MyLinearProblem(prob.a, prob.L, prob.bcs, u=prob.u,
+                    petsc_options={"ksp_type": "preonly", "pc_type": "lu",
+                                    "pc_factor_mat_solver_type": "umfpack"})
+    myprob.assemble_matrix()
+
     from tqdm import tqdm
-    u_bc_arr = np.zeros((uh_bd_fsi2.shape[0], u_bc.x.array.shape[0]), dtype=u_bc.x.array.dtype)
-    for t in tqdm(range(uh_bd_fsi2.shape[0]), desc="Preparing boundary deformations..."):
+    for t in tqdm(range(uh_bd_fsi2.shape[0]), desc="Precomputing ale deformations..."):
         u_from.x.array[:] = uh_bd_fsi2[t,:]
         u_to.interpolate_nonmatching(u_from, bd_interp_cells, bd_interp_data)
         u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
-        u_bc_arr[t,:] = u_bc.x.array
+        uD.interpolate(u_bc)
+        myprob.bcs[0].g.x.array[:] = uD.x.array
+        myprob.solve()
+        u.interpolate(prob.u.sub(0))
+        u_bih_arr[t,:] = u.x.array
+        
 
-    from biharm import biharmonic
-    uh_pure, *_ = biharmonic(u_bc)
-    u_old.interpolate(uh_pure)
+    u.x.array[:] = u_bih_arr[0-1,:]
+    u_old.x.array[:] = u_bih_arr[-1-1,:]
+    
+    num_steps = u_bih_arr.shape[0]
 
     
-    num_steps = u_bc_arr.shape[0]
-
-    
-    alpha_0 = 1.0e-2
-    alpha = alpha_0 * ufl.CellVolume(fluid_mesh)**(-2)
-
-    # update u_old and u with correct ale fields
-
-
-    a_u = ufl.inner(alpha * ufl.grad(ufl.TrialFunction(U)), ufl.grad(ufl.TestFunction(U))) * dx
-    L_u = ufl.inner(dfx.fem.Constant(fluid_mesh, (0.0, 0.0)), ufl.TestFunction(U)) * dx
-
-    u_old_bc_func = dfx.fem.Function(U)
-    u_old_bc_func.x.array[:] = u_bc.x.array[:]
-    u_old_bc_facets = dfx.mesh.exterior_facet_indices(fluid_mesh.topology)
-    u_old_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_old_bc_facets)
-    u_old_bc = dfx.fem.dirichletbc(u_old_bc_func, u_old_bc_dofs)
-
-    u_lp = dfpetsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u_old)
-    u_lp.solve()
-    u_old_bc_func.x.array[:] = u_bc_arr[0,:]
-    u_lp = dfpetsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u)
-    u_lp.solve()
-
-
-    # Define derivatives and trial/test functions
-    
-    du_dt = (u - u_old) / dt
     dv_dt = (v - v_old) / dt
+    du_dt = (u - u_old) / dt
 
-    u_theta = theta * u + (1.0 - theta) * u_old
     v_theta = theta * v + (1.0 - theta) * v_old
+    u_theta = theta * u + (1.0 - theta) * u_old
     
-    du, dv, dp = ufl.TestFunctions(W)
-    delta_u, delta_v, delta_p = ufl.TrialFunctions(W)
+    dv, dp = ufl.TestFunctions(W)
+    delta_v, delta_p = ufl.TrialFunctions(W)
 
 
     # ALE formulation of transient Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
     n = ufl.FacetNormal(fluid_mesh)
     
@@ -196,15 +186,15 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
     from functools import reduce
 
-    v_bc_func = dfx.fem.Function(V)
-    v_bc_func.x.array[:] = 0.0
-    v_bc_facets = reduce(np.union1d, [
+    bc_func = dfx.fem.Function(V)
+    bc_func.x.array[:] = 0.0
+    bc_facets = reduce(np.union1d, [
         fluid_facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
         fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
         fluid_facet_tags.find(PHYSICAL_MARKERS["inflow"]),
         fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ])
-    v_bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, v_bc_facets)
+    bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
 
     class BCFunc:
         def __init__(self, t: float = 0.0):
@@ -214,23 +204,12 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
             values[0] = np.where(np.isclose(x[0], 0.0), 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2, 0.0)
             values[0] *= 0.5 * (1.0 - np.cos(2.0*np.pi * min(self.t, 0.5)))
             return values
-    v_bc_func.interpolate(BCFunc(t0))
+    bc_func.interpolate(BCFunc(t0))
 
-    v_bc = dfx.fem.dirichletbc(v_bc_func, v_bc_dofs)
+    bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
 
-    
-    # Create ALE Dirichlet boundary condition
-    
-    u_bc_func = dfx.fem.Function(U)
-    u_bc_func.x.array[:] = 0.0
-    u_bc_facets = dfx.mesh.exterior_facet_indices(fluid_mesh.topology)
-    u_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_bc_facets)
-    u_bc = dfx.fem.dirichletbc(u_bc_func, u_bc_dofs)
+    bcs = [bc]
 
-
-    # Collect Dirichlet boundary conditions
-
-    bcs = [u_bc, v_bc]
 
     # create residual form
 
@@ -260,15 +239,6 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     # incompressibility constraint done implicitly
     residual += ufl.div(J * ufl.inv(F) * v) * dp * dx
 
-
-    # ale deformation
-
-    # For simplicity, use a harmonic mesh motion with h-based stiffening.
-
-    alpha_0 = 1.0e-2
-    alpha = alpha_0 * ufl.CellVolume(fluid_mesh)**(-2)
-    residual += ufl.inner(alpha * ufl.grad(u), ufl.grad(du)) * dx
-
     #--------------------------------------------
 
     # Do-nothing condition
@@ -281,10 +251,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     
     # create Jacobian form
 
-    jacobian  = ufl.derivative(residual, u, delta_u)
-    jacobian += ufl.derivative(residual, v, delta_v)
-    jacobian += ufl.derivative(residual, p, delta_p)
-
+    jacobian = ufl.derivative(residual, v, delta_v) + ufl.derivative(residual, p, delta_p)
     jacobian_blocked = ufl.extract_blocks(jacobian)
     jacobian_comp = dfx.fem.form(jacobian_blocked)
 
@@ -296,8 +263,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     x = dfpetsc.create_vector_block(residual_comp)
     delta_x = dfpetsc.create_vector_block(residual_comp)
 
-    offset_1 = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
-    offset_2 = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
+    offset = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
 
     ksp = PETSc.KSP().create(fluid_mesh.comm)
@@ -307,8 +273,8 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
     ksp.getPC().setFactorSolverType("mumps")
 
     max_iter = 20
-    atol = 1.0e-7
-    rtol = 1.0e-16
+    atol = 1.0e-8
+    rtol = 1.0e-8
 
 
     writer = dfx.io.VTXWriter(comm, output_path, [u,v])
@@ -319,19 +285,19 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
         step += 1
         t += dt.value
-        u_bc_func.x.array[:] = u_bc_arr[step % num_steps]
-        v_bc_func.interpolate(BCFunc(t))
-
-        u_old.x.array[:] = u.x.array[:]
-        u_old.x.scatter_forward()
+        bc_func.interpolate(BCFunc(t))
 
         v_old.x.array[:] = v.x.array
         v_old.x.scatter_forward()
 
+        u_old.x.array[:] = u_bih_arr[(step-1)%num_steps,:]
+        u.x.array[:] = u_bih_arr[step%num_steps,:]
+        u_old.x.scatter_forward()
+        u.x.scatter_forward()
 
-        x.array[:offset_1] = u.x.array[:offset_1]
-        x.array[offset_1:(offset_1+offset_2)] = v.x.array[:offset_2]
-        x.array[(offset_1+offset_2):] = p.x.array[:(len(x.array_r) - (offset_1+offset_2))]
+
+        x.array[:offset] = v.x.array[:offset]
+        x.array[offset:] = p.x.array[:(len(x.array_r) - offset)]
         x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
 
 
@@ -370,10 +336,8 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
             x.axpy(-1.0, delta_x)
 
-            u.x.array[:offset_1] = x.array[:offset_1]
-            v.x.array[:offset_2] = x.array[offset_1:(offset_1+offset_2)]
-            p.x.array[:(len(x.array_r) - (offset_1+offset_2))] = x.array[(offset_1+offset_2):]
-            u.x.scatter_forward()
+            v.x.array[:offset] = x.array_r[:offset]
+            p.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
             v.x.scatter_forward()
             p.x.scatter_forward()
 
@@ -404,9 +368,8 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         dt_val=0.0025,
         bd_dset_path="data/fsi2_boundary/",
-        output_path="output/pv/navier_stokes_ale_fsi2_mm.bp",
+        output_path="output/pv/navier_stokes_ale_fsi2.bp",
         num_cycles=4,
-        t0_val=0.0,
     )
 
 

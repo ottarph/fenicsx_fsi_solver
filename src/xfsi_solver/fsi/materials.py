@@ -20,7 +20,7 @@ class Solid:
 class Fluid:
 
     def NS_pressure(p: dfx.fem.Function):
-        Id = ufl.Identity(p.ufl_domain().geometric_dimension())
+        Id = ufl.Identity(p.ufl_domain().geometric_dimension)
         sigma = -p * Id
         return sigma
     

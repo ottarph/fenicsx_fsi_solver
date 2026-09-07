@@ -46,7 +46,6 @@ def solve(mesh_path, output_path, t):
 
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
-        print(f"{fluid_cell_map.shape = }")
 
     fluid_mesh.topology.create_connectivity(1, 2)
 
@@ -89,14 +88,25 @@ def solve(mesh_path, output_path, t):
     dv, dp = ufl.TestFunctions(W)
     delta_v, delta_p = ufl.TrialFunctions(W)
 
+    # Assume static mesh for now
+    u = dfx.fem.Function(V, name="u")
+    
+    def u_func(x):
+        values = np.zeros_like(x[:2,:])
+        values[0] = -1 * x[1]**2 * x[0] * (2.5 - x[0])**2 / 2.5**3
+        values[1] = 0.05 * x[0] * (2.5 - x[0])**2
+        return values
+    u.interpolate(u_func)
 
-    # Eulerian formulation of static Navier-Stokes
+    # ALE formulation of static Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
+    F = ufl.Identity(fluid_mesh.geometry.dim) + ufl.grad(u)
+    J = ufl.det(F)
     n = ufl.FacetNormal(fluid_mesh)
-
+    
 
     # create Dirichlet boundary condition
 
@@ -129,13 +139,13 @@ def solve(mesh_path, output_path, t):
 
     # create residual form
 
-    residual = rho_f * ufl.inner(ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
-    residual += ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f), ufl.grad(dv)) * dx
+    residual = J * rho_f * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx
+    residual += J * ufl.inner(Fluid.NS(u, v, p, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx
 
-    residual += ufl.div(v) * dp * dx
+    residual += ufl.div(J * ufl.inv(F) * v) * dp * dx
 
     # Do-nothing condition
-    residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
+    residual -= rho_f * nu_f * ufl.inner(ufl.dot(ufl.inv(F).T * ufl.grad(v).T, ufl.inv(F).T * n), dv) * ds(PHYSICAL_MARKERS["outflow"])
 
 
     residual_blocked = ufl.extract_blocks(residual)
@@ -170,7 +180,8 @@ def solve(mesh_path, output_path, t):
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, output_path, [v])
+    writer = dfx.io.VTXWriter(comm, output_path, [v, u])
+
     
 
     x.array[:offset] = v.x.array[:offset]
@@ -240,7 +251,7 @@ def solve(mesh_path, output_path, t):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        output_path="output/pv/static_navier_stokes.bp",
+        output_path="output/pv/static_navier_stokes_ale.bp",
         t=2.0,
     )
 

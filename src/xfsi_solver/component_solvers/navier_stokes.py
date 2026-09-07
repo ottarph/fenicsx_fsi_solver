@@ -43,93 +43,114 @@ def solve(mesh_path, T, dt_val, output_path):
     # create submeshes for fluid and solid
 
     fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
-    solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
 
     if comm.rank == 0:
-        print(f"{solid_mesh.geometry.x.shape = }")
-        print(f"{solid_cell_map.shape = }")
+        print(f"{fluid_mesh.geometry.x.shape = }")
 
-    solid_mesh.topology.create_connectivity(1, 2)
+    fluid_mesh.topology.create_connectivity(1, 2)
 
 
     # transfer meshtags to submeshes
 
     import scifem
     fluid_facet_tags, fluid_facet_map = scifem.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
-    solid_facet_tags, solid_facet_map = scifem.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
 
     if comm.rank == 0:
-        print(f"{solid_facet_tags.indices.shape = }, {np.unique(solid_facet_tags.values) = }")
-
-    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.union1d(facet_tags.values, [0])), "Transferred facet tags do not match"
+        print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
 
 
     # Create measure with  meshtags
 
-    dx = ufl.Measure("dx", domain=solid_mesh)
-    ds = ufl.Measure("ds", domain=solid_mesh, subdomain_data=solid_facet_tags)
+    dx = ufl.Measure("dx", domain=fluid_mesh)
+    ds = ufl.Measure("ds", domain=fluid_mesh, subdomain_data=fluid_facet_tags)
 
 
     # create problem parameters
 
-    rho_s = dfx.fem.Constant(solid_mesh, 0.8e3)
-    lambda_s = dfx.fem.Constant(solid_mesh, 1e5)
-    mu_s = dfx.fem.Constant(solid_mesh, 2e7)
+    rho_f = dfx.fem.Constant(fluid_mesh, 1.0e3)
+    nu_f = dfx.fem.Constant(mesh, 4e-3)
 
-    dt = dfx.fem.Constant(solid_mesh, dt_val)
+    U_bar = 1.0
+    H = 0.41
+
     t0 = 0.0
+    dt = dfx.fem.Constant(mesh, dt_val)
 
-    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81*4))
-    traction = dfx.fem.Constant(solid_mesh, (0.0, 0.0))
+    theta = dfx.fem.Constant(mesh, 0.5)
 
     
     # create function spaces
 
-    U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
-    V = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
-    W = ufl.MixedFunctionSpace(U, V)
+    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
+    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
+    W = ufl.MixedFunctionSpace(V, P)
 
 
     # create functions
 
-    u, v = dfx.fem.Function(U), dfx.fem.Function(V)
-    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+    v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
+    v_old = dfx.fem.Function(V)
 
-    du, dv = ufl.TestFunctions(W)
-    delta_u, delta_v = ufl.TrialFunctions(W)
-
-
-    # Implicit Euler discretization of STVK under influence of gravitational body force and
-    # fixed Dirichlet BC on left boundary and otherwise zero traction.
     
-    du_dt = (u - u_old) / dt
+    # Crank-Nicolson discretization of Navier-Stokes, with pressure treated fully implicitly
+    # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
+    
     dv_dt = (v - v_old) / dt
 
-    from fsi.materials import Solid
+    v_theta = theta * v + (1.0 - theta) * v_old
+    
+    dv, dp = ufl.TestFunctions(W)
+    delta_v, delta_p = ufl.TrialFunctions(W)
 
-    F = ufl.Identity(solid_mesh.geometry.dim) + ufl.grad(u)
-    J = ufl.det(F)
-    n = ufl.FacetNormal(solid_mesh)
+
+    # Eulerian formulation of transient Navier-Stokes
+    # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
+    
+    from xfsi_solver.fsi.materials import Fluid
+
+    n = ufl.FacetNormal(fluid_mesh)
     
 
     # create Dirichlet boundary condition
 
-    bc_func = dfx.fem.Function(U)
+    from functools import reduce
+
+    bc_func = dfx.fem.Function(V)
     bc_func.x.array[:] = 0.0
-    bc_facets = solid_facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"])
-    bc_dofs = dfx.fem.locate_dofs_topological(U, solid_mesh.geometry.dim - 1, bc_facets)
+    bc_facets = reduce(np.union1d, [
+        fluid_facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+        fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
+        fluid_facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+        fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+        ])
+    bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
+
+    class BCFunc:
+        def __init__(self, t: float = 0.0):
+            self.t = t
+        def __call__(self, x: np.ndarray) -> np.ndarray:
+            values = np.zeros((2, x.shape[1]), dtype=x.dtype)
+            values[0] = np.where(np.isclose(x[0], 0.0), 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2, 0.0)
+            values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
+            return values
+    bc_func.interpolate(BCFunc(t0))
+
     bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
+
     # create residual form
 
-    residual = rho_s * ufl.inner(du_dt - v, du) * dx
+    residual = rho_f * ufl.inner(dv_dt + ufl.dot(v_theta, ufl.nabla_grad(v_theta)), dv) * dx
+    residual += ufl.inner(Fluid.NS_velocity_eulerian(v_theta, nu_f, rho_f), ufl.grad(dv)) * dx
+    residual += ufl.inner(Fluid.NS_pressure(p), ufl.grad(dv)) * dx
 
-    residual += rho_s * ufl.inner(dv_dt, dv) * dx
-    residual += J * ufl.inner(Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx
-    residual -= ufl.inner(rho_s * g, dv) * dx
-    residual -= ufl.inner(traction, dv) * ds(PHYSICAL_MARKERS["solid_fluid_interface"])
+    residual += ufl.div(v) * dp * dx
+
+    # Do-nothing condition
+    residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
+
 
     residual_blocked = ufl.extract_blocks(residual)
     residual_comp = dfx.fem.form(residual_blocked)
@@ -137,7 +158,7 @@ def solve(mesh_path, T, dt_val, output_path):
     
     # create Jacobian form
 
-    jacobian = ufl.derivative(residual, u, delta_u) + ufl.derivative(residual, v, delta_v)
+    jacobian = ufl.derivative(residual, v, delta_v) + ufl.derivative(residual, p, delta_p)
     jacobian_blocked = ufl.extract_blocks(jacobian)
     jacobian_comp = dfx.fem.form(jacobian_blocked)
 
@@ -149,10 +170,10 @@ def solve(mesh_path, T, dt_val, output_path):
     x = dfpetsc.create_vector_block(residual_comp)
     delta_x = dfpetsc.create_vector_block(residual_comp)
 
-    offset = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
+    offset = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
 
-    ksp = PETSc.KSP().create(solid_mesh.comm)
+    ksp = PETSc.KSP().create(fluid_mesh.comm)
     ksp.setOperators(A)
     ksp.setType("preonly")
     ksp.getPC().setType("lu")
@@ -163,21 +184,20 @@ def solve(mesh_path, T, dt_val, output_path):
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u])
+    writer = dfx.io.VTXWriter(comm, output_path, [v])
 
     t = t0
 
     while t < T:
 
         t += dt.value
+        bc_func.interpolate(BCFunc(t))
 
-        u_old.x.array[:] = u.x.array
         v_old.x.array[:] = v.x.array
-        u_old.x.scatter_forward()
         v_old.x.scatter_forward()
 
-        x.array[:offset] = u.x.array[:offset]
-        x.array[offset:] = v.x.array[:(len(x.array_r) - offset)]
+        x.array[:offset] = v.x.array[:offset]
+        x.array[offset:] = p.x.array[:(len(x.array_r) - offset)]
         x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
 
 
@@ -216,10 +236,10 @@ def solve(mesh_path, T, dt_val, output_path):
 
             x.axpy(-1.0, delta_x)
 
-            u.x.array[:offset] = x.array_r[:offset]
-            v.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
-            u.x.scatter_forward()
+            v.x.array[:offset] = x.array_r[:offset]
+            p.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
             v.x.scatter_forward()
+            p.x.scatter_forward()
 
             n += 1
 
@@ -246,9 +266,9 @@ def solve(mesh_path, T, dt_val, output_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        T=0.2,
-        dt_val=0.0025,
-        output_path="output/pv/solid_elasticity.bp",
+        T=2.0,
+        dt_val=0.02,
+        output_path="output/pv/navier_stokes.bp",
     )
 
 

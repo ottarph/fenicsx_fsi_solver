@@ -47,7 +47,6 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, max_steps):
 
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
-        print(f"{fluid_cell_map.shape = }")
 
     fluid_mesh.topology.create_connectivity(1, 2)
 
@@ -136,7 +135,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, max_steps):
         u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
         u_bc_arr[t,:] = u_bc.x.array
 
-    from biharm import biharmonic
+    from xfsi_solver.component_solvers.biharm import biharmonic
     uh_pure, *_ = biharmonic(u_bc)
     u_old.interpolate(uh_pure)
     u_bc.x.array[:] = u_bc_arr[0,:]
@@ -161,7 +160,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, max_steps):
     # ALE formulation of transient Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
     
-    from fsi.materials import Fluid
+    from xfsi_solver.fsi.materials import Fluid
 
     n = ufl.FacetNormal(fluid_mesh)
     
