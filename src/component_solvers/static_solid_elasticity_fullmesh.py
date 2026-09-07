@@ -236,7 +236,7 @@ def solve(mesh_path, output_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        output_path="output/static_solid_elasticity_fm.bp",
+        output_path="output/pv/static_solid_elasticity_fm.bp",
     )
 
 

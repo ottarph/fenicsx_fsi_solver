@@ -404,7 +404,7 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         dt_val=0.0025,
         bd_dset_path="data/fsi2_boundary/",
-        output_path="output/navier_stokes_ale_fsi2_mm.bp",
+        output_path="output/pv/navier_stokes_ale_fsi2_mm.bp",
         num_cycles=4,
         t0_val=0.0,
     )

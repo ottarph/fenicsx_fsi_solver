@@ -6,10 +6,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-Path("figures").mkdir(exist_ok=True)
+Path("output/figures").mkdir(parents=True, exist_ok=True)
 
-qois_bih = np.loadtxt("output/fsi2_biharm_qoi.txt")
-qois_harm = np.loadtxt("output/fsi2_harm_dm_qoi.txt")
+qois_bih = np.loadtxt("output/qoi/fsi2_biharm_qoi.txt")
+qois_harm = np.loadtxt("output/qoi/fsi2_harm_dm_qoi.txt")
 
 assert Path("data/fsi2_reference.txt").exists(), "Download the reference data at https://wwwold.mathematik.tu-dortmund.de/~featflow/media/fsi/data/fsi2/0p0005/ref_fsi2.point, then run scripts/prepare_FSI2_reference_values.py"
 
@@ -30,7 +30,7 @@ plt.xlabel("Time [s]")
 plt.ylabel("Drag")
 plt.legend()
 
-plt.savefig("figures/drag.pdf")
+plt.savefig("output/figures/drag.pdf")
 
 
 plt.figure(figsize=(10,5))
@@ -42,7 +42,7 @@ plt.xlabel("Time [s]")
 plt.ylabel("lift")
 plt.legend()
 
-plt.savefig("figures/lift.pdf")
+plt.savefig("output/figures/lift.pdf")
 
 
 plt.figure(figsize=(10,5))
@@ -54,7 +54,7 @@ plt.xlabel("Time [s]")
 plt.ylabel("Tip $x$-displacement [m]")
 plt.legend()
 
-plt.savefig("figures/x-disp.pdf")
+plt.savefig("output/figures/x-disp.pdf")
 
 
 plt.figure(figsize=(10,5))
@@ -66,5 +66,5 @@ plt.xlabel("Time [s]")
 plt.ylabel("Tip $y$-displacement [m]")
 plt.legend()
 
-plt.savefig("figures/y-disp.pdf")
+plt.savefig("output/figures/y-disp.pdf")
 

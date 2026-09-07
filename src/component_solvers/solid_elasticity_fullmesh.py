@@ -260,7 +260,7 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         T=0.2,
         dt_val=0.0025,
-        output_path="output/solid_elasticity_fm.bp",
+        output_path="output/pv/solid_elasticity_fm.bp",
     )
 
 

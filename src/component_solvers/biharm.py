@@ -146,7 +146,7 @@ def solve(N, output_path):
 def main():
     solve(
         N=32,
-        output_path="output/biharm.bp",
+        output_path="output/pv/biharm.bp",
     )
 
 

@@ -240,7 +240,7 @@ def solve(mesh_path, output_path, t):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh.xdmf",
-        output_path="output/static_navier_stokes.bp",
+        output_path="output/pv/static_navier_stokes.bp",
         t=2.0,
     )
 

@@ -11,6 +11,7 @@ from petsc4py import PETSc
 
 import sys
 from os import PathLike
+from pathlib import Path
 
 from matplotlib import pyplot as plt
 
@@ -207,6 +208,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             self.form = dfx.fem.form(form)
 
             if not isinstance(self.save_to, list):
+                Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
                 with open(self.save_to, "wb") as f:
                     np.savetxt(f, [], header="time drag", fmt='%.4e', delimiter=' ')
 
@@ -237,6 +239,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             self.form = dfx.fem.form(form)
 
             if comm.rank == 0 and not isinstance(self.save_to, list):
+                Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
                 with open(self.save_to, "wb") as f:
                     np.savetxt(f, [], header="time lift", fmt='%.4e', delimiter=' ')
 
@@ -362,6 +365,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
         else:
             lift_arr = np.loadtxt(lift_hook.save_to)
         
+        Path(drag_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(lift_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(drag_coeff_plot_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(lift_coeff_plot_path).parent.mkdir(parents=True, exist_ok=True)
+
         plt.figure()
         plt.plot(drag_arr[:, 0], drag_arr[:, 1], 'k-')
         plt.xlabel("Time")
@@ -402,14 +410,14 @@ def main():
         mesh_path="data/meshes/dfg2d_alt/mesh_quad.xdmf",
         T=8.0,
         dt_val=1 / 400,
-        output_path="output/dfg_2d_3/dfg_2d_3.bp",
-        output_path_p="output/dfg_2d_3/dfg_2d_3_p.bp",
-        drag_path="output/dfg_2d_3/dfg_2d_3_drag.txt",
-        lift_path="output/dfg_2d_3/dfg_2d_3_lift.txt",
-        drag_plot_path="output/dfg_2d_3/dfg_2d_3_drag.png",
-        lift_plot_path="output/dfg_2d_3/dfg_2d_3_lift.png",
-        drag_coeff_plot_path="output/dfg_2d_3/dfg_2d_3_drag_coeff.png",
-        lift_coeff_plot_path="output/dfg_2d_3/dfg_2d_3_lift_coeff.png",
+        output_path="output/pv/dfg_2d_3.bp",
+        output_path_p="output/pv/dfg_2d_3_p.bp",
+        drag_path="output/qoi/dfg_2d_3_drag.txt",
+        lift_path="output/qoi/dfg_2d_3_lift.txt",
+        drag_plot_path="output/figures/dfg_2d_3_drag.png",
+        lift_plot_path="output/figures/dfg_2d_3_lift.png",
+        drag_coeff_plot_path="output/figures/dfg_2d_3_drag_coeff.png",
+        lift_coeff_plot_path="output/figures/dfg_2d_3_lift_coeff.png",
     )
 
 

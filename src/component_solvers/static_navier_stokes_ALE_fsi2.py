@@ -301,7 +301,7 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         t=2.0,
         bd_dset_path="data/fsi2_boundary/",
-        output_path="output/static_navier_stokes_ale.bp",
+        output_path="output/pv/static_navier_stokes_ale.bp",
     )
 
 

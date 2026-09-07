@@ -10,6 +10,7 @@ import ufl
 from petsc4py import PETSc
 
 import sys
+from pathlib import Path
 from timeit import default_timer as timer
 
 from mpi4py.MPI import COMM_WORLD as comm
@@ -300,6 +301,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
     u_spot = np.zeros(2, dtype=np.float64)
 
     if comm.rank == 0:
+        Path(disp_path).parent.mkdir(parents=True, exist_ok=True)
         with open(disp_path, "wb") as f:
             np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tA_x\tA_y")
 
@@ -417,9 +419,9 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         T=12.0,
         dt_val=0.0025,
-        output_path="output/fsi2_harm.bp",
-        output_path_p="output/fsi2_harm_p.bp",
-        disp_path="output/fsi2_harm_Adisp.txt",
+        output_path="output/pv/fsi2_harm.bp",
+        output_path_p="output/pv/fsi2_harm_p.bp",
+        disp_path="output/qoi/fsi2_harm_Adisp.txt",
     )
 
 

@@ -269,7 +269,7 @@ def main():
         mesh_path="data/meshes/fsi2/mesh.xdmf",
         T=2.0,
         dt_val=0.02,
-        output_path="output/navier_stokes.bp",
+        output_path="output/pv/navier_stokes.bp",
     )
 
 

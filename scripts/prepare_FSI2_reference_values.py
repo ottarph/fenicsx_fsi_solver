@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
+from pathlib import Path
 
 def translate_point_file(in_filename, out_filename):
 
@@ -42,6 +43,7 @@ if __name__ == "__main__":
     # plt.xlim([10.0, 10.8])
     plt.title("Reference")
 
-    plt.savefig("figures/fsi2_referencedrag.pdf")
+    Path("output/figures").mkdir(parents=True, exist_ok=True)
+    plt.savefig("output/figures/fsi2_referencedrag.pdf")
     plt.show()
 
