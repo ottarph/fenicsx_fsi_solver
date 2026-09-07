@@ -9,6 +9,8 @@ import ufl
 
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.custom_linear_problem import MyLinearProblem
+
 
 def biharmonic(u_bc: dfx.fem.Function):
 
@@ -40,7 +42,7 @@ def biharmonic(u_bc: dfx.fem.Function):
     uh = dfx.fem.Function(U, name="uh")
     vh = dfx.fem.Function(V, name="vh")
 
-    prob = dfx.fem.petsc.LinearProblem(
+    prob = MyLinearProblem(
         a_block, L_block, bcs=[bc], u=[uh, vh],
         petsc_options_prefix="biharmonic_",
         petsc_options={
@@ -51,6 +53,7 @@ def biharmonic(u_bc: dfx.fem.Function):
             "ksp_error_if_not_converged": True,
         },
     )
+    prob.assemble_matrix()
     prob.solve()
 
     return uh, vh, prob
