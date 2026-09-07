@@ -45,7 +45,8 @@ def biharmonic(u_bc: dfx.fem.Function):
     bc = dfx.fem.dirichletbc(u_D, boundary_dofs, Fspace.sub(0))
 
 
-    prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options={"ksp_type": "preonly", "pc_type": "lu",
+    prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options_prefix="biharmonic_",
+                                  petsc_options={"ksp_type": "preonly", "pc_type": "lu",
                                                             "pc_factor_mat_solver_type": "mumps", "ksp_error_if_not_converged": True,
                                                             "mat_mumps_icntl_14": 30})
     prob.solve()
@@ -106,27 +107,21 @@ def solve(N, output_path):
     a_block = ufl.extract_blocks(a)
     L_block = ufl.extract_blocks(L)
 
-    a_form = dfx.fem.form(a_block)
-    L_form = dfx.fem.form(L_block)
-
-    A = dfpetsc.assemble_matrix_block(a_form, bcs=[bc])
-    A.assemble()
-    b = dfpetsc.assemble_vector_block(L_form, a_form, bcs=[bc])
-    x = A.createVecRight()
-    
-    ksp = PETSc.KSP().create()
-    ksp.setOperators(A)
-    ksp.setType("preonly")
-    ksp.getPC().setType("lu")
-    ksp.getPC().setFactorSolverType("mumps")
-    ksp.getPC().getFactorMatrix().setMumpsIcntl(14, 200)
-    ksp.setErrorIfNotConverged(True)
-
-    ksp.solve(b, x)
-
     uh = dfx.fem.Function(U)
-    uh.x.array[:len(x.array)//2] = x.array[:len(x.array)//2]
-    uh.x.scatter_forward()
+    vh = dfx.fem.Function(V)
+
+    problem = dfx.fem.petsc.LinearProblem(
+        a_block, L_block, bcs=[bc], u=[uh, vh],
+        petsc_options_prefix="biharm_",
+        petsc_options={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_icntl_14": 200,
+            "ksp_error_if_not_converged": True,
+        },
+    )
+    problem.solve()
 
     with dfx.io.VTXWriter(comm, output_path, [uh]) as writer:
         writer.write(0.0)
