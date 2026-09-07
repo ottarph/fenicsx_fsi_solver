@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -43,7 +43,7 @@ def biharmonic(u_bc: dfx.fem.Function):
     bc = dfx.fem.dirichletbc(u_D, boundary_dofs, Fspace.sub(0))
 
 
-    prob = dfpetsc.LinearProblem(a, L, bcs=[bc], petsc_options_prefix="biharmonic_",
+    prob = dfx.fem.petsc.LinearProblem(a, L, bcs=[bc], petsc_options_prefix="biharmonic_",
                                   petsc_options={"ksp_type": "preonly", "pc_type": "lu",
                                                             "pc_factor_mat_solver_type": "mumps", "ksp_error_if_not_converged": True,
                                                             "mat_mumps_icntl_14": 30})
@@ -108,7 +108,7 @@ def solve(N, output_path):
     uh = dfx.fem.Function(U)
     vh = dfx.fem.Function(V)
 
-    problem = dfpetsc.LinearProblem(
+    problem = dfx.fem.petsc.LinearProblem(
         a_block, L_block, bcs=[bc], u=[uh, vh],
         petsc_options_prefix="biharm_",
         petsc_options={

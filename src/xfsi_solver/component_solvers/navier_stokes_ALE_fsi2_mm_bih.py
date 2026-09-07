@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -258,7 +258,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, max_steps):
     atol = 1.0e-7
     rtol = 1.0e-16
 
-    problem = dfpetsc.NonlinearProblem(
+    problem = dfx.fem.petsc.NonlinearProblem(
         residual_blocked, [u, z, v, p], bcs=bcs,
         petsc_options_prefix="navier_stokes_ale_fsi2_mm_bih_",
         petsc_options={

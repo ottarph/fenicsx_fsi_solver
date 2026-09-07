@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -160,7 +160,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfpetsc.NonlinearProblem(
+    problem = dfx.fem.petsc.NonlinearProblem(
         residual_blocked, [v, p], bcs=bcs,
         petsc_options_prefix="dfg_2d_3_",
         petsc_options={

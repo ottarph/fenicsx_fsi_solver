@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -256,7 +256,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     atol = 1.0e-7
     rtol = 1.0e-12
 
-    problem = dfpetsc.NonlinearProblem(
+    problem = dfx.fem.petsc.NonlinearProblem(
         residual_blocked, [u, v, p], bcs=bcs,
         petsc_options_prefix="fsi2_harmonic_diffmesh_",
         entity_maps=entity_maps,

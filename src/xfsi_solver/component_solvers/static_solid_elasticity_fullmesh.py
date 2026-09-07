@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -118,7 +118,7 @@ def solve(mesh_path, output_path):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfpetsc.NonlinearProblem(
+    problem = dfx.fem.petsc.NonlinearProblem(
         residual, u, bcs=bcs,
         petsc_options_prefix="static_solid_elasticity_fullmesh_",
         entity_maps=entity_maps,

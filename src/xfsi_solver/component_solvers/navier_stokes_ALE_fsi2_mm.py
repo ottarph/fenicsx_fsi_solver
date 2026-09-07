@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import dolfinx as dfx
-import dolfinx.fem.petsc as dfpetsc
+import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import basix.ufl
 import ufl
@@ -157,10 +157,10 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     u_old_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_old_bc_facets)
     u_old_bc = dfx.fem.dirichletbc(u_old_bc_func, u_old_bc_dofs)
 
-    u_lp = dfpetsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u_old)
+    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u_old)
     u_lp.solve()
     u_old_bc_func.x.array[:] = u_bc_arr[0,:]
-    u_lp = dfpetsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u)
+    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u)
     u_lp.solve()
 
 
@@ -278,7 +278,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     atol = 1.0e-7
     rtol = 1.0e-16
 
-    problem = dfpetsc.NonlinearProblem(
+    problem = dfx.fem.petsc.NonlinearProblem(
         residual_blocked, [u, v, p], bcs=bcs,
         petsc_options_prefix="navier_stokes_ale_fsi2_mm_",
         petsc_options={
