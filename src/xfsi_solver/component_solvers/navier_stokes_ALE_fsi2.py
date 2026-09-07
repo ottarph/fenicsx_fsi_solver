@@ -26,7 +26,7 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles):
+def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=None):
 
     assert comm.size == 1, "This example only works in serial"
 
@@ -279,9 +279,13 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles):
 
     writer = dfx.io.VTXWriter(comm, output_path, [u,v])
 
+    total_steps = num_cycles*num_steps
+    if max_steps is not None:
+        total_steps = min(total_steps, max_steps)
+
     t = t0
     step = -1
-    while step < num_cycles*num_steps:
+    while step < total_steps:
 
         step += 1
         t += dt.value
