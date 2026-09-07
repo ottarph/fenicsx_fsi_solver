@@ -55,12 +55,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     # create entity maps for mixed mesh integration
 
-    cell_map = mesh.topology.index_map(mesh.topology.dim)
-    num_cells_local = cell_map.size_local + cell_map.num_ghosts
-    mesh_to_fluid_entity = np.full(num_cells_local, -1, dtype=np.int32)
-    mesh_to_fluid_entity[fluid_cell_map] = np.arange(len(fluid_cell_map), dtype=np.int32)
-
-    entity_maps = {fluid_mesh: mesh_to_fluid_entity}
+    entity_maps = [fluid_cell_map]
 
     # Create measure with  meshtags
 
@@ -124,7 +119,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     
     du, dv, dp = ufl.TestFunctions(W)
-    delta_u, delta_v, delta_p = ufl.TrialFunctions(W)
 
 
     # create Dirichlet boundary condition
@@ -258,45 +252,28 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
 
     residual_blocked = ufl.extract_blocks(residual)
-    residual_comp = dfx.fem.form(residual_blocked, entity_maps=entity_maps)
-
-    
-    # create Jacobian form
-
-    jacobian  = ufl.derivative(residual, u, delta_u)
-    jacobian += ufl.derivative(residual, v, delta_v)
-    jacobian += ufl.derivative(residual, p, delta_p)
-
-    jacobian_blocked = ufl.extract_blocks(jacobian)
-    jacobian_comp = dfx.fem.form(jacobian_blocked, entity_maps=entity_maps)
-
-
-    # create matrix and vector for linear algebra
-
-    A = dfpetsc.create_matrix_block(jacobian_comp)
-    b = dfpetsc.create_vector_block(residual_comp)
-    x = dfpetsc.create_vector_block(residual_comp)
-    delta_x = dfpetsc.create_vector_block(residual_comp)
-
-    if comm.rank == 0:
-        print(f"{x.size = }")
-
-
-    offset_1 = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
-    offset_2 = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-
-
-    ksp = PETSc.KSP().create(mesh.comm)
-    ksp.setOperators(A)
-    ksp.setType("preonly")
-    ksp.getPC().setType("lu")
-    ksp.getPC().setFactorSolverType("mumps")
-    ksp.getPC().getFactorMatrix().setMumpsIcntl(14, 80)
-    ksp.setErrorIfNotConverged(False)
 
     max_iter = 20
     atol = 1.0e-7
     rtol = 1.0e-12
+
+    problem = dfx.fem.petsc.NonlinearProblem(
+        residual_blocked, [u, v, p], bcs=bcs,
+        petsc_options_prefix="fsi2_harmonic_diffmesh_",
+        entity_maps=entity_maps,
+        petsc_options={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_icntl_14": 80,
+            "snes_linesearch_type": "none",
+            "snes_max_it": max_iter,
+            "snes_atol": atol,
+            "snes_rtol": rtol,
+            "snes_error_if_not_converged": True,
+            "ksp_error_if_not_converged": True,
+        },
+    )
 
 
     policy = dfx.io.VTXMeshPolicy.reuse
@@ -347,70 +324,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         u_old.x.array[:] = u.x.array[:]
         v_old.x.array[:] = v.x.array[:]
 
-
-        x.array[:offset_1] = u.x.array[:offset_1]
-        x.array[offset_1:(offset_1+offset_2)] = v.x.array[:offset_2]
-        x.array[(offset_1+offset_2):] = p.x.array[:len(x.array_r) - (offset_1+offset_2)]
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
-
-
         if comm.rank == 0:
-            print(f"\n{t = :.3f}", end="\t")
+            print(f"\n{t = :.3f}")
 
-        n = 0
-        res0 = 1.0
-        while n < max_iter:
-
-
-            with b.localForm() as b_loc:
-                b_loc.set(0)
-
-            dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
-            b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
-
-            res = b.norm()
-            if n == 0:
-                res0 = res
-                if comm.rank == 0:
-                    print(f"{res0 = :.3e}")
-
-            if comm.rank == 0:
-                print(f"{n = :2d}:\t\t{res  = :.3e}")
-
-            if res < atol or res < rtol * res0:
-                break
-
-            A.zeroEntries()
-            dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
-            A.assemble()
-
-
-            ksp.solve(b, delta_x)
-            converged_reason = ksp.getConvergedReason()
-
-            n += 1
-
-
-            if converged_reason <= 0 or n == max_iter:
-                writer.close()
-                writer_p.close()
-                # raise RuntimeError("Linear solver did not converge")
-                if comm.rank == 0:
-                    print(f"Linear solver did not converge, reason: {converged_reason}")
-                # quit(converged_reason)
-                quit()
-
-
-            x.axpy(-1.0, delta_x)
-            x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
-
-            u.x.array[:offset_1] = x.array[:offset_1]
-            v.x.array[:offset_2] = x.array[offset_1:(offset_1+offset_2)]
-            p.x.array[:(len(x.array_r) - (offset_1+offset_2))] = x.array[(offset_1+offset_2):]
-            u.x.scatter_forward()
-            v.x.scatter_forward()
-            p.x.scatter_forward()
-
+        try:
+            problem.solve()
+        except Exception:
+            writer.close()
+            writer_p.close()
+            raise
 
         if comm.rank == 0:
             sys.stdout.flush()
@@ -438,10 +360,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         print(f"Time per step: {(end - start) / (step+1):.3f} s")
 
 
-    A.destroy()
-    b.destroy()
-    x.destroy()
-    delta_x.destroy()
     writer.close()
 
 

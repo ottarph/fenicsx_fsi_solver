@@ -96,7 +96,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     v_theta = theta * v + (1.0 - theta) * v_old
     
     dv, dp = ufl.TestFunctions(W)
-    delta_v, delta_p = ufl.TrialFunctions(W)
 
 
     # Eulerian formulation of transient Navier-Stokes
@@ -156,35 +155,26 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
 
 
     residual_blocked = ufl.extract_blocks(residual)
-    residual_comp = dfx.fem.form(residual_blocked)
-
-    
-    # create Jacobian form
-
-    jacobian = ufl.derivative(residual, v, delta_v) + ufl.derivative(residual, p, delta_p)
-    jacobian_blocked = ufl.extract_blocks(jacobian)
-    jacobian_comp = dfx.fem.form(jacobian_blocked)
-
-
-    # create matrix and vector for linear algebra
-
-    A = dfpetsc.create_matrix_block(jacobian_comp)
-    b = dfpetsc.create_vector_block(residual_comp)
-    x = dfpetsc.create_vector_block(residual_comp)
-    delta_x = dfpetsc.create_vector_block(residual_comp)
-
-    offset = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-
-
-    ksp = PETSc.KSP().create(fluid_mesh.comm)
-    ksp.setOperators(A)
-    ksp.setType("preonly")
-    ksp.getPC().setType("lu")
-    ksp.getPC().setFactorSolverType("mumps")
 
     max_iter = 20
     atol = 1.0e-8
     rtol = 1.0e-8
+
+    problem = dfx.fem.petsc.NonlinearProblem(
+        residual_blocked, [v, p], bcs=bcs,
+        petsc_options_prefix="dfg_2d_3_",
+        petsc_options={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "snes_linesearch_type": "none",
+            "snes_max_it": max_iter,
+            "snes_atol": atol,
+            "snes_rtol": rtol,
+            "snes_error_if_not_converged": True,
+            "ksp_error_if_not_converged": True,
+        },
+    )
 
 
     writer = dfx.io.VTXWriter(comm, output_path, [v])
@@ -277,61 +267,19 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
         v_old.x.array[:] = v.x.array
         v_old.x.scatter_forward()
 
-        x.array[:offset] = v.x.array[:offset]
-        x.array[offset:] = p.x.array[:(len(x.array_r) - offset)]
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
-
-
         if comm.rank == 0:
-            print(f"\n{t = :.3f}", end="\t")
+            print(f"\n{t = :.3f}")
 
-        n = 0
-        res0 = 1.0
-        while n < max_iter:
-
-
-            with b.localForm() as b_loc:
-                b_loc.set(0)
-
-            dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
-            b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
-
-            res = b.norm()
-            if n == 0:
-                res0 = res
-                if comm.rank == 0:
-                    print(f"{res0 = :.3e}")
-
-            if comm.rank == 0:
-                print(f"{n = :2d}:\t\t{res  = :.3e}")
-
-            if res < atol or res < rtol * res0:
-                break
-
-            A.zeroEntries()
-            dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
-            A.assemble()
-
-
-            ksp.solve(b, delta_x)
-
-            x.axpy(-1.0, delta_x)
-
-            v.x.array[:offset] = x.array_r[:offset]
-            p.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
-            v.x.scatter_forward()
-            p.x.scatter_forward()
-
-            n += 1
+        try:
+            problem.solve()
+        except Exception:
+            writer.close()
+            writer_p.close()
+            raise
 
         if comm.rank == 0:
             sys.stdout.flush()
 
-        if n == max_iter:
-            writer.close()
-            writer_p.close()
-            raise RuntimeError("Nonlinear solver did not converge")
-        
         for hook in hooks:
             hook(t)
 
@@ -345,10 +293,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
         print(f"Elapsed time: {end - start:.2f} s")
         print(f"Time per step: {(end - start) / i:.3e} s")
 
-    A.destroy()
-    b.destroy()
-    x.destroy()
-    delta_x.destroy()
     writer.close()
 
 
