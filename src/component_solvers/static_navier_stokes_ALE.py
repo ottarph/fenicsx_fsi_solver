@@ -26,12 +26,10 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, output_path, t):
 
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -76,9 +74,7 @@ def main():
     U_bar = 1.0
     H = 0.41
 
-    t = 2.0
 
-    
     # create function spaces
 
     V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
@@ -185,7 +181,7 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/static_navier_stokes_ale.bp", [v, u])
+    writer = dfx.io.VTXWriter(comm, output_path, [v, u])
 
     
 
@@ -251,6 +247,14 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        output_path="output/static_navier_stokes_ale.bp",
+        t=2.0,
+    )
 
 
 if __name__ == "__main__":

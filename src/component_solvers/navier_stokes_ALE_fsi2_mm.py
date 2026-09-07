@@ -26,13 +26,11 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val):
 
     assert comm.size == 1, "This example only works in serial"
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -77,8 +75,8 @@ def main():
     U_bar = 1.0
     H = 0.41
 
-    t0 = 0.0
-    dt = dfx.fem.Constant(mesh, 0.0025)
+    t0 = t0_val
+    dt = dfx.fem.Constant(mesh, dt_val)
 
     theta = dfx.fem.Constant(mesh, 0.5)
 
@@ -99,7 +97,6 @@ def main():
 
     # Prepare boundary deformations for ale fields for all time steps
 
-    bd_dset_path = "data/fsi2_boundary/"
     msh_x = np.load(bd_dset_path + "msh_x.npy")
     msh_conn = np.load(bd_dset_path + "msh_conn.npy")
     uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
@@ -314,11 +311,11 @@ def main():
     rtol = 1.0e-16
 
 
-    writer = dfx.io.VTXWriter(comm, "output/navier_stokes_ale_fsi2_mm.bp", [u,v])
+    writer = dfx.io.VTXWriter(comm, output_path, [u,v])
 
     t = t0
     step = -1
-    while step < 4*num_steps:
+    while step < num_cycles*num_steps:
 
         step += 1
         t += dt.value
@@ -400,6 +397,17 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        dt_val=0.0025,
+        bd_dset_path="data/fsi2_boundary/",
+        output_path="output/navier_stokes_ale_fsi2_mm.bp",
+        num_cycles=4,
+        t0_val=0.0,
+    )
 
 
 if __name__ == "__main__":

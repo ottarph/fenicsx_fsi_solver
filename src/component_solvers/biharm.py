@@ -63,9 +63,8 @@ def biharmonic(u_bc: dfx.fem.Function):
 
 
 
-def main():
+def solve(N, output_path):
 
-    N = 32
     mesh = dfx.mesh.create_unit_square(comm, N, N, cell_type=dfx.mesh.CellType.triangle)
     mesh.topology.create_connectivity(1, 2)
 
@@ -129,7 +128,7 @@ def main():
     uh.x.array[:len(x.array)//2] = x.array[:len(x.array)//2]
     uh.x.scatter_forward()
 
-    with dfx.io.VTXWriter(comm, "biharm.bp", [uh]) as writer:
+    with dfx.io.VTXWriter(comm, output_path, [uh]) as writer:
         writer.write(0.0)
 
     uh_pure, _, _ = biharmonic(u_bc)
@@ -141,7 +140,14 @@ def main():
         print(f"Norm of differnce in two biharmonic solvers: {difference:.2e}")
 
 
-    return 
+    return
+
+
+def main():
+    solve(
+        N=32,
+        output_path="output/biharm.bp",
+    )
 
 
 if __name__ == "__main__":

@@ -26,12 +26,10 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, T, dt_val, output_path):
 
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -90,9 +88,8 @@ def main():
     lambda_s = dfx.fem.Constant(mesh, 1e5)
     mu_s = dfx.fem.Constant(mesh, 2e7)
 
-    dt = dfx.fem.Constant(mesh, 0.0025)
+    dt = dfx.fem.Constant(mesh, dt_val)
     t0 = 0.0
-    T = 0.2
 
     g = dfx.fem.Constant(mesh, (0.0, -9.81*4))
     traction = dfx.fem.Constant(mesh, (0.0, 0.0))
@@ -178,7 +175,7 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/solid_elasticity_fm.bp", [u])
+    writer = dfx.io.VTXWriter(comm, output_path, [u])
 
     t = t0
 
@@ -256,6 +253,15 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        T=0.2,
+        dt_val=0.0025,
+        output_path="output/solid_elasticity_fm.bp",
+    )
 
 
 if __name__ == "__main__":

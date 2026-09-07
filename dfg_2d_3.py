@@ -29,16 +29,16 @@ PHYSICAL_MARKERS = {
     "channel_side": 24,             # no-slip for fluid
 }
 
-def main():
+def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path, drag_plot_path, lift_plot_path, drag_coeff_plot_path, lift_coeff_plot_path):
 
     log = PETSc.Log()
     log.begin()
 
     # load mesh and meshtags
 
-    # mesh_path = "data/meshes/dfg2d/mesh.xdmf"
-    # mesh_path = "data/meshes/dfg2d_alt/mesh_tri.xdmf"
-    mesh_path = "data/meshes/dfg2d_alt/mesh_quad.xdmf"
+    # other mesh options:
+    #   "data/meshes/dfg2d/mesh.xdmf"
+    #   "data/meshes/dfg2d_alt/mesh_tri.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         fluid_mesh = infile.read_mesh()
@@ -67,10 +67,6 @@ def main():
     H = 0.41
 
     t0 = 0.0
-    # T = 1.0
-    T = 8.0                    # Final time
-    # dt_val = 1 / 1600
-    dt_val = 1 / 400
     dt = dfx.fem.Constant(fluid_mesh, dt_val)
 
     theta = dfx.fem.Constant(fluid_mesh, 0.5)
@@ -190,8 +186,8 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/dfg_2d_3/dfg_2d_3.bp", [v])
-    writer_p = dfx.io.VTXWriter(comm, "output/dfg_2d_3/dfg_2d_3_p.bp", [p])
+    writer = dfx.io.VTXWriter(comm, output_path, [v])
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     from timeit import default_timer as timer
 
@@ -258,8 +254,8 @@ def main():
 
             return
         
-    drag_hook = Drag("output/dfg_2d_3/dfg_2d_3_drag.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
-    lift_hook = Lift("output/dfg_2d_3/dfg_2d_3_lift.txt", fluid_mesh, PHYSICAL_MARKERS["obstacle"])
+    drag_hook = Drag(drag_path, fluid_mesh, PHYSICAL_MARKERS["obstacle"])
+    lift_hook = Lift(lift_path, fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     # drag_hook = Drag([], fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     # lift_hook = Lift([], fluid_mesh, PHYSICAL_MARKERS["obstacle"])
 
@@ -370,13 +366,13 @@ def main():
         plt.plot(drag_arr[:, 0], drag_arr[:, 1], 'k-')
         plt.xlabel("Time")
         plt.ylabel("Drag")
-        plt.savefig("output/dfg_2d_3/dfg_2d_3_drag.png")
+        plt.savefig(drag_plot_path)
 
         plt.figure()
         plt.plot(lift_arr[:, 0], lift_arr[:, 1], 'k-')
         plt.xlabel("Time")
         plt.ylabel("Lift")
-        plt.savefig("output/dfg_2d_3/dfg_2d_3_lift.png")
+        plt.savefig(lift_plot_path)
 
         
         # Compare with values at https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html
@@ -388,17 +384,33 @@ def main():
         plt.plot(drag_arr[:, 0], drag_coeff, 'k-', label="drag coefficient")
         plt.grid()
         plt.legend()
-        plt.savefig("output/dfg_2d_3/dfg_2d_3_drag_coeff.png")
+        plt.savefig(drag_coeff_plot_path)
 
         plt.figure(figsize=(25,8))
         plt.plot(lift_arr[:, 0], lift_coeff, 'k-', label="lift coefficient")
         plt.grid()
         plt.legend()
-        plt.savefig("output/dfg_2d_3/dfg_2d_3_lift_coeff.png")
+        plt.savefig(lift_coeff_plot_path)
 
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/dfg2d_alt/mesh_quad.xdmf",
+        T=8.0,
+        dt_val=1 / 400,
+        output_path="output/dfg_2d_3/dfg_2d_3.bp",
+        output_path_p="output/dfg_2d_3/dfg_2d_3_p.bp",
+        drag_path="output/dfg_2d_3/dfg_2d_3_drag.txt",
+        lift_path="output/dfg_2d_3/dfg_2d_3_lift.txt",
+        drag_plot_path="output/dfg_2d_3/dfg_2d_3_drag.png",
+        lift_plot_path="output/dfg_2d_3/dfg_2d_3_lift.png",
+        drag_coeff_plot_path="output/dfg_2d_3/dfg_2d_3_drag_coeff.png",
+        lift_coeff_plot_path="output/dfg_2d_3/dfg_2d_3_lift_coeff.png",
+    )
 
 
 if __name__ == "__main__":

@@ -28,12 +28,10 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -99,8 +97,7 @@ def main():
     H = 0.41
 
     t0 = 0.0
-    dt = dfx.fem.Constant(mesh, 0.0025)
-    T = 12.0
+    dt = dfx.fem.Constant(mesh, dt_val)
 
     theta = dfx.fem.Constant(mesh, 0.5 + dt.value)
 
@@ -309,10 +306,8 @@ def main():
 
 
     policy = dfx.io.VTXMeshPolicy.reuse
-    writer = dfx.io.VTXWriter(comm, "output/fsi2_biharm_dm.bp", [u,v], mesh_policy=policy)
-    writer_p = dfx.io.VTXWriter(comm, "output/fsi2_biharm_p_dm.bp", [p], mesh_policy=policy)
-
-    qoi_path = "output/fsi2_biharm_qoi.txt"
+    writer = dfx.io.VTXWriter(comm, output_path, [u,v], mesh_policy=policy)
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=policy)
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
@@ -460,6 +455,17 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
+        T=12.0,
+        dt_val=0.0025,
+        output_path="output/fsi2_biharm_dm.bp",
+        output_path_p="output/fsi2_biharm_p_dm.bp",
+        qoi_path="output/fsi2_biharm_qoi.txt",
+    )
 
 
 if __name__ == "__main__":

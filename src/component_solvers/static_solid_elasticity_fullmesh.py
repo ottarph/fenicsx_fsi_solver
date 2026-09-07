@@ -24,12 +24,10 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, output_path):
 
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -133,7 +131,7 @@ def main():
 
 
     # vtx writer for output
-    writer = dfx.io.VTXWriter(comm, "output/static_solid_elasticity_fm.bp", [u])
+    writer = dfx.io.VTXWriter(comm, output_path, [u])
 
 
     # test with built-in Newton solver
@@ -233,6 +231,13 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        output_path="output/static_solid_elasticity_fm.bp",
+    )
 
 
 if __name__ == "__main__":

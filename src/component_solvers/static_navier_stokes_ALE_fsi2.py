@@ -26,13 +26,11 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def main():
+def solve(mesh_path, t, bd_dset_path, output_path):
 
     assert comm.size == 1, "This example only works in serial"
 
     # load mesh and meshtags
-
-    mesh_path = "data/meshes/fsi2/mesh.xdmf"
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
@@ -77,9 +75,7 @@ def main():
     U_bar = 1.0
     H = 0.41
 
-    t = 2.0
 
-    
     # create function spaces
 
     V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
@@ -101,8 +97,7 @@ def main():
     # Load FSI2 deformation from boundary dataset
 
     try:
-    
-        bd_dset_path = "data/fsi2_boundary/"
+
         msh_x = np.load(bd_dset_path + "msh_x.npy")
         msh_conn = np.load(bd_dset_path + "msh_conn.npy")
         uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
@@ -233,7 +228,7 @@ def main():
     rtol = 1.0e-8
 
 
-    writer = dfx.io.VTXWriter(comm, "output/static_navier_stokes_ale.bp", [v, u])
+    writer = dfx.io.VTXWriter(comm, output_path, [v, u])
 
     
 
@@ -299,6 +294,15 @@ def main():
 
 
     return
+
+
+def main():
+    solve(
+        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        t=2.0,
+        bd_dset_path="data/fsi2_boundary/",
+        output_path="output/static_navier_stokes_ale.bp",
+    )
 
 
 if __name__ == "__main__":
