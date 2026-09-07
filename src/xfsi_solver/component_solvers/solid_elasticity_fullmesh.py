@@ -73,12 +73,7 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # create entity maps for mixed mesh integration
 
-    cell_map = mesh.topology.index_map(mesh.topology.dim)
-    num_cells_local = cell_map.size_local + cell_map.num_ghosts
-    mesh_to_solid_entity = np.full(num_cells_local, -1, dtype=np.int32)
-    mesh_to_solid_entity[solid_cell_map] = np.arange(len(solid_cell_map), dtype=np.int32)
-
-    entity_maps = {solid_mesh: mesh_to_solid_entity}
+    entity_maps = [solid_cell_map]
 
 
     # create problem parameters
@@ -107,7 +102,6 @@ def solve(mesh_path, T, dt_val, output_path):
     u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
 
     du, dv = ufl.TestFunctions(W)
-    delta_u, delta_v = ufl.TrialFunctions(W)
 
 
     # Implicit Euler discretization of STVK under influence of gravitational body force and
@@ -143,35 +137,27 @@ def solve(mesh_path, T, dt_val, output_path):
     residual -= ufl.inner(traction, dv) * ds_interface
 
     residual_blocked = ufl.extract_blocks(residual)
-    residual_comp = dfx.fem.form(residual_blocked, entity_maps=entity_maps)
-
-    
-    # create Jacobian form
-
-    jacobian = ufl.derivative(residual, u, delta_u) + ufl.derivative(residual, v, delta_v)
-    jacobian_blocked = ufl.extract_blocks(jacobian)
-    jacobian_comp = dfx.fem.form(jacobian_blocked, entity_maps=entity_maps)
-
-
-    # create matrix and vector for linear algebra
-
-    A = dfpetsc.create_matrix_block(jacobian_comp)
-    b = dfpetsc.create_vector_block(residual_comp)
-    x = dfpetsc.create_vector_block(residual_comp)
-    delta_x = dfpetsc.create_vector_block(residual_comp)
-
-    offset = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
-
-
-    ksp = PETSc.KSP().create(solid_mesh.comm)
-    ksp.setOperators(A)
-    ksp.setType("preonly")
-    ksp.getPC().setType("lu")
-    ksp.getPC().setFactorSolverType("mumps")
 
     max_iter = 20
     atol = 1.0e-8
     rtol = 1.0e-8
+
+    problem = dfx.fem.petsc.NonlinearProblem(
+        residual_blocked, [u, v], bcs=bcs,
+        entity_maps=entity_maps,
+        petsc_options_prefix="solid_elasticity_fullmesh_",
+        petsc_options={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "snes_linesearch_type": "none",
+            "snes_max_it": max_iter,
+            "snes_atol": atol,
+            "snes_rtol": rtol,
+            "snes_error_if_not_converged": True,
+            "ksp_error_if_not_converged": True,
+        },
+    )
 
 
     writer = dfx.io.VTXWriter(comm, output_path, [u])
@@ -187,67 +173,20 @@ def solve(mesh_path, T, dt_val, output_path):
         u_old.x.scatter_forward()
         v_old.x.scatter_forward()
 
-        x.array[:offset] = u.x.array[:offset]
-        x.array[offset:] = v.x.array[:(len(x.array_r) - offset)]
-        x.ghostUpdate(addv=PETSc.InsertMode.INSERT_VALUES, mode=PETSc.ScatterMode.FORWARD)
-
-
         if comm.rank == 0:
-            print(f"\n{t = :.3f}", end="\t")
+            print(f"\n{t = :.3f}")
 
-        n = 0
-        res0 = 1.0
-        while n < max_iter:
-
-
-            with b.localForm() as b_loc:
-                b_loc.set(0)
-
-            dfpetsc.assemble_vector_block(b, residual_comp, jacobian_comp, bcs=bcs, alpha=-1.0, x0=x)
-            b.ghostUpdate(PETSc.InsertMode.INSERT_VALUES, PETSc.ScatterMode.FORWARD)
-
-            res = b.norm()
-            if n == 0:
-                res0 = res
-                if comm.rank == 0:
-                    print(f"{res0 = :.3e}")
-
-            if comm.rank == 0:
-                print(f"{n = :2d}:\t\t{res  = :.3e}")
-
-            if res < atol or res < rtol * res0:
-                break
-
-            A.zeroEntries()
-            dfpetsc.assemble_matrix_block(A, jacobian_comp, bcs=bcs)
-            A.assemble()
-
-
-            ksp.solve(b, delta_x)
-
-            x.axpy(-1.0, delta_x)
-
-            u.x.array[:offset] = x.array_r[:offset]
-            v.x.array[: (len(x.array_r) - offset)] = x.array_r[offset:]
-            u.x.scatter_forward()
-            v.x.scatter_forward()
-
-            n += 1
+        try:
+            problem.solve()
+        except Exception:
+            writer.close()
+            raise
 
         if comm.rank == 0:
             sys.stdout.flush()
 
-        if n == max_iter:
-            writer.close()
-            raise RuntimeError("Nonlinear solver did not converge")
-        
         writer.write(t)
 
-
-    A.destroy()
-    b.destroy()
-    x.destroy()
-    delta_x.destroy()
     writer.close()
 
 
