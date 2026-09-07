@@ -7,7 +7,6 @@ import dolfinx.fem.petsc as dfpetsc
 import numpy as np
 import basix.ufl
 import ufl
-from petsc4py import PETSc
 
 import sys
 
@@ -142,7 +141,7 @@ def solve(mesh_path, T, dt_val, output_path):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dfpetsc.NonlinearProblem(
         residual_blocked, [u, v], bcs=bcs,
         entity_maps=entity_maps,
         petsc_options_prefix="solid_elasticity_fullmesh_",

@@ -7,9 +7,7 @@ import dolfinx.fem.petsc as dfpetsc
 import numpy as np
 import basix.ufl
 import ufl
-from petsc4py import PETSc
 
-import sys
 
 from mpi4py.MPI import COMM_WORLD as comm
 
@@ -142,7 +140,7 @@ def solve(mesh_path, output_path, t):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dfpetsc.NonlinearProblem(
         residual_blocked, [v, p], bcs=bcs,
         petsc_options_prefix="static_navier_stokes_",
         petsc_options={

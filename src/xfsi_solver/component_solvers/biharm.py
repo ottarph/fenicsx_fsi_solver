@@ -9,8 +9,6 @@ import basix.ufl
 import ufl
 
 from mpi4py.MPI import COMM_WORLD as comm
-from mpi4py import MPI
-from petsc4py import PETSc
 
 
 def biharmonic(u_bc: dfx.fem.Function):
@@ -110,7 +108,7 @@ def solve(N, output_path):
     uh = dfx.fem.Function(U)
     vh = dfx.fem.Function(V)
 
-    problem = dfx.fem.petsc.LinearProblem(
+    problem = dfpetsc.LinearProblem(
         a_block, L_block, bcs=[bc], u=[uh, vh],
         petsc_options_prefix="biharm_",
         petsc_options={

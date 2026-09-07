@@ -7,7 +7,6 @@ import dolfinx.fem.petsc as dfpetsc
 import numpy as np
 import basix.ufl
 import ufl
-from petsc4py import PETSc
 
 import sys
 from pathlib import Path
@@ -257,7 +256,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     atol = 1.0e-7
     rtol = 1.0e-12
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dfpetsc.NonlinearProblem(
         residual_blocked, [u, v, p], bcs=bcs,
         petsc_options_prefix="fsi2_harmonic_diffmesh_",
         entity_maps=entity_maps,

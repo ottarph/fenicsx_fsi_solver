@@ -7,7 +7,6 @@ import dolfinx.fem.petsc as dfpetsc
 import numpy as np
 import basix.ufl
 import ufl
-from petsc4py import PETSc
 
 import sys
 
@@ -259,7 +258,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, max_steps):
     atol = 1.0e-7
     rtol = 1.0e-16
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dfpetsc.NonlinearProblem(
         residual_blocked, [u, z, v, p], bcs=bcs,
         petsc_options_prefix="navier_stokes_ale_fsi2_mm_bih_",
         petsc_options={

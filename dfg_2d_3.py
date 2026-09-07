@@ -160,7 +160,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dfpetsc.NonlinearProblem(
         residual_blocked, [v, p], bcs=bcs,
         petsc_options_prefix="dfg_2d_3_",
         petsc_options={
