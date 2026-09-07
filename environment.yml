@@ -6,7 +6,6 @@ dependencies:
   - python
   - fenics-dolfinx >= 0.11
   - mpich
-  - scifem >= 0.22.0
   - gmsh
   - python-gmsh
   - pyvista

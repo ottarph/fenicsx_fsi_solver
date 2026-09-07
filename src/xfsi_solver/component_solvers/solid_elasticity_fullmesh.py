@@ -50,9 +50,7 @@ def solve(mesh_path, T, dt_val, output_path):
 
 
     # transfer meshtags to submeshes
-
-    import scifem
-    solid_facet_tags, solid_facet_map = scifem.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    solid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
 
 
     # Create measure with  meshtags

@@ -51,9 +51,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=No
 
 
     # transfer meshtags to submeshes
-
-    import scifem
-    fluid_facet_tags, fluid_facet_map = scifem.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
+    fluid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
 
     if comm.rank == 0:
         print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
