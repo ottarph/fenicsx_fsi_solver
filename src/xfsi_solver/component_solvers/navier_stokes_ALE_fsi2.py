@@ -128,24 +128,15 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=No
 
     u_bc = dfx.fem.Function(V, name="u_whole")
 
-    *_, prob = biharmonic(u_bc)
-    uD = dfx.fem.Function(prob.u.function_space.sub(0).collapse()[0])
-
-    from xfsi_solver.tools.custom_linear_problem import MyLinearProblem
-    myprob = MyLinearProblem(prob.a, prob.L, prob.bcs, u=prob.u,
-                    petsc_options={"ksp_type": "preonly", "pc_type": "lu",
-                                    "pc_factor_mat_solver_type": "umfpack"})
-    myprob.assemble_matrix()
+    uh, _, prob = biharmonic(u_bc)
 
     from tqdm import tqdm
     for t in tqdm(range(uh_bd_fsi2.shape[0]), desc="Precomputing ale deformations..."):
         u_from.x.array[:] = uh_bd_fsi2[t,:]
         u_to.interpolate_nonmatching(u_from, bd_interp_cells, bd_interp_data)
         u_bc.interpolate_nonmatching(u_to, whole_interp_cells, whole_interp_data)
-        uD.interpolate(u_bc)
-        myprob.bcs[0].g.x.array[:] = uD.x.array
-        myprob.solve()
-        u.interpolate(prob.u.sub(0))
+        prob.solve()
+        u.interpolate(uh)
         u_bih_arr[t,:] = u.x.array
 
 

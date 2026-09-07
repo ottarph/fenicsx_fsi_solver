@@ -135,8 +135,9 @@ def solve(mesh_path, t, bd_dset_path, output_path):
 
 
     from xfsi_solver.component_solvers.biharm import biharmonic
-    uh_pure, *_ = biharmonic(u_bc)
-    u.interpolate(uh_pure)
+    uh, *_ = biharmonic(u_bc)
+    u.x.array[:] = uh.x.array
+    u.x.scatter_forward()
 
 
 
