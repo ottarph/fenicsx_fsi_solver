@@ -121,11 +121,13 @@ if mesh_comm.rank == model_rank:
     gmsh.model.mesh.generate(gdim)
     gmsh.model.mesh.optimize("Netgen")
 
-    gmsh.fltk.finalize()
-    gmsh.fltk.run()
+    # gmsh.fltk.finalize()
+    # gmsh.fltk.run()
 
 
-mesh, _, ft = dolfinx.io.gmshio.model_to_mesh(gmsh.model, mesh_comm, model_rank, gdim=gdim)
+out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, model_rank, gdim=gdim)
+mesh = out.mesh
+ft = out.facet_tags
 ft.name = "Facet tags"
 
 with dolfinx.io.XDMFFile(mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if QUADS else 'tri'}.xdmf", "w") as xdmf:

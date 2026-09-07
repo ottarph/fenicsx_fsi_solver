@@ -126,11 +126,16 @@ gmsh.model.mesh.generate(gdim)
 
 # gmsh.write("test.msh")
 
-from dolfinx.io import gmshio
+import dolfinx.io
 from mpi4py import MPI
 gmsh_model_rank = 0
 mesh_comm = MPI.COMM_WORLD
-domain, cell_markers, facet_markers = gmshio.model_to_mesh(gmsh.model, mesh_comm, gmsh_model_rank, gdim=gdim)
+out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, gmsh_model_rank, gdim=gdim)
+domain = out.mesh
+cell_markers = out.cell_tags
+facet_markers = out.facet_tags
+cell_markers.name = "Cell tags"
+facet_markers.name = "Facet tags"
 
 domain.topology.create_connectivity(1, 2)
 
@@ -146,5 +151,5 @@ with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
     xdmf.write_meshtags(cell_markers, domain.geometry)
     xdmf.write_meshtags(facet_markers, domain.geometry)
 
-gmsh.fltk.finalize()
-gmsh.fltk.run()
+# gmsh.fltk.finalize()
+# gmsh.fltk.run()
