@@ -17,3 +17,5 @@ dependencies:
   - scipy
   - matplotlib
   - tqdm
+  - pytest
+  - ruff
