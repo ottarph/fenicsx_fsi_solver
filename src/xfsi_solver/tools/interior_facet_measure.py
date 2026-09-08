@@ -9,59 +9,25 @@
 import dolfinx as dfx
 import ufl
 import numpy as np
+import scifem
 
 def create_consistent_interior_facet_measure(mesh: dfx.mesh.Mesh, facet_tags: dfx.mesh.MeshTags,
                                              cell_tags: dfx.mesh.MeshTags, facet_tag_to_integrate: int, side_marker_cell_tag: int,
                                              new_tag: int) -> ufl.Measure:
-    
-    tdim = mesh.topology.dim
-    fdim = tdim - 1
-
-    # Get number of cells on process
-    cell_map = mesh.topology.index_map(tdim)
-    facet_map = mesh.topology.index_map(fdim)
-
-    f_to_c = mesh.topology.connectivity(fdim, tdim)
-    c_to_f = mesh.topology.connectivity(tdim, fdim)
 
     facets_to_integrate = facet_tags.find(facet_tag_to_integrate)
 
-    # Compute integration entities for a single facet of a cell.
-    # Each facet is represented as a tuple (cell_index, local_facet_index), where cell_index is local to process
-    # local_facet_index is the local indexing of a facet for a given cell
-    integration_entities = []
-    for i, facet in enumerate(facets_to_integrate):
-        
-        # Only loop over facets owned by the process to avoid duplicate integration
-        if facet >= facet_map.size_local:
-            continue
+    # (cell0, local_facet0, cell1, local_facet1) per facet, ordered so that
+    # cell_tags[cell0] < cell_tags[cell1]. Facets owned by another process are excluded.
+    idata = scifem.compute_interface_data(cell_tags, facets_to_integrate)
 
-        # Find cells connected to facet
-        cells = f_to_c.links(facet)
-        
-        # Get value of cells
-        marked_cells = cell_tags.values[cells]
-        # Get the cell marked with side_marker_cell_tag
-        correct_cell_list = np.flatnonzero(marked_cells == side_marker_cell_tag)
-        assert len(correct_cell_list) == 1
-
-        correct_cell = correct_cell_list[0]
-
-
-        # Get local index of facet
-        local_facets = c_to_f.links(cells[correct_cell])
-        local_index_list = np.flatnonzero(local_facets == facet)
-        assert len(local_index_list) == 1
-
-        local_index = local_index_list[0]
-
-        # Append integration entities
-        integration_entity = (cells[correct_cell], local_index)
-        integration_entities.extend(integration_entity)
-
+    if idata.shape[0] > 0 and cell_tags.values[idata[0, 0]] == side_marker_cell_tag:
+        integration_entities = idata[:, :2]
+    else:
+        integration_entities = idata[:, 2:]
 
     # Basically a flattened array of integration entities, without trouble of array-of-tuples.
-    integration_entities = np.asarray(integration_entities, dtype=np.int32)
+    integration_entities = integration_entities.flatten()
 
     ds = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag, integration_entities)])
 

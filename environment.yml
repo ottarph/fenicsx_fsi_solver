@@ -5,6 +5,7 @@ channels:
 dependencies:
   - python
   - fenics-dolfinx >= 0.11
+  - scifem >= 0.22.0
   - mpich
   - gmsh
   - python-gmsh
