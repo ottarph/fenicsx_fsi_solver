@@ -1,4 +1,4 @@
-from fsi2_harmonic_diffmesh import solve
+from xfsi_solver.solvers.fsi2_harmonic_diffmesh import solve
 
 
 def test_fsi2_harmonic_diffmesh_solve(output_dirs):

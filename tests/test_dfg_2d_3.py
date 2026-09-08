@@ -1,4 +1,4 @@
-from dfg_2d_3 import solve
+from xfsi_solver.solvers.dfg_2d_3 import solve
 
 
 def test_dfg_2d_3_solve(output_dirs):

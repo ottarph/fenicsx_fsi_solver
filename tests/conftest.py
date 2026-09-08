@@ -1,16 +1,9 @@
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# The root-level driver scripts (dfg_2d_3.py, fsi2_harmonic.py, ...) are not
-# part of the installable xfsi_solver package, so make them importable by
-# module name for the tests.
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 
 @pytest.fixture
