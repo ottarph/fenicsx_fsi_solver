@@ -59,15 +59,19 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
 
     # Create measure for interface / solid-fluid boundary
 
-    from xfsi_solver.tools.interior_facet_measure import create_consistent_interior_facet_measure
+    import scifem
 
     new_tag_fluid = 101
     new_tag_solid = 102
-    new_measure_fluid = create_consistent_interior_facet_measure(mesh, facet_tags, cell_tags,
-                        PHYSICAL_MARKERS["solid_fluid_interface"], PHYSICAL_MARKERS["ALE_fluid"], new_tag_fluid)
+    interface_facets = facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    idata = scifem.compute_interface_data(cell_tags, interface_facets)
+    if idata.shape[0] > 0 and cell_tags.values[idata[0, 0]] == PHYSICAL_MARKERS["solid"]:
+        solid_entities, fluid_entities = idata[:, :2], idata[:, 2:]
+    else:
+        fluid_entities, solid_entities = idata[:, :2], idata[:, 2:]
+    new_measure_fluid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_fluid, fluid_entities.flatten())])
     ds_interface_fluid = new_measure_fluid(new_tag_fluid)
-    new_measure_solid = create_consistent_interior_facet_measure(mesh, facet_tags, cell_tags,
-                        PHYSICAL_MARKERS["solid_fluid_interface"], PHYSICAL_MARKERS["solid"], new_tag_solid)
+    new_measure_solid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_solid, solid_entities.flatten())])
     ds_interface_solid = new_measure_solid(new_tag_solid)
 
 

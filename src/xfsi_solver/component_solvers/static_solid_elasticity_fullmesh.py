@@ -55,11 +55,17 @@ def solve(mesh_path, output_path):
     
     # Create measure for interface / solid-fluid boundary
 
-    from xfsi_solver.tools.interior_facet_measure import create_consistent_interior_facet_measure
+    import scifem
 
     new_tag = 100
-    new_measure = create_consistent_interior_facet_measure(mesh, facet_tags, cell_tags,
-                        PHYSICAL_MARKERS["solid_fluid_interface"], PHYSICAL_MARKERS["solid"], new_tag)
+    interface_facets = facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    idata = scifem.compute_interface_data(cell_tags, interface_facets)
+    if idata.shape[0] > 0 and cell_tags.values[idata[0, 0]] == PHYSICAL_MARKERS["solid"]:
+        integration_entities = idata[:, :2]
+    else:
+        integration_entities = idata[:, 2:]
+    integration_entities = integration_entities.flatten()
+    new_measure = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag, integration_entities)])
     ds_interface = new_measure(new_tag)
 
 
