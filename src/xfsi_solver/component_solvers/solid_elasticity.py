@@ -56,7 +56,7 @@ def solve(mesh_path, T, dt_val, output_path):
     if comm.rank == 0:
         print(f"{solid_facet_tags.indices.shape = }, {np.unique(solid_facet_tags.values) = }")
 
-    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.union1d(facet_tags.values, [0])), "Transferred facet tags do not match"
+    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.unique(facet_tags.values)), "Transferred facet tags do not match"
 
 
     # Create measure with  meshtags
