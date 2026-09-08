@@ -4,8 +4,12 @@ Choose the Conda environment `xfsi_solver` at the start of each task.
 Then run commands using the selected environment, for example:
 
 ```bash
-conda run -n xfsi_solver pytest
+conda run --no-capture-output -n xfsi_solver pytest
 ```
+
+Without `--no-capture-output`, `conda run` buffers the whole child process's
+stdout/stderr and only prints it once the process exits, which hides
+progress on long-running commands (e.g. the test suite) until they finish.
 
 # Code
 Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. 
