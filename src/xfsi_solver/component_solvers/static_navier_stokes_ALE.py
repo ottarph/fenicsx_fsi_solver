@@ -5,7 +5,6 @@
 import dolfinx as dfx
 import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
-import basix.ufl
 import ufl
 
 
