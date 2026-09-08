@@ -17,6 +17,10 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
   import dolfinx as dfx
   import dolfinx.fem.petsc  # noqa: F401
 
+## Offline documentation
+
+A local mirror of the DOLFINx Python documentation is available at `offline_docs/` (gitignored, not part of the repo). When verifying a `dolfinx` API's signature, arguments, or behavior — for example after an upstream API change — consult it instead of relying on possibly-outdated knowledge. See `offline_docs/DOLFINx_OFFLINE_DOCS_HANDOFF.md` for how to locate and use it.
+
 ## Git workflow
 
 - Work on the task-provided feature branch. Never commit directly to the default branch.
