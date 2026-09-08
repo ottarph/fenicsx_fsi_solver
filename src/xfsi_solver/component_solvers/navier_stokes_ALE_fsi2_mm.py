@@ -155,10 +155,10 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     u_old_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_old_bc_facets)
     u_old_bc = dfx.fem.dirichletbc(u_old_bc_func, u_old_bc_dofs)
 
-    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u_old)
+    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u_old, petsc_options_prefix="navier_stokes_ale_fsi2_mm_harmonic_old_")
     u_lp.solve()
     u_old_bc_func.x.array[:] = u_bc_arr[0,:]
-    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u)
+    u_lp = dfx.fem.petsc.LinearProblem(a_u, L_u, bcs=[u_old_bc], u=u, petsc_options_prefix="navier_stokes_ale_fsi2_mm_harmonic_")
     u_lp.solve()
 
 
