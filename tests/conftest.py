@@ -6,6 +6,18 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def pytest_runtest_logstart(nodeid, location):
+    """Print, flushed immediately, so a hanging test is visible as it runs."""
+    print(f"\n>>> RUNNING {nodeid}", flush=True)
+
+
+def pytest_runtest_logreport(report):
+    if report.when == "call":
+        elapsed = getattr(report, "duration", None)
+        elapsed_str = f" ({elapsed:.1f}s)" if elapsed is not None else ""
+        print(f">>> {report.outcome.upper()} {report.nodeid}{elapsed_str}", flush=True)
+
+
 @pytest.fixture
 def output_dirs(tmp_path):
     """pv/qoi/figures directories for a test's solve() outputs.
