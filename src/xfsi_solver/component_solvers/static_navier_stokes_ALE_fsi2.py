@@ -97,7 +97,7 @@ def solve(mesh_path, t, bd_dset_path, output_path):
         uh_bd_fsi2 = np.load(bd_dset_path + "uh.npy")
 
         c_el = ufl.Mesh(basix.ufl.element("Lagrange", "interval", 1, shape=(msh_x.shape[1],)))
-        bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, msh_x, c_el)
+        bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, c_el, msh_x)
 
         bd_to_mesh, bd_to_cell_map, bd_to_vertex_map, _ = dfx.mesh.create_submesh(fluid_mesh, 1, dfx.mesh.locate_entities_boundary(fluid_mesh, 1, lambda x: np.full(x.shape[1], True)))
         bd_to_cells = bd_to_mesh.topology.index_map(1)

@@ -105,7 +105,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=No
     u_bih_arr = np.zeros((uh_bd_fsi2.shape[0], u.x.array.shape[0]), dtype=u.x.array.dtype)
 
     c_el = ufl.Mesh(basix.ufl.element("Lagrange", "interval", 1, shape=(msh_x.shape[1],)))
-    bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, msh_x, c_el)
+    bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, c_el, msh_x)
 
     bd_to_mesh, *_ = dfx.mesh.create_submesh(fluid_mesh, 1, dfx.mesh.locate_entities_boundary(fluid_mesh, 1, lambda x: np.full(x.shape[1], True)))
     bd_to_cells = bd_to_mesh.topology.index_map(1)
