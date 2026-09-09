@@ -49,7 +49,7 @@ def biharmonic(u_bc: dfx.fem.Function):
             "ksp_type": "preonly",
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 30,
+            "mat_mumps_icntl_14": 200,
             "ksp_error_if_not_converged": True,
         },
     )
