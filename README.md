@@ -23,19 +23,19 @@ functions defined in each monolithic solver (e.g. ``src/xfsi_solver/solvers/fsi2
 
 The time-discretization of monolithic fluid-structure interaction problems is complicated by, amongst other things, stability issues and discretization of terms like
 
-$$
+\[
 (J(u) \partial_t v, \phi)_{L^2} \tag{1}
-$$
+\]
 where 
-$$
+\[
 \mathrm{F}(u) = \mathrm{Id} + \nabla u, J(u) = \mathrm{det}(\mathrm{F}(u)).
-$$
+\]
 
-The value of $J(u)$ when approximating (1) can be chosen in different ways. Following the paper by Wick, we approximate (1) by the midpoint treatment
+The value of \(J(u)\) when approximating (1) can be chosen in different ways. Following the paper by Wick, we approximate (1) by the midpoint treatment
 
-$$
+\[
 (J(\bar u) (v^n - v^{n-1}) / \mathrm d t, \phi)_{L^2}, \quad \bar{u} = \frac{u^n + u^{n-1}}{2},
-$$
+\]
 and handle the other similar terms fully implicitly. Furthermore we use the shifted Crank-Nicolson method for stability and second order accuracy. A comprehensive treatment of time discretization for monolithic fluid-structure interaction is found in:
 
 > T. Richter, *Fluid-structure Interactions: Models, Analysis and Finite Elements*, Lecture Notes in
@@ -77,9 +77,14 @@ Set ``XFSI_KEEP_TEST_OUTPUT=1`` to keep each test's solver output under ``output
 
 ## Running a solver
 
-Each solver in ``src/xfsi_solver/solvers/`` and ``src/xfsi_solver/component_solvers/`` exposes a
-``solve(...)`` function and a ``main()`` that calls it with example arguments. Run one directly as a
-module, from the repository root:
+``src/xfsi_solver/component_solvers/`` and ``src/xfsi_solver/solvers/`` serve different purposes.
+``component_solvers`` holds the single-physics/single-component solvers (e.g. just the fluid, just the
+solid, just the mesh motion) that were used to iteratively develop and verify each piece of the coupled
+FSI problem in isolation. ``solvers`` holds the fully monolithic, coupled FSI solvers — the intended
+products of this project.
+
+Each solver in either directory exposes a ``solve(...)`` function and a ``main()`` that calls it with
+example arguments. Run one directly as a module, from the repository root:
 
 ```bash
 conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_harmonic
