@@ -5,15 +5,22 @@
 import os
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-# (column index into a qoi/reference array, y-axis label, output filename)
+# Simplify plotted paths (dropping vertices that don't visibly change the
+# line) so the SVG output stays small despite the qoi series often having
+# several thousand points.
+matplotlib.rcParams["path.simplify"] = True
+matplotlib.rcParams["path.simplify_threshold"] = 1.0
+
+# (column index into a qoi/reference array, y-axis label, output filename stem)
 _QOI_SPECS = [
-    (1, "Drag", "drag.pdf"),
-    (2, "lift", "lift.pdf"),
-    (3, "Tip $x$-displacement [m]", "x-disp.pdf"),
-    (4, "Tip $y$-displacement [m]", "y-disp.pdf"),
+    (1, "Drag", "drag"),
+    (2, "lift", "lift"),
+    (3, "Tip $x$-displacement [m]", "x-disp"),
+    (4, "Tip $y$-displacement [m]", "y-disp"),
 ]
 
 
@@ -53,7 +60,7 @@ def plot_qois(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for col, ylabel, filename in _QOI_SPECS:
+    for col, ylabel, stem in _QOI_SPECS:
         plt.figure(figsize=(10, 5))
         for label, style, qois in series:
             plt.plot(qois[:, 0], qois[:, col], style, label=label)
@@ -62,7 +69,8 @@ def plot_qois(
         plt.ylabel(ylabel)
         if series:
             plt.legend()
-        plt.savefig(output_dir / filename)
+        plt.savefig(output_dir / f"{stem}.pdf")
+        plt.savefig(output_dir / f"{stem}.svg")
         plt.close()
 
 
