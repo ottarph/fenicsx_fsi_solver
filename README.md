@@ -1,4 +1,4 @@
-
+# FEniCSx FSI Solver
 This repository contains a ``FEniCSx``-implementaion of a fully monolithic arbitrary Lagrangian-Eulerian 
 fluid-structure interaction solver verified on the FSI2 benchmark by Turek and Hron, 2006.
 
@@ -20,6 +20,27 @@ As in that paper, the weak-form residual is assembled from terms grouped into fo
 derivative terms, pressure terms, terms that must be treated fully implicitly, and the remaining
 (theta-weighted) terms. In code, these are the ``A_T(...)``, ``A_P(...)``, ``A_I(...)``, and ``A_E(...)``
 functions defined in each monolithic solver (e.g. ``src/xfsi_solver/solvers/fsi2_harmonic.py``).
+
+The time-discretization of monolithic fluid-structure interaction problems is complicated by, amongst other things, stability issues and discretization of terms like
+
+$$
+(J(u) \partial_t v, \phi)_{L^2} \tag{1}
+$$
+where 
+$$
+\mathrm{F}(u) = \mathrm{Id} + \nabla u, J(u) = \mathrm{det}(\mathrm{F}(u)).
+$$
+
+The value of $J(u)$ when approximating (1) can be chosen in different ways. Following the paper by Wick, we approximate (1) by the midpoint treatment
+
+$$
+(J(\bar u) (v^n - v^{n-1}) / \mathrm d t, \phi)_{L^2}, \quad \bar{u} = \frac{u^n + u^{n-1}}{2},
+$$
+and handle the other similar terms fully implicitly. Furthermore we use the shifted Crank-Nicolson method for stability and second order accuracy. A comprehensive treatment of time discretization for monolithic fluid-structure interaction is found in:
+
+> T. Richter, *Fluid-structure Interactions: Models, Analysis and Finite Elements*, Lecture Notes in
+> Computational Science and Engineering, vol. 118, Springer, Cham, 2017, Section 5.1.2.
+> https://doi.org/10.1007/978-3-319-63970-3
 
 ## Installation
 
