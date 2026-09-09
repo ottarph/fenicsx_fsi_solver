@@ -1,4 +1,5 @@
 __pycache__/
+.DS_Store
 
 *.h5
 *.xdmf
@@ -10,3 +11,10 @@ figures/
 
 *.pdf
 *.png
+
+.claude
+offline_docs
+
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

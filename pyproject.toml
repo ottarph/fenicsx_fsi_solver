@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xfsi-solver"
+version = "0.1.0"
+description = "Monolithic ALE fluid-structure interaction solver built on FEniCSx/dolfinx"
+requires-python = ">=3.10"
+# fenics-dolfinx, mpich, gmsh, adios2, and scifem are conda-only and are
+# managed via environment.yml instead of being listed here.
+dependencies = ["numpy>=2.0", "scipy", "matplotlib", "tqdm"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
