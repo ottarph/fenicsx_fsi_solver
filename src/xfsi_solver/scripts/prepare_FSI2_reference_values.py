@@ -15,7 +15,7 @@ def translate_point_file(in_filename, out_filename):
 if __name__ == "__main__":
 
 
-    translate_point_file("fsi2.point", "data/fsi2_reference.txt")
+    translate_point_file("ref_fsi2.point", "data/fsi2_reference.txt")
 
     
     ref = np.loadtxt("data/fsi2_reference.txt")
