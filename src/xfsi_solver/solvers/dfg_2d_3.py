@@ -9,6 +9,7 @@ import ufl
 from petsc4py import PETSc
 
 import sys
+import warnings
 from os import PathLike
 from pathlib import Path
 
@@ -72,6 +73,14 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     theta = dfx.fem.Constant(fluid_mesh, 0.5)
 
     save_every = 10
+
+    total_steps = int(np.ceil((T - t0) / dt_val))
+    if total_steps < save_every:
+        warnings.warn(
+            f"save_every ({save_every}) is larger than the total number of time "
+            f"steps ({total_steps}); no VTX output will ever be written to "
+            f"{output_path!r} or {output_path_p!r}."
+        )
 
     
     # create function spaces
@@ -176,8 +185,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     )
 
 
-    writer = dfx.io.VTXWriter(comm, output_path, [v])
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
+    writer = dfx.io.VTXWriter(comm, output_path, [v], mesh_policy=dfx.io.VTXMeshPolicy.reuse)
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=dfx.io.VTXMeshPolicy.reuse)
 
     from timeit import default_timer as timer
 

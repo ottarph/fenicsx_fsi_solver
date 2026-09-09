@@ -8,6 +8,7 @@ import numpy as np
 import ufl
 
 import sys
+import warnings
 from pathlib import Path
 from timeit import default_timer as timer
 
@@ -101,6 +102,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     theta = dfx.fem.Constant(mesh, 0.5 + dt.value)
 
     save_every = 4
+
+    total_steps = int(np.ceil((T - t0) / dt_val))
+    if total_steps <= save_every:
+        warnings.warn(
+            f"save_every ({save_every}) is larger than the total number of time "
+            f"steps ({total_steps}); at most one VTX snapshot will be written to "
+            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
+            f"series in ParaView."
+        )
 
     
     # create function spaces
