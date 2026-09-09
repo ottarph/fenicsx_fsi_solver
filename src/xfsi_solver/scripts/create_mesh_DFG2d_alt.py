@@ -144,6 +144,7 @@ def create_mesh(
             gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)
         else:
             gmsh.option.setNumber("Mesh.Algorithm", 6)
+            gmsh.option.setNumber("Mesh.RecombineAll", 0)
 
         gmsh.model.mesh.generate(gdim)
         gmsh.model.mesh.optimize("Netgen")

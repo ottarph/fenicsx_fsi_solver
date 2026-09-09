@@ -22,6 +22,15 @@ conda run -n xfsi_solver pip install -e ".[dev]"
 
 ## Running the tests
 
+``data/`` is gitignored, so the coarse meshes the test suite runs on don't ship with the repo and must be
+generated locally first:
+
+```bash
+conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.scripts.create_test_meshes
+```
+
+Then run the tests:
+
 ```bash
 conda run --no-capture-output -n xfsi_solver pytest
 ```
