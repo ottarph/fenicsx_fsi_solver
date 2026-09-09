@@ -22,12 +22,18 @@ E_2_left = 0.9
 theta = np.pi / 3
 
 FINE = False
+# Deliberately coarser mesh, for fast smoke-testing only (not for demo/production
+# use). Scales the resolution parameters up by COARSE_FACTOR and appends a
+# "_coarse" suffix to the output filename, so it never overwrites the regular
+# meshes.
+COARSE = False
+COARSE_FACTOR = 4.0
 
 if FINE:
     resolution_far = 0.0125
     resolution_close = resolution_far / 5
     resolution_ultra_far = H / 16
-else:    
+else:
     resolution_far = 0.025
     resolution_close = resolution_far / 5
     resolution_ultra_far = H / 8
@@ -38,6 +44,11 @@ if QUADS:
     resolution_far *= 2
     resolution_close *= 2
     resolution_ultra_far *= 2
+
+if COARSE:
+    resolution_far *= COARSE_FACTOR
+    resolution_close *= COARSE_FACTOR
+    resolution_ultra_far *= COARSE_FACTOR
 
 flag_tl_point = gmsh.model.occ.addPoint(flag_left, flag_top, 0.0)
 flag_tr_point = gmsh.model.occ.addPoint(flag_right, flag_top, 0.0)
@@ -251,7 +262,7 @@ if mesh_comm.rank == gmsh_model_rank:
     print(f"{domain.geometry.x.shape = }")
 
 from pathlib import Path
-mesh_path = Path(f"data/meshes/fsi2/mesh{'_quad' if QUADS else ''}{'_ssq' if SEMI_STRUCTURED_QUAD else ''}{'_fine' if FINE else ''}{'_sec' if SECOND_ORDER else ''}.xdmf")
+mesh_path = Path(f"data/meshes/fsi2/mesh{'_quad' if QUADS else ''}{'_ssq' if SEMI_STRUCTURED_QUAD else ''}{'_fine' if FINE else ''}{'_sec' if SECOND_ORDER else ''}{'_coarse' if COARSE else ''}.xdmf")
 
 from dolfinx.io import XDMFFile
 with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:

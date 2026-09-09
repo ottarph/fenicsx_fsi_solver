@@ -5,7 +5,7 @@ def test_fsi2_harmonic_diffmesh_solve(output_dirs):
     dt_val = 0.0025
     solve(
         # smaller stand-in for the default "mesh_quad_fine_sec.xdmf" mesh
-        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
+        mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
         # save_every=4 in the solver, so run enough steps to save at least 2 snapshots
         T=6 * dt_val,
         dt_val=dt_val,
