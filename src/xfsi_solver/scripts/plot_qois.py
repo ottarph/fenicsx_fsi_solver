@@ -9,11 +9,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Simplify plotted paths (dropping vertices that don't visibly change the
-# line) so the SVG output stays small despite the qoi series often having
-# several thousand points.
-matplotlib.rcParams["path.simplify"] = True
-matplotlib.rcParams["path.simplify_threshold"] = 1.0
+# Path simplification (dropping vertices that don't visibly change the
+# line) applied only to the SVG save below, so it stays small despite the
+# qoi series often having several thousand points, without also reducing
+# the PDF output's precision.
+_SVG_RC = {"path.simplify": True, "path.simplify_threshold": 1.0}
 
 # (column index into a qoi/reference array, y-axis label, output filename stem)
 _QOI_SPECS = [
@@ -70,14 +70,15 @@ def plot_qois(
         if series:
             plt.legend()
         plt.savefig(output_dir / f"{stem}.pdf")
-        plt.savefig(output_dir / f"{stem}.svg")
+        with matplotlib.rc_context(_SVG_RC):
+            plt.savefig(output_dir / f"{stem}.svg")
         plt.close()
 
 
 def main():
     plot_qois(
         biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
-        harmonic_path="output/qoi/fsi2_harm_dm_qoi.txt",
+        harmonic_path="output/old/qoi/fsi2_harm_dm_qoi.txt",
         reference_path="data/fsi2_reference.txt",
     )
 
