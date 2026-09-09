@@ -17,6 +17,12 @@ gmsh.initialize()
 
 QUADS = True
 MESH_ORDER = 1
+# Deliberately coarser mesh, for fast smoke-testing only (not for demo/production
+# use). Scales the resolution parameters up by COARSE_FACTOR and appends a
+# "_coarse" suffix to the output filename, so it never overwrites the regular
+# meshes.
+COARSE = False
+COARSE_FACTOR = 4.0
 
 L = 2.2
 H = 0.41
@@ -29,6 +35,10 @@ if QUADS:
 else:
     res_min = r / 6
     res_max = H / 8
+
+if COARSE:
+    res_min *= COARSE_FACTOR
+    res_max *= COARSE_FACTOR
 
 gdim = 2
 mesh_comm = MPI.COMM_WORLD
@@ -130,6 +140,6 @@ mesh = out.mesh
 ft = out.facet_tags
 ft.name = "Facet tags"
 
-with dolfinx.io.XDMFFile(mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if QUADS else 'tri'}.xdmf", "w") as xdmf:
+with dolfinx.io.XDMFFile(mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if QUADS else 'tri'}{'_coarse' if COARSE else ''}.xdmf", "w") as xdmf:
     xdmf.write_mesh(mesh)
     xdmf.write_meshtags(ft, mesh.geometry)
