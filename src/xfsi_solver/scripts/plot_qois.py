@@ -78,7 +78,7 @@ def plot_qois(
 def main():
     plot_qois(
         biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
-        harmonic_path="output/old/qoi/fsi2_harm_dm_qoi.txt",
+        harmonic_path="output/qoi/fsi2_harm_dm_qoi.txt",
         reference_path="data/fsi2_reference.txt",
     )
 

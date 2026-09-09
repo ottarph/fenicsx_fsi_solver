@@ -276,6 +276,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
             "snes_rtol": rtol,
             "snes_error_if_not_converged": True,
             "ksp_error_if_not_converged": True,
+            # "snes_monitor": "ascii:output/logs/fsi2_biharm_snes_log.txt",
+            "snes_monitor": None,
         },
     )
 
@@ -349,7 +351,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
 
 def main():
     solve(
-        mesh_path="data/meshes/fsi2/mesh.xdmf",
+        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=12.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_harm.bp",

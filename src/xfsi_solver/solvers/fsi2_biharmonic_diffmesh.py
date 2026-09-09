@@ -186,9 +186,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     bcs = [u_bc, inflow_bc, noslip_bc]
 
 
-    delta = dfx.fem.Constant(mesh, 1.0e7)
-
-
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
@@ -290,6 +287,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
             "snes_rtol": rtol,
             "snes_error_if_not_converged": True,
             "ksp_error_if_not_converged": True,
+            # "snes_monitor": "ascii:output/logs/fsi2_biharm_snes_log.txt",
+            "snes_monitor": None,
         },
     )
 
@@ -387,7 +386,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=12.0,
+        T=15.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm.bp",

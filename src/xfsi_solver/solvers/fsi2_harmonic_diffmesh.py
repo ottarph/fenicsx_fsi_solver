@@ -121,7 +121,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     U = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
     V = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
-    P = dfx.fem.functionspace(fluid_mesh, ("DG", 1))
+    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(U, V, P)
 
 
@@ -285,6 +285,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
             "snes_rtol": rtol,
             "snes_error_if_not_converged": True,
             "ksp_error_if_not_converged": True,
+            # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
+            "snes_monitor": None,
         },
     )
 
@@ -380,8 +382,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
 def main():
     solve(
-        mesh_path="data/meshes/fsi2/mesh_quad_fine_sec.xdmf",
-        T=12.0,
+        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
+        T=15.0, # Will fail at around t=7s
         dt_val=0.0025,
         output_path="output/pv/fsi2_harm_dm.bp",
         output_path_p="output/pv/fsi2_harm_p_dm.bp",
