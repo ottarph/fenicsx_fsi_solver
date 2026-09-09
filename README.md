@@ -54,3 +54,25 @@ conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_
 
 Some solvers expect mesh/reference data to already exist under ``data/`` (generated via the scripts in
 ``src/xfsi_solver/scripts/``) before they can run.
+
+## Solver naming
+
+Solver filenames are built from a base name (the benchmark or physics being solved, e.g. ``fsi2``,
+``dfg_2d_3``, ``navier_stokes``, ``solid_elasticity``) plus suffixes describing how that base problem is
+set up:
+
+- ``static``: a single steady-state solve, instead of a time-stepping loop.
+- ``ALE``: an arbitrary Lagrangian-Eulerian (moving-mesh) formulation.
+- ``mm``: the ALE mesh-motion equation is solved monolithically together with the flow at every time
+  step, instead of being precomputed once for the whole time series and read off a lookup table (as the
+  plain ``_ALE_fsi2`` variant does).
+- ``mm_bih``: like ``mm``, but the mesh motion uses the biharmonic (fourth-order) extension equation from
+  ``biharm.py`` instead of the plain harmonic (Laplace) extension used by ``mm``.
+- ``fullmesh``: interface/traction measures between the fluid and solid subdomains are built directly on
+  the full parent mesh (using dolfinx's ``entity_maps``), instead of on submesh-transferred facet tags.
+- ``diffmesh``: different fields of the same coupled problem are defined on *different* meshes, instead
+  of all sharing one mesh. For example, in ``fsi2_harmonic.py`` the pressure function space is defined on
+  the whole mesh (like displacement and velocity), whereas in ``fsi2_harmonic_diffmesh.py`` pressure is
+  defined only on a submesh of the fluid domain — since pressure is only physically meaningful there.
+  ``diffmesh`` variants require dolfinx's mixed-mesh assembly (``entity_maps``) to combine forms whose
+  fields live on different meshes.
