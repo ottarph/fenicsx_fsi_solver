@@ -5,7 +5,8 @@ def test_dfg_2d_3_solve(output_dirs):
     dt_val = 1 / 400
     solve(
         mesh_path="data/meshes/dfg2d_alt/mesh_quad.xdmf",
-        T=3 * dt_val,
+        # save_every=10 in the solver, so run enough steps to save at least 2 snapshots
+        T=21 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / "dfg_2d_3.bp"),
         output_path_p=str(output_dirs["pv"] / "dfg_2d_3_p.bp"),
