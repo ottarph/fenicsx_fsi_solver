@@ -294,9 +294,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     )
 
 
-    policy = dfx.io.VTXMeshPolicy.reuse
-    writer = dfx.io.VTXWriter(comm, output_path, [u,v], mesh_policy=policy)
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=policy)
+    writer = dfx.io.VTXWriter(comm, output_path, [u,v])
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)

@@ -185,8 +185,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     )
 
 
-    writer = dfx.io.VTXWriter(comm, output_path, [v], mesh_policy=dfx.io.VTXMeshPolicy.reuse)
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=dfx.io.VTXMeshPolicy.reuse)
+    writer = dfx.io.VTXWriter(comm, output_path, [v])
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     from timeit import default_timer as timer
 
