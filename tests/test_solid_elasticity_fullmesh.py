@@ -4,13 +4,13 @@ from xfsi_solver.component_solvers.solid_elasticity_fullmesh import solve
 
 
 @pytest.mark.parametrize(
-    "mesh_path",
-    ["data/meshes/fsi2/mesh_coarse.xdmf", "data/meshes/fsi2/mesh_quad_coarse.xdmf"],
+    "cell_type,mesh_path",
+    [("tri", "data/meshes/fsi2/mesh_coarse.xdmf"), ("quad", "data/meshes/fsi2/mesh_quad_coarse.xdmf")],
     ids=["tri", "quad"],
 )
-def test_solid_elasticity_fullmesh_solve(output_dirs, mesh_path):
+def test_solid_elasticity_fullmesh_solve(output_dirs, cell_type, mesh_path):
     dt_val = 0.0025
-    output_path = output_dirs["pv"] / "solid_elasticity_fm.bp"
+    output_path = output_dirs["pv"] / f"solid_elasticity_fm_{cell_type}.bp"
     solve(
         mesh_path=mesh_path,
         T=3 * dt_val,
