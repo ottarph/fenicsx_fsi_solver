@@ -9,6 +9,18 @@ The code is licensed under an MIT-license found in ``LICENSE``. Certain function
 of code authored by Jørgen S. Dokken, licensing and copyright information for this code is given in the 
 relevant files.
 
+## Formulation
+
+The monolithic FSI equations and their one-step-theta time discretization are based on the exposition in:
+
+> T. Wick, "Fluid-structure interactions using different mesh motion techniques," *Computers & Structures*,
+> vol. 89, no. 13-14, pp. 1456-1467, 2011. https://doi.org/10.1016/j.compstruc.2011.02.019
+
+As in that paper, the weak-form residual is assembled from terms grouped into four categories: time
+derivative terms, pressure terms, terms that must be treated fully implicitly, and the remaining
+(theta-weighted) terms. In code, these are the ``A_T(...)``, ``A_P(...)``, ``A_I(...)``, and ``A_E(...)``
+functions defined in each monolithic solver (e.g. ``src/xfsi_solver/solvers/fsi2_harmonic.py``).
+
 ## Installation
 
 The non-Python dependencies (``fenics-dolfinx``, ``mpich``, ``gmsh``, ``adios2``, ``scifem``, ...) are
