@@ -55,6 +55,19 @@ conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_
 Some solvers expect mesh/reference data to already exist under ``data/`` (generated via the scripts in
 ``src/xfsi_solver/scripts/``) before they can run.
 
+## Reference data
+
+``plot_qois.py`` compares solver output against the published FSI2 benchmark reference values, which
+aren't included in this repository. To generate ``data/fsi2_reference.txt``:
+
+1. Download ``ref_fsi2.point`` from the FeatFlow FSI benchmark reference page:
+   https://wwwold.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/fsi_benchmark/fsi_reference.html,
+   and place it at the repository root.
+2. Run:
+   ```bash
+   conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.scripts.prepare_FSI2_reference_values
+   ```
+
 ## Solver naming
 
 Solver filenames are built from a base name (the benchmark or physics being solved, e.g. ``fsi2``,
