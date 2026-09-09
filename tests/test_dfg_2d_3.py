@@ -1,10 +1,20 @@
+import pytest
+
 from xfsi_solver.solvers.dfg_2d_3 import solve
 
 
-def test_dfg_2d_3_solve(output_dirs):
+@pytest.mark.parametrize(
+    "mesh_path",
+    [
+        "data/meshes/dfg2d_alt/mesh_tri_coarse.xdmf",
+        "data/meshes/dfg2d_alt/mesh_quad_coarse.xdmf",
+    ],
+    ids=["tri", "quad"],
+)
+def test_dfg_2d_3_solve(output_dirs, mesh_path):
     dt_val = 1 / 400
     solve(
-        mesh_path="data/meshes/dfg2d_alt/mesh_quad_coarse.xdmf",
+        mesh_path=mesh_path,
         # save_every=10 in the solver, so run enough steps to save at least 2 snapshots
         T=21 * dt_val,
         dt_val=dt_val,

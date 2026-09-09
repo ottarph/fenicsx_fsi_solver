@@ -140,8 +140,22 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     num_steps = u_bc_arr.shape[0]
 
 
+    # ufl.CellVolume() is only supported by FFCx for affine (simplex) cells,
+    # so it cannot be evaluated directly on a quadrilateral mesh. Precompute
+    # the (fixed, reference-configuration) per-cell volumes into a DG0
+    # Function instead: assembling the linear form ``v0 * dx`` for a DG0
+    # test function v0 gives exactly ``\int_K 1 dx = volume(K)`` in each
+    # entry, since v0 is 1 on its own cell and 0 elsewhere. This is
+    # equivalent to ufl.CellVolume for simplices too, and works for any
+    # cell type.
+    V0 = dfx.fem.functionspace(fluid_mesh, ("DG", 0))
+    cell_volume = dfx.fem.Function(V0, name="cell_volume")
+    cell_volume_vec = dfx.fem.assemble_vector(dfx.fem.form(ufl.TestFunction(V0) * dx))
+    cell_volume.x.array[:] = cell_volume_vec.array
+    cell_volume.x.scatter_forward()
+
     alpha_0 = 1.0e-2
-    alpha = alpha_0 * ufl.CellVolume(fluid_mesh)**(-2)
+    alpha = alpha_0 * cell_volume**(-2)
 
     # update u_old and u with correct ale fields
 
@@ -261,7 +275,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     # For simplicity, use a harmonic mesh motion with h-based stiffening.
 
     alpha_0 = 1.0e-2
-    alpha = alpha_0 * ufl.CellVolume(fluid_mesh)**(-2)
+    alpha = alpha_0 * cell_volume**(-2)
     residual += ufl.inner(alpha * ufl.grad(u), ufl.grad(du)) * dx
 
     #--------------------------------------------
