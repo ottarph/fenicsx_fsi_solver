@@ -1,8 +1,13 @@
 # Plan: remeshing for the FSI2 benchmark (harmonic mesh motion)
 
-Status: **design/planning only, nothing in this document is implemented
-yet.** See [`literature-review.md`](literature-review.md) for the background
-that motivates the choices below.
+Status: **Phases 1-4 (§7) are implemented**, in
+`src/xfsi_solver/remeshing/` with tests in `tests/test_remeshing_*.py` —
+a working, tested, standalone fluid-domain remeshing loop. Phase 5
+(swapping in a real fluid-only solve) and the deferred monolithic-FSI
+-integration work are not started. See [`literature-review.md`](literature-review.md)
+for the background that motivates the choices below, and §9 for a summary
+of what was actually built, including two real design corrections made
+during implementation that are worth reading before extending this code.
 
 Revision note: this version narrows the plan further per review. The current
 goal is **only** a standalone fluid-domain remeshing capability: a fluid-only
@@ -390,3 +395,88 @@ solver file.
 - **Interpolation accuracy at the exact new interface boundary**: where
   `padding` in `create_interpolation_data` matters most (§5/§6) — needs
   explicit test coverage in Phase 3, not just an average-case error check.
+
+## 9. Implementation status (Phases 1-4 done)
+
+Code lives in `src/xfsi_solver/remeshing/`, tests in
+`tests/test_remeshing_*.py` (23 tests, ~4s total). What's there and how it
+maps to the phases above:
+
+- `fsi2_geometry.py`, `markers.py` — the FSI2 geometry constants and
+  `PHYSICAL_MARKERS`, duplicated from (kept consistent with)
+  `create_mesh_FSI2.py` (§3's flagged refactor still not done repo-wide).
+- `fluid_domain.py` — Phase-1-adjacent: extracts the fluid-only submesh
+  (`create_submesh` + `transfer_meshtags_to_submesh`).
+- `deformation.py` — Phase 1's prescribed deformation, **plus**
+  `incremental_interface_deformation`, added during Phase 4 (see below) for
+  chaining multiple deformation+remesh segments.
+- `quality.py` — the vendored `pvmeshquality` (§3), used as-is.
+- `discrete_mesh.py` — Phase 2/2a's `regenerate_fluid_mesh`: the discrete
+  -mesh round trip through gmsh, calibrated `CLASSIFY_ANGLE = π/3` (60°,
+  not the tighter-looking 30° — see the finding below).
+- `transfer.py` — Phase 3's `transfer_field`, with `DEFAULT_PADDING`
+  calibrated to `1e-2` (see finding below).
+- `dof_geometry.py` — a utility that turned out to be necessary and is not
+  mentioned in the phase plan above: converting between a mesh's geometry
+  -node order and a CG1 function space's dof order (see finding below).
+- `loop.py` — Phase 4's `run_prescribed_deformation_loop`, combining all of
+  the above; validated over 150 steps / 9 remesh events in ~4.5s, reaching
+  roughly 10x the total bending amplitude a single un-remeshed segment can
+  sustain before cells invert.
+
+Empirical findings from actually building this, beyond what was
+anticipated in §8 above:
+
+- **`classifySurfaces`' angle threshold is not a minor tuning knob.** 30°
+  (a plausible-looking default) makes it split a smoothly bent boundary
+  into hundreds of spurious curves from ordinary mesh-resolution noise, and
+  the pipeline can *hang* for minutes rather than erroring. 60° cleanly
+  recovers the true 8-curve FSI2 boundary topology (4 straight channel
+  walls, the obstacle arc, 3 flag edges) in both the undeformed and
+  moderately-deformed case, in well under a second. Confirms and sharpens
+  the risk noted in §8.
+- **`regenerate_fluid_mesh` can hang, not fail cleanly, on an
+  already-inverted (self-intersecting) boundary.** This isn't a corner case
+  to special-case around after the fact -- it's *why* the remesh trigger
+  has to fire on early degradation. `loop.py` now runs a cheap, independent
+  inversion check (signed corner-triangle area) *before* ever calling
+  `regenerate_fluid_mesh`, raising `RuntimeError` instead. This also means
+  `quality_threshold` needs a real margin, not just ">0": quality vs.
+  amplitude was found to fall off a cliff over a handful of steps once it
+  starts degrading, so a too-low threshold plus a not-small-enough step can
+  let the *next* check land past actual inversion.
+- **Mesh-geometry-node order and CG1 dof order are genuinely different**,
+  confirmed by direct comparison on the FSI2 fluid mesh (same set of
+  points, different order) -- not just a theoretical possibility. An early
+  version of the Phase 1 code added a CG1 `Function`'s raw `.x.array`
+  directly to `mesh.geometry.x`, silently scrambling the mesh (hundreds of
+  spurious "corners" downstream in `classifySurfaces`, traced back to this).
+  `dof_geometry.py`'s permutation utility (derived from matching per-cell
+  local vertex order between the geometry dofmap and a same-degree CG1
+  space's dofmap) exists specifically to stop this class of bug from
+  recurring, and `discrete_mesh.py`/`loop.py` now consistently work in
+  geometry-node order (talking to gmsh) or CG1 dof order (talking to
+  pvmeshquality), never mixing the two without going through it.
+- **`transfer.DEFAULT_PADDING` needed recalibrating from the value picked
+  in the previous plan revision** (`1e-3`): with a coarser sizing
+  (`size_far=0.06`), that value still left points near the far-field
+  boundary silently un-interpolated (stuck at 0 -- a large, easy-to-miss
+  error, not a small numerical one). `1e-2` resolved it. Confirms §8's
+  general point but the specific number needed updating once tested against
+  a real (not just fine) sizing configuration.
+- **A field cannot be transferred across a remesh to recover a mesh node's
+  true material reference position, no matter how it's implemented** -- a
+  genuine mathematical dead end discovered while building Phase 4's loop,
+  not a bug in the transfer machinery itself (see `loop.py`'s module
+  docstring for the full explanation: transferring a mesh's own identity
+  geometry via nonmatching interpolation always returns the query point
+  itself, carrying zero information about where it "really" started out).
+  This forced a design change: `loop.py` drives the deformation
+  incrementally, decaying from the mesh's *current* interface position
+  (needs no cross-mesh tracking) rather than a fixed original position
+  (which would need it). This is very likely relevant to the deferred
+  monolithic-integration work too (§2/§7): whatever eventually tracks
+  accumulated structural state across a remesh event will need either a
+  genuinely solved extension field (not a transferred identity-like one)
+  or a reformulation that, like this loop's fix, avoids needing "true
+  reference position" at all.
