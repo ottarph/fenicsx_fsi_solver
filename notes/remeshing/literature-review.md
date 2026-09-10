@@ -159,6 +159,16 @@ approach developed in the implementation plan.
   references) — it is a good template to copy from rather than a new
   integration to prove out.
 
+Note: after this review was written, the plan's scope was narrowed to
+**fluid-only remeshing** (the solid Lagrangian mesh is never regenerated,
+consistent with the point above that the solid's material description
+doesn't accumulate the kind of distortion the ALE mesh-motion PDE does), and
+the mesh-quality trigger metric is implemented by reusing
+[`ottarph/pvmeshquality`](https://github.com/ottarph/pvmeshquality)
+(PyVista/VTK `cell_quality`, e.g. `scaled_jacobian`) rather than a custom
+UFL-based Jacobian expression. See `implementation-plan.md` for the current
+scope and phasing.
+
 ## 5. Practitioner input: DOLFINx ↔ gmsh discrete-mesh round trip (recommended mechanism)
 
 A FEniCSx expert pointed at
@@ -261,3 +271,6 @@ prototyping before relying on it.
   preserved; see §5.
 - gmsh example: [`examples/api/glue_and_remesh_stl.py`](https://gitlab.onelab.info/gmsh/gmsh/-/raw/master/examples/api/glue_and_remesh_stl.py)
   — canonical `classifySurfaces` → `createGeometry` → remesh sequence.
+- [`ottarph/pvmeshquality`](https://github.com/ottarph/pvmeshquality) —
+  mesh-quality metric tool (PyVista/VTK `cell_quality`), used for the
+  remesh trigger; see `implementation-plan.md` §3/§4.
