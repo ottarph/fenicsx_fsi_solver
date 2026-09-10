@@ -16,6 +16,7 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
 
 ## Conventions
 - Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
+- The `scaled_jacobian` mesh-quality measure (e.g. via PyVista/Verdict's `cell_quality`, as used in `src/xfsi_solver/remeshing/quality.py`) is implemented so that it is **non-negative for triangle cells regardless of orientation**, due to how Verdict computes it. This means it can never be used, by itself, to detect an inverted/degenerate triangle — it will not go negative or hit zero the way it does for other cell types. It is fine for tracking relative mesh quality (e.g. a remeshing trigger threshold), but any check for actual cell inversion on a triangle mesh must use an independent method, such as signed cell area (or `det(F)` in a solve context), never `scaled_jacobian` alone.
 - Import `dolfinx.fem.petsc` explicitly right below `import dolfinx as dfx`, and reference it as `dfx.fem.petsc.X` (not a separate alias like `dfpetsc`):
   ```python
   import dolfinx as dfx
