@@ -31,7 +31,7 @@ def old_and_new_fluid_domain():
     displacement = prescribed_interface_deformation(amplitude=0.05)(X.T)
     X[:, 0] += displacement[0]
     X[:, 1] += displacement[1]
-    new = regenerate_fluid_mesh(old.mesh, X, sizing=TEST_SIZING)
+    new = regenerate_fluid_mesh(old, X, sizing=TEST_SIZING)
     return old, new
 
 

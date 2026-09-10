@@ -189,7 +189,7 @@ def run_prescribed_deformation_loop(
                     "cannot reliably remesh a self-intersecting boundary (see discrete_mesh.py). Use a "
                     "higher quality_threshold and/or a finer step_amplitude so a remesh triggers earlier."
                 )
-            new_domain = regenerate_fluid_mesh(domain.mesh, geometry, sizing=sizing)
+            new_domain = regenerate_fluid_mesh(domain, geometry, sizing=sizing)
 
             V_new = dfx.fem.functionspace(new_domain.mesh, ("CG", 1))
             carried_field = transfer_field(carried_field, V_new)

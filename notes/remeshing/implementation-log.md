@@ -147,7 +147,7 @@ matching the known FSI2 geometry constants to high precision. But on a
 *deformed* mesh, 30° caused `classifySurfaces` to detect hundreds of
 spurious "corners" from ordinary mesh-resolution noise along the smoothly
 bent boundary, and the pipeline effectively hung (a background run was left
-running for ~29 minutes before it was noticed and killed — see §6). Raising
+running for ~29 minutes before it was noticed and killed — see §8). Raising
 the angle to 60° fixed both: the deformed case recovers the same clean
 8-curve topology, in well under a second, for every amplitude tested.
 
@@ -325,7 +325,110 @@ dropping below roughly `0.31` at any point — the "sawtooth" pattern of
 degrade-then-reset that's exactly what a working remesh-on-demand scheme
 should produce.
 
-## 6. Housekeeping along the way
+## 6. A VTX test to actually see it: `tests/test_remeshing_vtx_output.py`
+
+Requested directly: a test that writes the changing mesh and a field to
+disk via `VTXWriter` so the remeshing process can be inspected visually in
+ParaView, following the existing solver-test convention (`output_dirs`
+fixture — tmp dir by default, `output/test/pv` with
+`XFSI_KEEP_TEST_OUTPUT=1`).
+
+Two things had to be worked out, both because Phase 4's loop produces a
+genuinely *new* `dolfinx.mesh.Mesh` object at each remesh event (different
+node/cell counts), not just moved points on a fixed topology:
+
+- **One `VTXWriter`, and hence one `.bp` file, per remesh segment.**
+  `VTXWriter`'s own docstring says "all Functions for output must share the
+  same mesh" — confirmed to matter, not just a formality, when a second
+  writer opened against a `Function` on a *different* mesh produced no
+  error but also no indication it was doing the right thing. The safe,
+  simple design: close the old writer and open a new one (new filename)
+  whenever `regenerate_fluid_mesh` produces a new mesh. Within a segment,
+  the mesh's own geometry is temporarily set to the current deformed
+  position before each `write()` call and restored immediately after —
+  `accumulated_displacement`/`regenerate_fluid_mesh`/the quality check all
+  still expect `domain.mesh.geometry.x` to be the fixed start-of-segment
+  reference, exactly as in `loop.py` itself, so the mutation can't be left
+  in place.
+- **Consecutive segments don't overlap in time by default, so the remesh
+  is invisible.** The first version gave each segment its own increasing
+  timestamps (segment 0: `t=0..10`, segment 1: `t=11..19`), which looked
+  fine but meant no single moment in ParaView ever showed both the old
+  mesh's final state and the new mesh's fresh triangulation together — the
+  transition read as a cut between two unrelated files, not a
+  re-triangulation of the same shape. Fixed on request: each new segment's
+  *first* write reuses the previous segment's *last* timestamp instead of
+  the next one (confirmed via the raw ADIOS2 `step` variable: both segments
+  now genuinely share `t=10.0` before the new one continues onward), so
+  scrubbing to that instant shows both meshes at once.
+
+## 7. Replacing `classifySurfaces` with curves built directly from `facet_tags`
+
+Jørgen Dokken (a DOLFINx core developer — the same person whose earlier
+gist shaped the discrete-mesh-round-trip mechanism in the first place, see
+§1) suggested directly, mid-session: since the fluid mesh's boundary
+facets are already correctly tagged (`facet_tags`), build gmsh's boundary
+curves *from those tags* via `dolfinx.mesh.entities_to_geometry`, instead
+of asking `classifySurfaces` to rediscover the boundary from the discrete
+surface's own geometry and then re-classifying the result by bounding box.
+
+This replaced `discrete_mesh.py`'s curve-recovery step entirely (its
+module docstring is the up-to-date reference; `implementation-plan.md` §6
+was also rewritten to match). Working it out took a few real iterations,
+prototyped the same way as the original `classifySurfaces` mechanism was
+(§3) — build it, run it, read the actual gmsh error, fix it:
+
+- A first attempt built discrete curve entities straight from each tagged
+  facet group's edges, with no declared endpoints. `createGeometry` failed
+  outright: "Discrete curve N has no begin or end point." A discrete curve
+  needs explicit discrete *point* entities at its two ends (or none, for a
+  genuinely closed loop) — found via a small union-find over each
+  facet-tag group's edges to get connected components (a group can be
+  disconnected — "channel_side" is the top *and* bottom walls under one
+  tag), then the degree-1 nodes of each component's edge graph as its
+  endpoints. Shared junction points (e.g. where "inflow" meets
+  "channel_side" at a channel corner) are looked up by geometry node index
+  and reused across the two curves that meet there, not recreated, so the
+  topology is genuinely connected rather than merely visually coincident.
+- With that fixed, `createGeometry` succeeded — but `generate` then failed
+  silently, reporting "only 0 nodes on the boundary" and producing an empty
+  mesh with no error raised. The 2D discrete surface entity had been
+  created (as in the old version) with no declared relationship to the new
+  curves; it needs an explicit `boundary=<every curve tag>` argument at
+  creation, which in turn means the curves have to be built *before* the
+  surface, not after (the old ordering, which built the surface first since
+  `classifySurfaces` needed it to already exist to search for a boundary).
+- With both fixed, the whole thing worked immediately, and turned out to
+  need `classifySurfaces` not at all any more — going straight to
+  `createGeometry()` on the manually-built topology was sufficient. Checked
+  against undeformed and deformed input as before (§3), plus specifically
+  re-checked at amplitudes that are already known to be past actual cell
+  inversion in the source mesh (0.08 and 0.1, vs. the earlier ~0.05
+  no-remesh working range): this version regenerated a good-quality mesh
+  cleanly at 0.1 — a case that would have been well into
+  `classifySurfaces`-hang territory for the old version, or at least never
+  actually tested that far since the old version's fragility made it seem
+  unwise to push. The likely reason: curve recovery here depends only on
+  the facet tags, not on the discrete surface's own (possibly locally
+  distorted, near an already-inverted region) triangulation the way
+  `classifySurfaces`' automatic boundary detection did. It still hangs
+  somewhere beyond that once the boundary itself actually self-intersects
+  (tested up to amplitude 1.0, where it does) — the fundamental limitation
+  is unchanged, just with more headroom before hitting it, and `loop.py`'s
+  independent inversion guard (§5.2) still does the actual job of never
+  letting the trigger get that close in practice.
+- Net effect on the rest of the codebase: `regenerate_fluid_mesh`'s
+  signature changed from taking a bare `dolfinx.mesh.Mesh` to taking the
+  whole `FluidDomain` (mesh + facet tags together), since the facet tags
+  are now load-bearing rather than optional. `_classify_curve` (the
+  FSI2-specific bounding-box heuristic) and the `CLASSIFY_ANGLE` constant
+  are both gone; nothing in the new version depends on the specific FSI2
+  geometry constants at all, only on the input mesh's own tags. All 24
+  tests were updated for the new call signature and continue to pass, in
+  slightly less wall-clock time than before (no more
+  `classifySurfaces`/angle-detection overhead).
+
+## 8. Housekeeping along the way
 
 - **Local dev data.** `data/` (meshes, precomputed boundary data, FeatFlow
   reference values) is gitignored and wasn't present in this worktree by
@@ -352,9 +455,9 @@ should produce.
   question for whoever looks at this next: no, the two branches never
   diverged.
 
-## 7. What's implemented, and what's explicitly not
+## 9. What's implemented, and what's explicitly not
 
-**Implemented and tested** (`src/xfsi_solver/remeshing/`, 23 tests across
+**Implemented and tested** (`src/xfsi_solver/remeshing/`, 24 tests across
 `tests/test_remeshing_*.py`, all passing in a few seconds):
 `fsi2_geometry.py`, `markers.py`, `fluid_domain.py`, `deformation.py`,
 `quality.py`, `discrete_mesh.py`, `transfer.py`, `dof_geometry.py`,

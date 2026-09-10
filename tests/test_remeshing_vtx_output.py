@@ -85,7 +85,7 @@ def test_vtx_output_across_remesh_events(output_dirs):
         if min_quality < QUALITY_THRESHOLD:
             geometry = domain.mesh.geometry.x.copy()
             geometry[:, :2] += accumulated_displacement
-            new_domain = regenerate_fluid_mesh(domain.mesh, geometry, sizing=TEST_SIZING)
+            new_domain = regenerate_fluid_mesh(domain, geometry, sizing=TEST_SIZING)
 
             writer.close()
             domain = new_domain

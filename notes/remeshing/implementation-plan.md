@@ -226,49 +226,72 @@ mesh's *current* physical boundary. After transfer, reset the ALE
 displacement `u ← 0` (`u_old ← 0` too, once history exists) since the new
 mesh *is* the current configuration.
 
-## 6. Fluid-mesh regeneration mechanics
+## 6. Fluid-mesh regeneration mechanics (as implemented — see §9)
 
-**Recommended mechanism (per expert input — see `literature-review.md` §5):
-DOLFINx discrete-mesh round trip through gmsh, not hand-built splines.**
-Scoped now to the fluid region only:
+**Mechanism, current version: DOLFINx discrete-mesh round trip through
+gmsh, with boundary curves built directly from the mesh's own facet tags**
+(not hand-built splines, and — as of this revision — not recovered by
+asking gmsh to guess the boundary either; see below). Implemented in
+`src/xfsi_solver/remeshing/discrete_mesh.py::regenerate_fluid_mesh`; the
+module's own docstring is the authoritative, up-to-date reference for the
+mechanics and the empirical findings behind each choice below.
 
-1. Gather (rank 0, since a fresh `gmsh.model.mesh.generate` call only runs on
-   `gmsh_model_rank`) the *deformed* geometry of the fluid submesh:
-   `X_deformed = fluid_mesh.geometry.x + u|_fluid` for every node of every
-   fluid cell, together with the existing cell connectivity
-   (`dolfinx.mesh.entities_to_geometry`). In the current scope (§2), `u` here
-   is the prescribed interface function evaluated on the interface boundary,
-   extended over the rest of the fluid domain by a simple closed-form
-   formula (e.g. a distance-weighted blend to zero at the fixed outer
-   boundary) — **not** a harmonic-extension PDE solve, to keep the earliest
-   phases free of any FE computation per review. Actually solving a mesh
-   -motion (or full fluid ALE) PDE on this fluid-only domain is a reasonable
-   later increment (§7 Phase 5) but is a distinct step from remeshing itself.
-2. Feed that into gmsh as a **discrete entity** (`gmsh.model.addDiscreteEntity`
-   + `gmsh.model.mesh.addNodes` + `gmsh.model.mesh.addElementsByType`,
-   following Dokken's pattern from `literature-review.md` §5), reproducing
-   the current, possibly near-degenerate, fluid triangulation inside gmsh.
-3. `gmsh.model.mesh.classifySurfaces(angle)` to recover sharp-feature curves
-   from the discrete boundary (channel corners, the cylinder/flag boundary,
-   the interface with the solid — these already coincide with
-   `PHYSICAL_MARKERS` boundary-piece transitions), then
-   `gmsh.model.mesh.createGeometry()` to reparametrize them into genuine,
-   remeshable CAD curves.
-4. Re-tag the recovered curves using (plausibly, to be checked) the same
-   classification logic `create_mesh_FSI2.py:146-175` already has, and
-   re-apply the same graded sizing-field logic.
-5. Discard the old triangulation, `gmsh.model.mesh.generate(2)` +
-   `gmsh.model.mesh.setOrder(2)` (once quads/second-order are back in scope,
-   §7) fresh, then `dolfinx.io.gmsh.model_to_mesh(...)`.
-6. Rebuild `fluid_mesh` and everything defined on it (function spaces,
+1. Gather the *deformed* geometry of the fluid mesh: `X_deformed =
+   fluid_mesh.geometry.x + u` for every geometry node, together with the
+   existing cell connectivity (only the 3 corner nodes per cell/facet are
+   used, regardless of mesh order — see the module docstring for why).
+2. Feed the 2D cells into gmsh as a **discrete entity**
+   (`gmsh.model.addDiscreteEntity` + `addNodes` + `addElementsByType`,
+   following Dokken's pattern from `literature-review.md` §5).
+3. **Build the 1D boundary curves directly from `facet_tags`**, per a
+   suggestion from Jørgen Dokken (a DOLFINx core developer) given directly
+   during this work: for each `PHYSICAL_MARKERS` value present, use
+   `dolfinx.mesh.entities_to_geometry(mesh, 1, facets)` to map each tagged
+   facet to its geometry node indices, split into connected components
+   (a physical group can be geometrically disconnected — e.g.
+   "channel_side" is the top *and* bottom walls under one tag), and build
+   one gmsh discrete curve entity per component, with explicit discrete
+   point entities (shared across curves that meet there) at its two
+   endpoints. Tag each curve directly with the *known* marker value —
+   no classification/guessing needed, since the DOLFINx meshtag already
+   said which physical group each facet belongs to.
+   - This **replaces** an earlier version of this step that instead ran
+     `gmsh.model.mesh.classifySurfaces(angle)` to auto-detect the boundary
+     from the discrete surface's own geometry, then classified the
+     resulting curves by bounding box against the known FSI2 geometry
+     constants. That version worked (see §9's now-historical
+     `classifySurfaces`-angle-threshold finding) but was FSI2-specific
+     (hardcoded geometry constants), fragile to the angle-threshold choice,
+     and — found only once superseded — considerably more sensitive to the
+     *source* mesh's own triangulation quality than the meshtag-based
+     version turned out to be. Kept only as a documented fallback if a
+     future geometry's facet tags aren't fine-grained enough to build
+     curves from directly.
+4. Build the 2D surface as a discrete entity too, this time declaring
+   `boundary=<every curve tag from step 3>` (required — without it,
+   `generate` silently produces an empty mesh rather than raising), then
+   `gmsh.model.mesh.createGeometry()` to reparametrize the whole thing
+   (curves and surface) into genuine, remeshable CAD entities.
+5. Re-apply the graded sizing-field logic, using the curve-tag groups
+   already known exactly from step 3 (no re-derivation needed).
+6. Discard the old triangulation, `gmsh.model.mesh.generate(2)` +
+   `gmsh.model.mesh.setOrder(...)` fresh, then
+   `dolfinx.io.gmsh.model_to_mesh(...)`.
+7. Rebuild `fluid_mesh` and everything defined on it (function spaces,
    whatever fields the current prototype stage is carrying — see §5) from
    this new mesh. There is no solid side to worry about in this scope (§2).
 
-*Fallback*, unchanged from the previous revision: hand-built
-`gmsh.model.occ.addSpline`/`addBSpline` boundary curves from ordered,
-ONLY-boundary DOF coordinates, if `classifySurfaces`/`createGeometry`
-doesn't behave well for this domain — see §7 Phase 2a, which exists
-specifically to check this early.
+The hard limitation carries over unchanged from the earlier version: this
+only works while the deformed boundary is still a *simple*
+(non-self-intersecting) curve. Feeding it an already-inverted mesh can
+still hang rather than fail cleanly (§8, and see `loop.py`'s independent
+inversion guard, §9).
+
+*Fallback if facet tags aren't available/fine-grained enough for a future
+geometry*: hand-built `gmsh.model.occ.addSpline`/`addBSpline` boundary
+curves from ordered, boundary-only DOF coordinates, or fall back further to
+`classifySurfaces`-based automatic recovery (step 3 above, superseded but
+still a working reference implementation if needed).
 
 ## 7. Phased implementation plan
 
@@ -399,7 +422,7 @@ solver file.
 ## 9. Implementation status (Phases 1-4 done)
 
 Code lives in `src/xfsi_solver/remeshing/`, tests in
-`tests/test_remeshing_*.py` (23 tests, ~4s total). What's there and how it
+`tests/test_remeshing_*.py` (24 tests, ~4s total). What's there and how it
 maps to the phases above:
 
 - `fsi2_geometry.py`, `markers.py` — the FSI2 geometry constants and
@@ -412,8 +435,9 @@ maps to the phases above:
   chaining multiple deformation+remesh segments.
 - `quality.py` — the vendored `pvmeshquality` (§3), used as-is.
 - `discrete_mesh.py` — Phase 2/2a's `regenerate_fluid_mesh`: the discrete
-  -mesh round trip through gmsh, calibrated `CLASSIFY_ANGLE = π/3` (60°,
-  not the tighter-looking 30° — see the finding below).
+  -mesh round trip through gmsh, with boundary curves built directly from
+  `facet_tags` via `entities_to_geometry` (see the finding below — this
+  replaced an earlier `classifySurfaces`-based version).
 - `transfer.py` — Phase 3's `transfer_field`, with `DEFAULT_PADDING`
   calibrated to `1e-2` (see finding below).
 - `dof_geometry.py` — a utility that turned out to be necessary and is not
@@ -427,14 +451,44 @@ maps to the phases above:
 Empirical findings from actually building this, beyond what was
 anticipated in §8 above:
 
-- **`classifySurfaces`' angle threshold is not a minor tuning knob.** 30°
-  (a plausible-looking default) makes it split a smoothly bent boundary
-  into hundreds of spurious curves from ordinary mesh-resolution noise, and
-  the pipeline can *hang* for minutes rather than erroring. 60° cleanly
-  recovers the true 8-curve FSI2 boundary topology (4 straight channel
+- **(Historical, superseded below) `classifySurfaces`' angle threshold is
+  not a minor tuning knob.** The first working version of `discrete_mesh.py`
+  recovered boundary curves by asking gmsh's `classifySurfaces` to
+  auto-detect them from the discrete surface's own geometry. 30° (a
+  plausible-looking default) made it split a smoothly bent boundary into
+  hundreds of spurious curves from ordinary mesh-resolution noise, and the
+  pipeline could *hang* for minutes rather than erroring; 60° cleanly
+  recovered the true 8-curve FSI2 boundary topology (4 straight channel
   walls, the obstacle arc, 3 flag edges) in both the undeformed and
-  moderately-deformed case, in well under a second. Confirms and sharpens
-  the risk noted in §8.
+  moderately-deformed case, in well under a second. This finding is kept
+  here for the record — it directly informed the design decision below —
+  but no longer describes the current implementation.
+- **Building boundary curves directly from the mesh's own `facet_tags`,
+  instead of asking gmsh to guess and then reclassifying by bounding box,
+  is both simpler and more robust** — a suggestion from Jørgen Dokken (a
+  DOLFINx core developer) given directly during this work, implemented via
+  `dolfinx.mesh.entities_to_geometry` (§6 has the mechanics). Tags are now
+  exact by construction rather than inferred, which also removed the
+  FSI2-specific hardcoded-geometry-constants bounding-box heuristic
+  entirely (more general, not just simpler). It turned out to bring a
+  second, unanticipated benefit: because curve recovery no longer depends
+  on the discrete surface's own triangulation quality (only on the facet
+  tags, which are correct regardless of how distorted the interior cells
+  have become), it tolerates a considerably worse-quality *source* mesh
+  than the `classifySurfaces`-based version did before hitting the same
+  "can hang past actual inversion" limitation (§8) — a geometry that made
+  the old version struggle regenerates cleanly with this one. The
+  fundamental limitation (needs a still-simple, non-self-intersecting
+  boundary) is unchanged and still guarded against by `loop.py`'s
+  independent inversion check, not by this mechanism itself.
+- **A discrete curve needs explicit point entities at its endpoints, and
+  the discrete surface needs an explicit `boundary=` reference to its
+  curves** — neither is optional once you're building the topology by hand
+  instead of letting `classifySurfaces` infer it. Omitting the former makes
+  `createGeometry` fail outright ("has no begin or end point"); omitting
+  the latter makes `generate` silently produce an *empty* mesh rather than
+  raising ("only 0 nodes on the boundary") — worth calling out since that
+  failure mode gives no indication of what's actually wrong.
 - **`regenerate_fluid_mesh` can hang, not fail cleanly, on an
   already-inverted (self-intersecting) boundary.** This isn't a corner case
   to special-case around after the fact -- it's *why* the remesh trigger

@@ -26,7 +26,7 @@ def test_regenerate_undeformed_matches_original(mesh_path):
     original_area = _area(fd.mesh)
     original_degree = fd.mesh.geometry.cmaps[0].degree
 
-    new_fd = regenerate_fluid_mesh(fd.mesh, fd.mesh.geometry.x, sizing=TEST_SIZING)
+    new_fd = regenerate_fluid_mesh(fd, fd.mesh.geometry.x, sizing=TEST_SIZING)
 
     assert new_fd.mesh.geometry.cmaps[0].degree == original_degree
     assert _area(new_fd.mesh) == pytest.approx(original_area, rel=5e-3)
@@ -46,7 +46,7 @@ def test_regenerate_deformed_produces_valid_mesh(mesh_path):
     X[:, 0] += displacement[0]
     X[:, 1] += displacement[1]
 
-    new_fd = regenerate_fluid_mesh(fd.mesh, X, sizing=TEST_SIZING)
+    new_fd = regenerate_fluid_mesh(fd, X, sizing=TEST_SIZING)
 
     V = dfx.fem.functionspace(new_fd.mesh, ("CG", 1, (2,)))
     mq = MeshQuality(quality_measure="scaled_jacobian", fspace=V)
@@ -62,13 +62,13 @@ def test_regenerate_chains_across_successive_remesh_events():
     the original FSI2 mesh."""
     fd = load_fsi2_fluid_domain("data/meshes/fsi2/mesh.xdmf")
 
-    fd_1 = regenerate_fluid_mesh(fd.mesh, fd.mesh.geometry.x, sizing=TEST_SIZING)
+    fd_1 = regenerate_fluid_mesh(fd, fd.mesh.geometry.x, sizing=TEST_SIZING)
 
     X = fd_1.mesh.geometry.x.copy()
     displacement = prescribed_interface_deformation(amplitude=0.03)(X.T)
     X[:, 0] += displacement[0]
     X[:, 1] += displacement[1]
-    fd_2 = regenerate_fluid_mesh(fd_1.mesh, X, sizing=TEST_SIZING)
+    fd_2 = regenerate_fluid_mesh(fd_1, X, sizing=TEST_SIZING)
 
     assert fd_2.mesh.topology.index_map(2).size_local > 0
     assert _area(fd_2.mesh) == pytest.approx(_area(fd.mesh), rel=5e-3)
