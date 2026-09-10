@@ -159,7 +159,84 @@ approach developed in the implementation plan.
   references) — it is a good template to copy from rather than a new
   integration to prove out.
 
-## 4. Sources consulted
+## 5. Practitioner input: DOLFINx ↔ gmsh discrete-mesh round trip (recommended mechanism)
+
+A FEniCSx expert pointed at
+[scientificcomputing/fenics-in-the-wild#6](https://github.com/scientificcomputing/fenics-in-the-wild/issues/6),
+a script by Jørgen S. Dokken (DOLFINx core developer) that converts a DOLFINx
+mesh (read from XDMF, with cell markers) directly into a gmsh mesh by feeding
+gmsh its raw nodes/elements as **discrete entities**, rather than rebuilding
+CAD geometry by hand:
+
+```python
+gmsh.model.addDiscreteEntity(0, 1)
+gmsh.model.mesh.addNodes(0, 1, node_tags, mesh.geometry.x.flatten())
+...
+for val in unique_vals:                      # one discrete entity per cell marker
+    pos = ct.find(val)
+    x_dofs = g_indices[pos].flatten() + 1
+    volume = gmsh.model.addDiscreteEntity(3, tag=val)
+    gmsh.model.mesh.addElementsByType(val, 4, element_tags[pos], x_dofs)
+    gmsh.model.addPhysicalGroup(3, [val], val, f"{val}")
+```
+(3D/tetrahedral example in the issue; `mesh.geometry.x` = node coordinates,
+`dolfinx.mesh.entities_to_geometry(...)` = cell→node connectivity, element
+type `4` = gmsh's linear-tet code.) This is a **lossless, idiomatic
+round-trip**: DOLFINx mesh data in, an equivalent gmsh mesh (with physical
+groups preserved as gmsh Physical Groups) out — no boundary point-ordering,
+no manual curve construction.
+
+This is directly reusable as the *mechanism* for capturing the current
+deformed geometry, and is materially better than the naive "walk the
+boundary, feed ordered points into `addSpline`" approach sketched in §3:
+instead of manually reconstructing boundary curves point-by-point, build the
+**whole current (deformed) region as a discrete gmsh mesh** — apply the
+current displacement to every geometry node (`X_deformed = mesh.geometry.x +
+u`, not just boundary DOFs) and feed that, plus the existing cell
+connectivity/markers, into gmsh via the same `addDiscreteEntity`/`addNodes`/
+`addElementsByType`/`addPhysicalGroup` pattern, one discrete entity per
+`PHYSICAL_MARKERS` region (mirroring the `for val in unique_vals` loop
+above). That reproduces the *current, possibly near-degenerate* triangulation
+as a gmsh discrete mesh — not yet an improvement on its own, but it unlocks
+gmsh's purpose-built discrete-mesh recovery pipeline to turn it into one:
+
+```python
+gmsh.model.mesh.classifySurfaces(angle)   # detect sharp features, create
+                                            # discrete curves/points from
+                                            # the boundary mesh
+gmsh.model.mesh.createGeometry()           # reparametrize those discrete
+                                            # curves/surfaces into real,
+                                            # remeshable CAD entities
+# ... build curve loops / surfaces from the recovered geometry, set sizing
+# fields, then:
+gmsh.model.mesh.generate(2)                # a genuinely fresh, good-quality
+                                            # triangulation of the same
+                                            # (deformed) shape
+```
+(canonical sequence confirmed against gmsh's own
+[`glue_and_remesh_stl.py`](https://gitlab.onelab.info/gmsh/gmsh/-/raw/master/examples/api/glue_and_remesh_stl.py)
+example, which is the standard "reverse-engineer CAD from a triangulated
+mesh, then remesh it" workflow gmsh ships — normally used for STL cleanup,
+but the mechanism doesn't care whether the input triangulation came from an
+STL scan or from a DOLFINx `Function`'s current geometry.) `classifySurfaces`
+takes a dihedral-angle threshold and splits the boundary into distinct curve
+entities wherever the mesh bends sharper than that angle — which, usefully,
+lines up with **actual geometric corners in the FSI2 domain** (the
+channel-rectangle corners, the flag's sharp trailing-edge corners) that
+already coincide with `PHYSICAL_MARKERS` boundary-piece transitions in
+`create_mesh_FSI2.py`'s own classification logic. Because that script already
+classifies curves generically (by adjacency count for the interface, by
+endpoint/center-of-mass coordinates for inflow/outflow/obstacle/channel
+sides — `create_mesh_FSI2.py:146-175`), the same classification code can very
+plausibly be reused *unchanged* on gmsh's recovered curves after
+`classifySurfaces`/`createGeometry`, rather than needing a second, parallel
+boundary-tagging implementation for the remeshed case. See
+`implementation-plan.md` §6 for how this replaces the plan's original
+mesh-regeneration approach, and §8 for the specific risks (angle-threshold
+tuning, higher-order/quad element-type and node-ordering handling) that need
+prototyping before relying on it.
+
+## 6. Sources consulted
 
 - Shamanskiy, A. & Simeon, B. (2020). *Mesh deformation techniques in
   fluid-structure interaction: robustness, accumulated distortion and
@@ -177,3 +254,10 @@ approach developed in the implementation plan.
 - DOLFINx API docs: `dolfinx.fem.create_interpolation_data`,
   `dolfinx.fem.Function.interpolate_nonmatching` (`main` branch docs, current
   as of this writing).
+- Dokken, J. S. [scientificcomputing/fenics-in-the-wild#6, "XDMF -> GMSH
+  Physical Groups -> Attributes"](https://github.com/scientificcomputing/fenics-in-the-wild/issues/6)
+  (pointed at by a FEniCSx expert as relevant to this remeshing plan) —
+  DOLFINx mesh → gmsh discrete-entity round trip with physical groups
+  preserved; see §5.
+- gmsh example: [`examples/api/glue_and_remesh_stl.py`](https://gitlab.onelab.info/gmsh/gmsh/-/raw/master/examples/api/glue_and_remesh_stl.py)
+  — canonical `classifySurfaces` → `createGeometry` → remesh sequence.

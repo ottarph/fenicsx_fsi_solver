@@ -125,8 +125,10 @@ whole-domain remeshing is too expensive at the cadence the benchmark needs.
   coordinates — it just hasn't been assembled into a reusable "get current
   boundary points" helper yet.
 - **`scifem.compute_interface_data`** (`fsi2_harmonic.py:62-75`) already
-  gives paired fluid-side/solid-side interface entity data — reusable to
-  order interface facets into a boundary walk for the gmsh spline.
+  gives paired fluid-side/solid-side interface entity data — reusable for
+  the §6 fallback's boundary walk, or just as a cross-check that the
+  primary mechanism's recovered interface curve matches the known interface
+  facet set.
 - **Nonmatching interpolation is already used and working** in
   `component_solvers/navier_stokes_ALE_fsi2_mm.py:103-136` (and the `_bih`
   and `static_` siblings), transferring a precomputed structural boundary
@@ -137,11 +139,19 @@ whole-domain remeshing is too expensive at the cadence the benchmark needs.
   scratch.
 - **gmsh OCC mesh construction + sizing fields + physical tagging** already
   exist in full for the *initial* FSI2 geometry in
-  `src/xfsi_solver/scripts/create_mesh_FSI2.py` — remeshing needs the same
-  structure (rectangle channel, circular obstacle, tagged physical groups,
-  graded `gmsh.model.mesh.setSize`, `dolfinx.io.gmsh.model_to_mesh`), just
-  with the flag/interface boundary built from spline points instead of
-  straight lines + a circle arc.
+  `src/xfsi_solver/scripts/create_mesh_FSI2.py` (analytic rectangle/circle
+  primitives, `PHYSICAL_MARKERS`-driven curve classification at
+  `create_mesh_FSI2.py:146-175`, graded `gmsh.model.mesh.setSize`,
+  `dolfinx.io.gmsh.model_to_mesh`). Remeshing reuses the tagging/sizing
+  logic as-is (per §6) — only the *source* of the boundary geometry changes,
+  from analytic primitives to a gmsh-recovered curve (primary mechanism, §6)
+  or hand-built splines (fallback).
+- **DOLFINx mesh → gmsh discrete-entity round trip is not yet in this repo**
+  but is the practitioner-recommended mechanism for capturing deformed
+  geometry (per expert input, `literature-review.md` §5) — nothing to reuse
+  from this codebase directly, but Dokken's published script is a working
+  reference implementation to adapt (2D triangles/quads instead of 3D tets;
+  see §8 for the node-ordering caveat that adaptation introduces).
 - **Local Jacobian-based stiffening is already implemented** (just not used
   by the monolithic solver): `component_solvers/navier_stokes_ALE_fsi2_mm.py:157-158,278`
   uses `alpha = alpha_0 * cell_volume**(-2)` instead of the monolithic
@@ -205,30 +215,68 @@ After transfer:
 
 ## 6. Boundary/mesh regeneration mechanics
 
-1. Gather (rank 0, since `dolfinx.io.gmsh.model_to_mesh` only meshes on
-   `gmsh_model_rank`) the ordered current physical coordinates of:
-   channel wall corners (fixed, reuse the analytic rectangle from
-   `create_mesh_FSI2.py`), the cylinder boundary (fixed, reuse the analytic
-   circle), and the flag + interface boundary (**not** fixed — build from
-   `tabulate_dof_coordinates()[interface/flag boundary dofs] + u[those
-   dofs]`, ordered into a walk around the boundary using
-   `scifem.compute_interface_data`/facet adjacency, the same way
-   `create_mesh_FSI2.py` already classifies boundary curves).
-2. Feed the deformed points into `gmsh.model.occ.addSpline`/`addBSpline`
-   (instead of `addLine`/`addCircleArc`), reusing `create_mesh_FSI2.py`'s
-   curve-loop/surface/physical-group/sizing-field logic unchanged. This
-   argues for **refactoring `create_mesh_FSI2.py`'s body into a reusable
-   function parameterized by "flag+interface boundary curve provider"**
-   (analytic for the initial mesh, spline-from-points for a remesh) rather
-   than writing a second, parallel mesh-construction routine.
-3. `gmsh.model.mesh.generate(2)` + `gmsh.model.mesh.setOrder(2)` (matching
-   the existing second-order default) + `dolfinx.io.gmsh.model_to_mesh(...)`
-   exactly as `create_mesh_FSI2.py` already does.
-4. Broadcast/distribute the resulting mesh the same way `model_to_mesh`
+**Recommended mechanism (per expert input — see
+`literature-review.md` §5): DOLFINx discrete-mesh round trip through gmsh,
+not hand-built splines.** Rather than manually walking the boundary and
+threading ordered points through `gmsh.model.occ.addSpline`, feed gmsh the
+*entire current (deformed) region* as a discrete mesh and let gmsh's own
+curve-recovery machinery reconstruct the boundary:
+
+1. Gather (rank 0, since `dolfinx.io.gmsh.model_to_mesh`/a fresh
+   `gmsh.model.mesh.generate` call only runs on `gmsh_model_rank`) the
+   *deformed* geometry of the region(s) being remeshed: `X_deformed =
+   mesh.geometry.x + u_at_geometry_nodes` for every node of every cell in
+   the target region (the whole domain, per the Option A recommendation in
+   §2 — not just its boundary), together with the existing cell
+   connectivity (`dolfinx.mesh.entities_to_geometry`) and `cell_tags`.
+2. Feed that into gmsh as **discrete entities**, one per `PHYSICAL_MARKERS`
+   region, following Dokken's pattern from
+   `literature-review.md` §5 verbatim:
+   `gmsh.model.addDiscreteEntity` + `gmsh.model.mesh.addNodes` +
+   `gmsh.model.mesh.addElementsByType` (once per region, using the deformed
+   coordinates) + `gmsh.model.addPhysicalGroup`. This reproduces the
+   *current, possibly near-degenerate* triangulation inside gmsh — not an
+   improvement by itself, but the necessary input to the next step.
+3. `gmsh.model.mesh.classifySurfaces(angle)` to recover sharp-feature curves
+   from the discrete boundary (channel corners, flag corners, the
+   cylinder/flag junction — these already coincide with
+   `PHYSICAL_MARKERS` boundary-piece transitions), then
+   `gmsh.model.mesh.createGeometry()` to reparametrize them into genuine,
+   remeshable CAD curves/surfaces.
+4. Re-tag the recovered curves using the **same classification logic
+   `create_mesh_FSI2.py` already has** (`create_mesh_FSI2.py:146-175`,
+   adjacency-count for the interface, endpoint/center-of-mass coordinates for
+   inflow/outflow/obstacle/channel sides) — plausibly reusable unchanged
+   since it was already written to be geometry-driven rather than hardcoded
+   to specific tag numbers. Re-apply the same graded `gmsh.model.mesh.setSize`
+   sizing-field logic.
+5. Discard the old (bad) triangulation and call
+   `gmsh.model.mesh.generate(2)` + `gmsh.model.mesh.setOrder(2)` fresh, then
+   `dolfinx.io.gmsh.model_to_mesh(...)` exactly as `create_mesh_FSI2.py`
+   already does.
+6. Broadcast/distribute the resulting mesh the same way `model_to_mesh`
    already does for the initial load (it handles the rank-0-generates,
    all-ranks-receive pattern internally — confirm this still holds when
    called repeatedly mid-run, not just once at startup; this needs a small
    standalone test since it's a new usage pattern for the API).
+
+This still argues for **refactoring `create_mesh_FSI2.py`'s tagging/sizing
+logic into reusable functions** (shared between the original analytic build
+and every subsequent remesh) rather than duplicating it, matching §3.
+
+*Fallback if this proves unworkable* (e.g. `classifySurfaces` doesn't cleanly
+separate all `PHYSICAL_MARKERS` pieces, or corner-angle tuning is too
+fragile in practice): fall back to the originally-sketched manual approach —
+extract only the *boundary* DOF coordinates (via
+`tabulate_dof_coordinates()` + `locate_dofs_topological` +
+`scifem.compute_interface_data`, ordered into a walk around each named
+boundary piece) and build curves explicitly with
+`gmsh.model.occ.addSpline`/`addBSpline` instead of relying on automatic
+curve recovery. This is strictly more manual/fragile (especially around
+corners and multi-piece boundaries) but has no dependency on
+`classifySurfaces`/`createGeometry` behaving well for a 2D planar domain,
+which is unproven in this codebase as of writing. Phase 2a below exists
+specifically to retire this uncertainty early.
 
 ## 7. Phased implementation plan
 
@@ -249,23 +297,46 @@ phases are deferred.
   Also do the `PHYSICAL_MARKERS` module refactor (§3) now, since every later
   phase depends on mesh generation and the solver agreeing on tag numbers.
 
-- **Phase 1 — boundary point extraction utility.**
-  A function `current_boundary_points(mesh, facet_tags, U, u) -> dict` that
-  returns ordered, deformed physical coordinates for each named boundary
-  piece (channel corners, cylinder, flag+interface), gathered to rank 0.
-  Unit-testable in isolation (feed a known analytic `u`, check the returned
-  points match the expected deformed shape) without touching gmsh or the
-  solver at all.
+- **Phase 1 — deformed-geometry extraction utility.**
+  Primarily (feeds §6's recommended mechanism): a function
+  `current_geometry(mesh, cell_tags, U, u) -> dict` that returns, per
+  `PHYSICAL_MARKERS` region, the deformed node coordinates
+  (`mesh.geometry.x + u` evaluated at every geometry node of that region's
+  cells, via `dolfinx.mesh.entities_to_geometry`) and cell connectivity,
+  gathered to rank 0 — the direct input to Phase 2's discrete-entity
+  construction. Secondarily (feeds the §6 fallback only, build only if
+  Phase 2a shows it's needed): the previously-sketched
+  `current_boundary_points(mesh, facet_tags, U, u) -> dict` returning
+  *ordered* deformed boundary-only coordinates per named boundary piece.
+  Both are unit-testable in isolation (feed a known analytic `u`, check the
+  returned points match the expected deformed shape) without touching gmsh
+  or the solver at all.
+
+- **Phase 2a — validate the discrete-mesh round trip in isolation, on
+  undeformed data first.**
+  Before touching any deformed/remeshing logic, prove out §6's core
+  mechanism on its own: load the existing *undeformed* FSI2 mesh, round-trip
+  it through `addDiscreteEntity`/`addNodes`/`addElementsByType`/
+  `addPhysicalGroup` (Dokken's pattern) → `classifySurfaces` →
+  `createGeometry` → re-tag via `create_mesh_FSI2.py`'s classification logic
+  → `generate(2)`, and diff the result against the original analytic-build
+  mesh (volumes, physical group tag sets, boundary curve count/composition).
+  This isolates and retires the single biggest technical uncertainty in the
+  whole plan (does `classifySurfaces`/`createGeometry` behave well for this
+  2D multi-region domain at all) before it's entangled with deformed
+  geometry, MPI, or the solver. If it doesn't work cleanly, fall back to the
+  spline-based approach from §6 and adjust Phase 2 accordingly — better to
+  find that out here than after Phase 3+ is already built on top of it.
 
 - **Phase 2 — mesh regeneration routine.**
   Refactor `create_mesh_FSI2.py` per §6 into a function usable both for the
-  initial mesh (analytic boundary) and for a remesh (spline boundary from
-  Phase 1's output), sharing sizing-field/tagging logic. Test by regenerating
-  the *undeformed* mesh through the new spline path and diffing basic
-  properties (volumes, physical group tag sets, `PHYSICAL_MARKERS`
-  membership) against the existing analytic-path mesh — this validates the
-  refactor didn't silently change tagging before ever touching a deformed
-  case.
+  initial mesh (analytic boundary) and for a remesh (discrete-mesh round
+  trip from Phase 2a, fed with *deformed* current coordinates instead of the
+  original ones), sharing sizing-field/tagging logic. Test by regenerating a
+  few synthetically-deformed shapes (not yet a real solver-produced `u` —
+  Phase 5 covers that integration) and checking the resulting mesh is valid
+  (positive Jacobians everywhere, all `PHYSICAL_MARKERS` present) and
+  visually matches the intended deformed shape.
 
 - **Phase 3 — field transfer routine.**
   A function that, given an old mesh's `u, u_old, v, v_old, p, F_hat` and a
@@ -323,8 +394,28 @@ phases are deferred.
 - **Second-order (curved) element boundary reconstruction**: confirmed
   workable in principle (P2 DOFs already include edge midpoints — see
   `literature-review.md` §3) but should be spot-checked visually (e.g. plot
-  the spline-reconstructed boundary against the true FE boundary for a
-  strongly bent flag) before trusting it inside the full pipeline.
+  the reconstructed boundary against the true FE boundary for a strongly
+  bent flag) before trusting it inside the full pipeline.
+- **gmsh element-type codes and DOLFINx↔gmsh node ordering for
+  higher-order/quad cells**: Dokken's discrete-entity example
+  (`literature-review.md` §5) is for linear tetrahedra (`addElementsByType`
+  element-type code `4`); the production FSI2 mesh is `quads=True,
+  second_order=True` by default, and DOLFINx/basix and gmsh use *different*
+  local node orderings for higher-order and quad cells — a well-known
+  footgun when hand-rolling this kind of conversion (silently wrong/inverted
+  elements rather than a hard error). §7 Phase 2a should be prototyped on
+  the simplest mesh variant this codebase already supports
+  (`create_mesh(quads=False, second_order=False)`, i.e. plain linear
+  triangles) first, to validate the discrete round-trip mechanism itself
+  before layering in the element-type/ordering complexity of quads and
+  curved edges.
+- **`classifySurfaces` angle-threshold tuning**: the FSI2 domain mixes sharp
+  corners (flag trailing edge, channel corners — should reliably split into
+  separate curves at almost any reasonable threshold) with a smooth
+  circular-arc obstacle boundary (must *not* get chopped into many spurious
+  curve segments) and the interface region joining them. The threshold and
+  the resulting curve count/composition should be checked explicitly in
+  Phase 2a rather than assumed.
 - **Interpolation accuracy at the exact new interface boundary**: this is
   where `padding` in `create_interpolation_data` matters most (§5/§6) —
   points sitting exactly on a shared boundary are the easiest to lose to
