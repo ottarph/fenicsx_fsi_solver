@@ -8,6 +8,15 @@ for output must share the same mesh" (its own docstring). Each segment
 segment the mesh's own geometry is updated at every step (not just an
 overlaid displacement field) via ``mesh_policy=VTXMeshPolicy.update``, so
 the flag visibly bends in ParaView without needing a Warp-by-Vector filter.
+
+Each new segment's *first* write reuses the previous segment's *last*
+timestamp, rather than the next one, so that at that one instant both
+segments have data and ParaView shows the old mesh's final (most
+deformed) state and the new mesh's fresh, zero-displacement state
+together -- otherwise the transition is an invisible cut between two
+files that never overlap in time, and there is no way to see that the
+new mesh really is a re-triangulation of the same domain shape the old
+one had just reached, not a discontinuity.
 """
 
 import dolfinx as dfx
@@ -84,6 +93,12 @@ def test_vtx_output_across_remesh_events(output_dirs):
             base_geometry = domain.mesh.geometry.x[:, :2].copy()
             segment += 1
             writer, displacement_field, perm = open_segment_writer(domain.mesh, segment)
+
+            # Overlap with the old segment's last timestamp (t - 1.0, since
+            # t was already advanced above) so both meshes are visible at
+            # once -- see the module docstring.
+            displacement_field.x.array[:] = 0.0
+            writer.write(t - 1.0)
 
     writer.close()
 
