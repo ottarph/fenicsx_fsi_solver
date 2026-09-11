@@ -24,9 +24,9 @@ import numpy as np
 from mpi4py.MPI import COMM_WORLD as comm
 
 from xfsi_solver.remeshing.deformation import incremental_interface_deformation
-from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_fluid_mesh
+from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_mesh
 from xfsi_solver.remeshing.dof_geometry import geometry_to_dof_permutation, to_dof_order
-from xfsi_solver.remeshing.fluid_domain import load_fsi2_fluid_domain
+from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.loop import _interface_points, _min_quality
 
 # Coarse-ish on purpose to keep the test fast; not the production sizing.
@@ -46,7 +46,7 @@ def test_vtx_output_across_remesh_events(output_dirs):
     accumulated-displacement field to VTX at every step -- one file per
     remesh segment -- so the result can be opened in ParaView.
     """
-    domain = load_fsi2_fluid_domain("data/meshes/fsi2/mesh.xdmf")
+    domain = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
     accumulated_displacement = np.zeros_like(domain.mesh.geometry.x[:, :2])
     base_geometry = domain.mesh.geometry.x[:, :2].copy()
 
@@ -73,7 +73,7 @@ def test_vtx_output_across_remesh_events(output_dirs):
 
         # Move the mesh's own geometry to the current deformed position for
         # this write, then restore it -- the rest of the pipeline (quality
-        # check, regenerate_fluid_mesh) still expects domain.mesh.geometry.x
+        # check, regenerate_mesh) still expects domain.mesh.geometry.x
         # to be the fixed start-of-segment reference, exactly as in loop.py.
         domain.mesh.geometry.x[:, :2] = base_geometry + accumulated_displacement
         displacement_field.x.array[:] = to_dof_order(accumulated_displacement, perm).flatten()
@@ -85,7 +85,7 @@ def test_vtx_output_across_remesh_events(output_dirs):
         if min_quality < QUALITY_THRESHOLD:
             geometry = domain.mesh.geometry.x.copy()
             geometry[:, :2] += accumulated_displacement
-            new_domain = regenerate_fluid_mesh(domain, geometry, sizing=TEST_SIZING)
+            new_domain = regenerate_mesh(domain, geometry, sizing=TEST_SIZING)
 
             writer.close()
             domain = new_domain

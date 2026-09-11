@@ -483,3 +483,111 @@ prototyped the same way as the original `classifySurfaces` mechanism was
 - Quads and the production sizing/second-order combination
   (`quads=True, second_order=True`) — deliberately deferred per the plan;
   only `mesh.xdmf` (P1) and `mesh_sec.xdmf` (P2) triangles were used.
+
+## 10. Moving from the fluid submesh to the full mesh
+
+Requested directly by the user, as the next increment after Phases 1–4:
+stop remeshing the extracted fluid submesh and remesh the **whole** FSI2
+mesh — solid flag and fluid channel together — passing *all* the marked
+curves between DOLFINx and gmsh rather than just the five that bounded the
+fluid.
+
+This retires the scope narrowing of `implementation-plan.md` §2 (fluid
+domain in isolation), which existed to keep the first prototype small. It
+does not, by itself, resolve the monolithic-FSI-integration question that
+§2 also deferred — `U`/`V` still have to be rebuilt on the new mesh, and
+nothing here says how accumulated structural state survives that — but it
+removes the most obvious structural obstacle, since the regenerated mesh
+now *has* a solid side with a conforming interface to attach them to.
+
+### 10.1 What changed
+
+- **`fluid_domain.py` → `domain.py`.** `FluidDomain(mesh, facet_tags)`
+  became `FsiDomain(mesh, cell_tags, facet_tags)`, and
+  `load_fsi2_fluid_domain` became `load_fsi2_domain`, which simply reads
+  the mesh and both tag sets. The `dolfinx.mesh.create_submesh` extraction
+  (and with it the only remaining use of `transfer_meshtags_to_submesh`) is
+  gone: it existed solely to produce the fluid-only domain. Cell tags,
+  which the fluid-only version had no use for, are now load-bearing.
+- **`regenerate_fluid_mesh` → `regenerate_mesh`**, which builds *one gmsh
+  discrete surface per `cell_tags` subdomain* instead of one surface for
+  everything, each with its own `boundary=` list and its own physical
+  group, and each given only the nodes and cells belonging to it.
+- **Curve-to-surface assignment is derived, not prescribed.** For each
+  tagged facet, `_facet_subdomains` reads the facet-to-cell connectivity
+  and looks up the adjacent cells' markers; a connected curve component
+  then belongs to the union of its facets' subdomains. The fluid–solid
+  interface reports *both* markers and so is handed to both surfaces as a
+  shared boundary; everything else is handed to the one subdomain it
+  bounds. Nothing here is FSI2-specific — no geometry constants, no
+  hardcoded list of which curve bounds what — which matters because the
+  fluid-only version *had* needed a hardcoded set of the five expected
+  boundary names just to sanity-check itself.
+- **The interface comes back conforming**, which was the main thing worth
+  checking and is now asserted by `test_regenerated_interface_is_conforming`
+  for both P1 and P2 input: every `solid_fluid_interface` facet of the
+  regenerated mesh is an *interior* facet with a solid cell on one side and
+  a fluid cell on the other. Because the interface curve is a single shared
+  entity listed in both surfaces' `boundary=`, `createGeometry`
+  reparametrizes it once and `generate` meshes both sides against the same
+  discretization — there is no separate "stitch the two sides together"
+  step, and no risk of the two sides disagreeing. A fluid-only remesh could
+  never produce this, which is the substantive reason the switch matters
+  rather than it being a cosmetic generalization.
+- **Element and entity tags now come from one running counter.** The
+  previous version restarted edge element tags at 1 for every curve, which
+  gmsh tolerated but which is not actually valid (element tags are global
+  across the model, not per-entity); with two surfaces' worth of triangles
+  added on top, it was not worth continuing to rely on.
+
+### 10.2 The orientation trap
+
+Switching to the full mesh broke six tests in a way that was initially
+mystifying: `_n_inverted_cells` reported exactly **735** inverted cells on
+the *undeformed* mesh, and `loop.py`'s inversion guard fired immediately,
+aborting every loop test. 735 turned out to be exactly the number of solid
+cells.
+
+The cause: **the FSI2 mesh has no single consistent cell orientation.**
+Every cell of the solid subdomain is stored with *negative* signed area,
+every fluid cell with positive — verified directly on both `mesh.xdmf`
+(735 solid, all negative; 5116 fluid, all positive) and `mesh_sec.xdmf`
+(741 / 5120). It is inherited from how `scripts/create_mesh_FSI2.py` builds
+the flag: the flag and obstacle curve loops share `flag_left_curve`, which
+one of them therefore traverses backwards, so the flag surface comes out
+with the opposite orientation. The fluid-only prototype never saw this
+because it had thrown the solid away.
+
+So a check of the form `signed_area <= 0` does not mean "inverted"; it
+means "negatively oriented", which half this mesh always is. The fix, in
+both `loop._has_inverted_cells` and the test-side ground-truth helper, is
+to compare each cell's *current* signed area against the sign it had on the
+undeformed mesh, and flag sign changes:
+`np.sign(reference) * current <= 0`. `quality.MeshQuality` already did
+exactly this (it records `self._base_orientation = np.sign(self(...))` at
+construction) — the vendored library had the right idea and our own
+hand-rolled ground-truth checks did not.
+
+Worth stating plainly, since it generalizes beyond this repo and sits right
+next to the `scaled_jacobian`-is-never-negative-for-triangles quirk already
+documented in `CLAUDE.md`: **on a multi-subdomain mesh, cell inversion has
+to be defined relative to each cell's own reference orientation, never
+against a global sign convention.** `regenerate_mesh` preserves the
+orientation split (the regenerated solid is negatively oriented too), so
+this is not a transient property of the input meshes that a remesh would
+quietly normalize away.
+
+### 10.3 A tiny floating-point casualty
+
+`test_deformation_vanishes_on_fixed_boundary[tri_sec]` also failed, for an
+unrelated and much smaller reason. On the full P2 mesh, one node of the
+`obstacle` arc — the flag's root corner, which lies on both the cylinder
+and the flag — comes back from the mesh file at x = `FLAG_LEFT` + 2.8e-17.
+`prescribed_interface_deformation` clips its along-the-flag coordinate at
+`FLAG_LEFT`, so that node gets t ≈ 1e-16 instead of exactly 0, and a
+displacement of ~6e-34 instead of an exact zero. The test asserted *exact*
+zeros. The deformation's "exactly zero away from the flag" property still
+holds where it was claimed (it comes from the compactly-supported
+envelope); the assertion is now `np.allclose(..., atol=1e-14)` with the
+corner case written down next to it, rather than the property being
+weakened.

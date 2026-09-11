@@ -7,11 +7,16 @@
 Steps a prescribed interface deformation (deformation.py) through
 increasing amplitude, standing in for "time" (notes/remeshing/
 implementation-plan.md §7 Phase 4). At each step: apply one incremental
-bending step to the fluid domain's *current* geometry; check mesh quality
+bending step to the domain's *current* geometry; check mesh quality
 (quality.py); if it has dropped below ``quality_threshold``, regenerate the
-fluid mesh from the current deformed geometry (discrete_mesh.py) and
-transfer a field onto it (transfer.py) as a live demonstration of carrying
-state across a remesh event; then continue.
+mesh from the current deformed geometry (discrete_mesh.py) and transfer a
+field onto it (transfer.py) as a live demonstration of carrying state
+across a remesh event; then continue.
+
+The domain here is the *whole* FSI2 mesh -- solid flag and fluid channel,
+regenerated together -- so the prescribed bending moves the flag's own
+cells along with the fluid's, and the quality trigger watches both
+subdomains rather than only the fluid.
 
 No dolfinx.fem.petsc solver is used anywhere in this module -- the "field"
 carried across remesh events is a passive demonstration field, not any
@@ -50,9 +55,9 @@ import dolfinx as dfx
 import numpy as np
 
 from xfsi_solver.remeshing.deformation import incremental_interface_deformation
-from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_fluid_mesh
+from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_mesh
 from xfsi_solver.remeshing.dof_geometry import geometry_to_dof_permutation, to_dof_order
-from xfsi_solver.remeshing.fluid_domain import FluidDomain
+from xfsi_solver.remeshing.domain import FsiDomain
 from xfsi_solver.remeshing.markers import PHYSICAL_MARKERS
 from xfsi_solver.remeshing.quality import MeshQuality
 from xfsi_solver.remeshing.transfer import transfer_field
@@ -67,7 +72,7 @@ class StepRecord:
 
 @dataclass
 class LoopResult:
-    domain: FluidDomain
+    domain: FsiDomain
     carried_field: dfx.fem.Function
     steps: list[StepRecord] = field(default_factory=list)
 
@@ -76,7 +81,7 @@ class LoopResult:
         return sum(step.remeshed for step in self.steps)
 
 
-def _interface_points(domain: FluidDomain) -> np.ndarray:
+def _interface_points(domain: FsiDomain) -> np.ndarray:
     V = dfx.fem.functionspace(domain.mesh, ("CG", 1, (2,)))
     facets = domain.facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
     dofs = dfx.fem.locate_dofs_topological(V, 1, facets)
@@ -94,27 +99,42 @@ def _min_quality(mesh: dfx.mesh.Mesh, geometry_order_displacement: np.ndarray) -
     return float(MeshQuality(quality_measure="scaled_jacobian", fspace=V)(u).min())
 
 
+def _signed_cell_areas(mesh: dfx.mesh.Mesh, geometry: np.ndarray) -> np.ndarray:
+    """Signed area of each cell's corner triangle, with ``geometry`` giving
+    the node positions to use (in geometry-node order)."""
+    num_cells = mesh.topology.index_map(mesh.topology.dim).size_local
+    corners = geometry[mesh.geometry.dofmaps[0][:num_cells, :3]]
+    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
+    return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
+
+
 def _has_inverted_cells(mesh: dfx.mesh.Mesh, geometry: np.ndarray) -> bool:
     """Cheap ground-truth check (signed corner-triangle area, independent of
     the scaled_jacobian trigger metric) for whether ``geometry`` -- the
-    fluid mesh's nodes moved to candidate physical positions -- has any
+    mesh's nodes moved to candidate physical positions -- has any
     actually-inverted cell.
 
-    Guards ``regenerate_fluid_mesh`` (discrete_mesh.py) against being asked
+    "Inverted" is a *change of sign* relative to the mesh's own undeformed
+    orientation, not a negative area. The FSI2 mesh does not have one
+    consistent orientation to compare against: the whole solid subdomain is
+    stored with the opposite sign to the fluid (an inherited property of how
+    ``scripts/create_mesh_FSI2.py`` builds the flag's curve loop, preserved
+    through a remesh), so a plain ``signed_area <= 0`` test would declare
+    every flag cell inverted on the undeformed mesh. ``quality.MeshQuality``
+    takes the same per-cell-baseline approach for the same reason.
+
+    Guards ``regenerate_mesh`` (discrete_mesh.py) against being asked
     to remesh an already-invalid, self-intersecting boundary, which was
     found empirically to be able to hang rather than fail cleanly (see that
     module's docstring) -- so this must be checked *before* attempting a
     remesh, not left to be discovered by a hang.
     """
-    num_cells = mesh.topology.index_map(mesh.topology.dim).size_local
-    corners = geometry[mesh.geometry.dofmaps[0][:num_cells, :3]]
-    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
-    signed_area = 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
-    return bool(np.any(signed_area <= 0))
+    reference = _signed_cell_areas(mesh, mesh.geometry.x)
+    return bool(np.any(np.sign(reference) * _signed_cell_areas(mesh, geometry) <= 0))
 
 
 def run_prescribed_deformation_loop(
-    initial_domain: FluidDomain,
+    initial_domain: FsiDomain,
     step_amplitudes: Sequence[float],
     quality_threshold: float = 0.35,
     sizing: SizingField | None = None,
@@ -124,8 +144,8 @@ def run_prescribed_deformation_loop(
     whenever quality drops below ``quality_threshold``.
 
     Args:
-        initial_domain: a fluid-only mesh (e.g. from
-            ``fluid_domain.load_fsi2_fluid_domain``), assumed *undeformed*.
+        initial_domain: a full FSI2 mesh (e.g. from
+            ``domain.load_fsi2_domain``), assumed *undeformed*.
         step_amplitudes: a sequence of incremental bending amplitudes
             (each metres of *additional* tip deflection since the last
             step), standing in for successive time steps.
@@ -138,7 +158,7 @@ def run_prescribed_deformation_loop(
             inversion before a remesh ever gets a chance to fire. Past
             actual inversion this mechanism can no longer recover the mesh
             (discrete_mesh.py's docstring) and this function raises
-            ``RuntimeError`` rather than letting ``regenerate_fluid_mesh``
+            ``RuntimeError`` rather than letting ``regenerate_mesh``
             hang on it (see ``_has_inverted_cells``).
         sizing: graded sizing field to use for every regenerated mesh.
         initial_field: optional callable (dolfinx ``interpolate`` style)
@@ -149,7 +169,7 @@ def run_prescribed_deformation_loop(
             deformation. Defaults to a smooth bump function.
 
     Returns:
-        The final :class:`FluidDomain`, the final carried-field
+        The final :class:`FsiDomain`, the final carried-field
         ``Function``, and a per-step quality/remesh log.
 
     Raises:
@@ -185,11 +205,11 @@ def run_prescribed_deformation_loop(
             if _has_inverted_cells(domain.mesh, geometry):
                 raise RuntimeError(
                     f"step_amplitude={step_amplitude}: the deformed geometry already has inverted cells "
-                    f"(min_quality={min_quality:.4g} was only caught at this step). regenerate_fluid_mesh "
+                    f"(min_quality={min_quality:.4g} was only caught at this step). regenerate_mesh "
                     "cannot reliably remesh a self-intersecting boundary (see discrete_mesh.py). Use a "
                     "higher quality_threshold and/or a finer step_amplitude so a remesh triggers earlier."
                 )
-            new_domain = regenerate_fluid_mesh(domain, geometry, sizing=sizing)
+            new_domain = regenerate_mesh(domain, geometry, sizing=sizing)
 
             V_new = dfx.fem.functionspace(new_domain.mesh, ("CG", 1))
             carried_field = transfer_field(carried_field, V_new)

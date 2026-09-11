@@ -1,8 +1,9 @@
 import dolfinx as dfx
+import numpy as np
 import pytest
 
 from xfsi_solver.remeshing.deformation import prescribed_interface_deformation
-from xfsi_solver.remeshing.fluid_domain import load_fsi2_fluid_domain
+from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.quality import MeshQuality
 
 MESH_PATHS = ["data/meshes/fsi2/mesh.xdmf", "data/meshes/fsi2/mesh_sec.xdmf"]
@@ -14,23 +15,32 @@ HEALTHY_AMPLITUDE = 0.05
 DEGENERATE_AMPLITUDE = 0.1
 
 
+def _signed_areas(V: dfx.fem.FunctionSpace, displacement: np.ndarray) -> np.ndarray:
+    coords = V.tabulate_dof_coordinates()[:, :2] + displacement.reshape(-1, 2)
+    p = coords[V.dofmap.list]
+    a, b, c = p[:, 0], p[:, 1], p[:, 2]
+    return 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
+
+
 def _n_inverted_cells(V: dfx.fem.FunctionSpace, u: dfx.fem.Function) -> int:
     """Ground truth for "how many triangles inverted", independent of
     pvmeshquality/Verdict, by directly signed-area-checking the CG1
     triangulation warped by ``u``. Used to check the scaled_jacobian metric
     is actually tracking real degeneracy, not just numerical noise.
+
+    Inversion is a *change of sign* relative to the undeformed mesh, not a
+    negative area: on the full FSI2 mesh the whole solid subdomain is stored
+    with the opposite orientation to the fluid (every flag cell has negative
+    signed area to begin with), so testing for negativity alone would report
+    all ~735 flag cells as inverted before anything has moved.
     """
-    coords = V.tabulate_dof_coordinates()[:, :2] + u.x.array.reshape(-1, 2)
-    cells = V.dofmap.list
-    p = coords[cells]
-    a, b, c = p[:, 0], p[:, 1], p[:, 2]
-    signed_area = 0.5 * ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1]))
-    return int((signed_area <= 0).sum())
+    reference = _signed_areas(V, np.zeros_like(u.x.array))
+    return int((np.sign(reference) * _signed_areas(V, u.x.array) <= 0).sum())
 
 
 @pytest.mark.parametrize("mesh_path", MESH_PATHS, ids=["tri", "tri_sec"])
 def test_quality_decreases_with_amplitude(mesh_path):
-    fd = load_fsi2_fluid_domain(mesh_path)
+    fd = load_fsi2_domain(mesh_path)
     V = dfx.fem.functionspace(fd.mesh, ("CG", 1, (2,)))
     mq = MeshQuality(quality_measure="scaled_jacobian", fspace=V)
 
@@ -60,7 +70,7 @@ def test_quality_flags_degenerate_deformation(mesh_path):
     "non-positive". A remesh trigger threshold (§4 of the plan) has to be
     calibrated the same way, not by checking for negativity.
     """
-    fd = load_fsi2_fluid_domain(mesh_path)
+    fd = load_fsi2_domain(mesh_path)
     V = dfx.fem.functionspace(fd.mesh, ("CG", 1, (2,)))
     mq = MeshQuality(quality_measure="scaled_jacobian", fspace=V)
 
@@ -84,7 +94,7 @@ def test_quality_cg1_restriction_needs_projection(mesh_path):
     module actually raises loudly if skipped, rather than silently doing
     the wrong thing.
     """
-    fd = load_fsi2_fluid_domain(mesh_path)
+    fd = load_fsi2_domain(mesh_path)
     V2 = dfx.fem.functionspace(fd.mesh, ("CG", 2, (2,)))
     with pytest.raises(AssertionError):
         MeshQuality(quality_measure="scaled_jacobian", fspace=V2)

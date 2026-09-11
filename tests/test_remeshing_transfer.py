@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from xfsi_solver.remeshing.deformation import prescribed_interface_deformation
-from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_fluid_mesh
-from xfsi_solver.remeshing.fluid_domain import load_fsi2_fluid_domain
+from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_mesh
+from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.transfer import DEFAULT_PADDING, transfer_field
 
 TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, distance=0.1)
@@ -26,12 +26,12 @@ def old_and_new_fluid_domain():
     """A regenerated (Phase 2) fluid mesh from a moderately deformed
     (Phase 1) old one -- exactly the pair of meshes a real remesh event
     would produce."""
-    old = load_fsi2_fluid_domain("data/meshes/fsi2/mesh.xdmf")
+    old = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
     X = old.mesh.geometry.x.copy()
     displacement = prescribed_interface_deformation(amplitude=0.05)(X.T)
     X[:, 0] += displacement[0]
     X[:, 1] += displacement[1]
-    new = regenerate_fluid_mesh(old, X, sizing=TEST_SIZING)
+    new = regenerate_mesh(old, X, sizing=TEST_SIZING)
     return old, new
 
 
