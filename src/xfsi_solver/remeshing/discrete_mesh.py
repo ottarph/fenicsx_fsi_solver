@@ -113,14 +113,60 @@ from xfsi_solver.remeshing.markers import PHYSICAL_MARKERS
 _MARKER_TO_NAME = {v: k for k, v in PHYSICAL_MARKERS.items()}
 
 
+#: Facet groups the regenerated mesh's cell size is graded away from: the
+#: flag's two surfaces and the cylinder. Mirrors which boundaries
+#: ``scripts/create_mesh_FSI2.py`` attaches ``resolution_close`` to.
+REFINED_BOUNDARIES = ("obstacle", "solid_fluid_interface", "solid_obstacle_interface")
+
+
 @dataclass
 class SizingField:
-    """Graded triangle-size target: ``size_near`` within ``distance`` of the
-    obstacle/flag surfaces, linearly growing to ``size_far`` beyond that."""
+    """Graded target cell size for a regenerated mesh.
 
-    size_near: float = 0.01
-    size_far: float = 0.05
-    distance: float = 0.1
+    Two regimes, combined by taking the smaller size at every point --
+    mirroring the three resolutions ``scripts/create_mesh_FSI2.py`` builds
+    the original mesh from:
+
+    - **Refinement around the flag and cylinder** (``REFINED_BOUNDARIES``):
+      ``size_near`` on those surfaces, growing linearly with distance from
+      them to ``size_outflow`` at ``growth_distance``. This is
+      ``resolution_close``'s role.
+    - **A streamwise far-field cap**: ``size_far`` everywhere up to
+      ``coarsen_from_x``, then growing linearly to ``size_outflow`` at
+      ``coarsen_to_x`` and holding there. This is ``resolution_far`` and
+      ``resolution_ultra_far``'s role. It is combined as a *minimum*, not a
+      maximum, so that it coarsens the wake and the far channel without
+      ever coarsening the flag itself -- the flag sits upstream of
+      ``coarsen_from_x``, where this field is merely a constant cap, and
+      taking a maximum there would instead wipe out the near-flag
+      refinement entirely.
+
+    The defaults reproduce the original FSI2 triangle mesh
+    (``data/meshes/fsi2/mesh.xdmf``, i.e. ``scripts/create_mesh_FSI2.py``
+    with ``quads=False``): mean cell edge length binned by distance from the
+    flag/cylinder surface agrees to within a few percent from the surface
+    (~0.005) out to the far field (~0.045), and the regenerated mesh has
+    5886 cells against the original's 5851. That mesh's own grading is an
+    implicit, linearly-interpolated consequence of those three resolutions
+    being set at individual CAD *points*; reproducing it here has to state
+    the gradient explicitly, because a regenerated mesh has no CAD points
+    to hang sizes off.
+
+    These defaults matter: a regenerated mesh is only a usable replacement
+    for the one it supersedes if it resolves the same flow. The fluid-only
+    version of this module defaulted to ``size_near=0.01``/``size_far=0.05``
+    with no streamwise regime at all -- fine for quick prototyping, but 2x
+    too coarse at the flag and much worse than that through the wake -- so
+    every remesh event silently dropped the simulation onto a coarser mesh
+    than it started from, and repeated events kept doing so.
+    """
+
+    size_near: float = 0.005
+    size_far: float = 0.025
+    size_outflow: float = 0.05125
+    growth_distance: float = 0.36
+    coarsen_from_x: float = 0.6
+    coarsen_to_x: float = 2.25
 
 
 def _connected_components(edges: list[tuple[int, int]]) -> list[list[int]]:
@@ -283,7 +329,8 @@ def regenerate_mesh(
             -- e.g. ``domain.mesh.geometry.x`` plus a prescribed or solved
             displacement.
         sizing: graded target cell size for the new mesh. Defaults to
-            ``SizingField()``.
+            ``SizingField()``, which reproduces the original FSI2 mesh's
+            own resolution.
         geometry_degree: geometric degree of the regenerated mesh (1 for
             straight-sided, 2 for curved). Defaults to ``domain.mesh``'s
             own geometry degree.
@@ -345,23 +392,32 @@ def regenerate_mesh(
 
 
 def _set_sizing_field(curve_groups: dict[str, list[int]], sizing: SizingField) -> None:
-    """Grade the target triangle size: fine near the flag and cylinder,
-    growing linearly to ``sizing.size_far`` beyond ``sizing.distance``."""
-    near_curves = (
-        curve_groups["obstacle"] + curve_groups["solid_fluid_interface"] + curve_groups["solid_obstacle_interface"]
-    )
+    """Build the two-regime background field described by :class:`SizingField`."""
+    near_curves = [tag for name in REFINED_BOUNDARIES for tag in curve_groups[name]]
     distance_field = gmsh.model.mesh.field.add("Distance")
     gmsh.model.mesh.field.setNumbers(distance_field, "CurvesList", near_curves)
     gmsh.model.mesh.field.setNumber(distance_field, "Sampling", 200)
 
-    threshold_field = gmsh.model.mesh.field.add("Threshold")
-    gmsh.model.mesh.field.setNumber(threshold_field, "InField", distance_field)
-    gmsh.model.mesh.field.setNumber(threshold_field, "SizeMin", sizing.size_near)
-    gmsh.model.mesh.field.setNumber(threshold_field, "SizeMax", sizing.size_far)
-    gmsh.model.mesh.field.setNumber(threshold_field, "DistMin", sizing.distance)
-    gmsh.model.mesh.field.setNumber(threshold_field, "DistMax", 2 * sizing.distance)
+    near_field = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(near_field, "InField", distance_field)
+    gmsh.model.mesh.field.setNumber(near_field, "SizeMin", sizing.size_near)
+    gmsh.model.mesh.field.setNumber(near_field, "SizeMax", sizing.size_outflow)
+    gmsh.model.mesh.field.setNumber(near_field, "DistMin", 0.0)
+    gmsh.model.mesh.field.setNumber(near_field, "DistMax", sizing.growth_distance)
 
-    gmsh.model.mesh.field.setAsBackgroundMesh(threshold_field)
+    streamwise = gmsh.model.mesh.field.add("MathEval")
+    gmsh.model.mesh.field.setString(streamwise, "F", "x")
+    far_field = gmsh.model.mesh.field.add("Threshold")
+    gmsh.model.mesh.field.setNumber(far_field, "InField", streamwise)
+    gmsh.model.mesh.field.setNumber(far_field, "SizeMin", sizing.size_far)
+    gmsh.model.mesh.field.setNumber(far_field, "SizeMax", sizing.size_outflow)
+    gmsh.model.mesh.field.setNumber(far_field, "DistMin", sizing.coarsen_from_x)
+    gmsh.model.mesh.field.setNumber(far_field, "DistMax", sizing.coarsen_to_x)
+
+    background = gmsh.model.mesh.field.add("Min")
+    gmsh.model.mesh.field.setNumbers(background, "FieldsList", [near_field, far_field])
+
+    gmsh.model.mesh.field.setAsBackgroundMesh(background)
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)

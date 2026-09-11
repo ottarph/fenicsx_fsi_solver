@@ -591,3 +591,83 @@ holds where it was claimed (it comes from the compactly-supported
 envelope); the assertion is now `np.allclose(..., atol=1e-14)` with the
 corner case written down next to it, rather than the property being
 weakened.
+
+### 10.4 Giving the regenerated mesh the original's resolution
+
+The other half of the user's request, and a real defect rather than a
+generalization: the regenerated mesh was **much coarser than the original**.
+The fluid-only prototype's `SizingField` defaulted to `size_near=0.01`,
+`size_far=0.05`, graded over a single distance threshold — numbers picked to
+make prototype runs fast, never calibrated against anything. Every remesh
+event therefore silently dropped the mesh onto a coarser discretization than
+the simulation had started from, and successive events kept doing it.
+
+Rather than guess better numbers, the original mesh was **measured**: load
+`data/meshes/fsi2/mesh.xdmf`, compute each cell's mean edge length, and bin
+by distance from the flag/cylinder surface. That mesh has 5851 cells
+(735 solid, 5116 fluid) and grades:
+
+| distance from flag/cylinder | original `h` |
+|---|---|
+| 0.000–0.005 | 0.0048 |
+| 0.010–0.020 | 0.0069 |
+| 0.040–0.080 | 0.0125 |
+| 0.080–0.120 | 0.0173 |
+| 0.160–0.200 | 0.0262 |
+| 0.200–0.400 | 0.0307 |
+| 0.400–1.000 | 0.0371 |
+| 1.000–3.000 | 0.0444 |
+
+So the old default was ~2x too coarse right at the flag and the grading was
+wrong in shape as well as scale.
+
+Reproducing this needed the gradient stated *explicitly*, which is the
+awkward part: `create_mesh_FSI2.py` never states a gradient at all. It sets
+three resolutions (`resolution_close` 0.005, `resolution_far` 0.025,
+`resolution_ultra_far` H/8 = 0.05125) at individual CAD *points* and lets
+gmsh interpolate between them. A regenerated mesh has no CAD points to hang
+sizes off — only discrete curves recovered from meshtags — so the
+interpolation that was implicit has to be written down.
+
+A first attempt used a single distance-based `Threshold` field
+(`size_near=0.005` → `size_far=0.045` over 0.3 m). That matched the near
+field essentially exactly (0.0053 / 0.0069 / 0.0125 / 0.0172 / 0.0222
+against the table above) but came out ~20% coarse through the band 0.2–1.0,
+i.e. **through the wake** — the one place in FSI2 where under-resolution
+actually costs something. The reason is structural: the original's grading
+is distance-driven near the flag but *streamwise*-driven downstream, and one
+linear ramp in distance cannot be both.
+
+The final version therefore has two regimes, combined with gmsh's `Min`
+field:
+
+- a `Distance`+`Threshold` pair around `REFINED_BOUNDARIES` (obstacle, and
+  both interfaces), 0.005 at the surface growing to 0.05125 at 0.36 m;
+- a `MathEval("x")`+`Threshold` pair capping size at 0.025 up to x = 0.6,
+  growing to 0.05125 at x = 2.25.
+
+`Min` rather than `Max` is load-bearing and was the one thing worth thinking
+about here: the streamwise field is a flat 0.025 cap upstream of x = 0.6,
+which is exactly where the flag is, so combining with a maximum would
+discard the near-flag refinement entirely and produce a uniformly 0.025 mesh
+around the flag. Taking the minimum lets each field impose an upper bound on
+size independently, which is how gmsh's fields are meant to compose.
+
+Result, against the original's 5851 cells and the table above: **5886
+cells**, agreeing within a few percent in every band —
+
+| distance | original | regenerated |
+|---|---|---|
+| 0.000–0.005 | 0.0048 | 0.0053 |
+| 0.040–0.080 | 0.0125 | 0.0122 |
+| 0.080–0.120 | 0.0173 | 0.0170 |
+| 0.200–0.400 | 0.0307 | 0.0282 |
+| 0.400–1.000 | 0.0371 | 0.0348 |
+| 1.000–3.000 | 0.0444 | 0.0458 |
+
+`test_default_sizing_reproduces_the_original_resolution` locks this in —
+cell count within 15%, mean edge length within 10%, and the near-flag band
+(distance < 0.01) within 15% separately, since a mesh can match on average
+while being far too coarse exactly where it matters. The tests otherwise
+keep using a deliberately coarse `TEST_SIZING` to stay fast; only that one
+test exercises the production defaults.

@@ -7,7 +7,7 @@ from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_mesh
 from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.transfer import DEFAULT_PADDING, transfer_field
 
-TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, distance=0.1)
+TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, size_outflow=0.08)
 
 
 def _known_scalar(x):

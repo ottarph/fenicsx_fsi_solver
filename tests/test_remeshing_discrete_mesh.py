@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 import ufl
 
+from xfsi_solver.remeshing import fsi2_geometry as geo
 from xfsi_solver.remeshing.deformation import prescribed_interface_deformation
 from xfsi_solver.remeshing.discrete_mesh import SizingField, regenerate_mesh
 from xfsi_solver.remeshing.domain import FsiDomain, load_fsi2_domain
@@ -12,7 +13,7 @@ from xfsi_solver.remeshing.quality import MeshQuality
 MESH_PATHS = ["data/meshes/fsi2/mesh.xdmf", "data/meshes/fsi2/mesh_sec.xdmf"]
 
 # Coarse-ish on purpose to keep the tests fast; not the production sizing.
-TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, distance=0.1)
+TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, size_outflow=0.08)
 
 BOUNDARY_NAMES = [
     "solid_fluid_interface",
@@ -106,6 +107,47 @@ def test_regenerate_deformed_produces_valid_mesh(mesh_path):
     quality = mq(dfx.fem.Function(V))
     assert quality.min() > 0.1
     _assert_all_groups_present(new_fd)
+
+
+def _cell_sizes(domain: FsiDomain) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cell mean edge length, and distance of each cell's centroid from
+    the flag/cylinder surfaces."""
+    n = domain.mesh.topology.index_map(domain.mesh.topology.dim).size_local
+    corners = domain.mesh.geometry.x[domain.mesh.geometry.dofmaps[0][:n, :3]][:, :, :2]
+    h = np.mean([np.linalg.norm(corners[:, (i + 1) % 3] - corners[:, i], axis=1) for i in range(3)], axis=0)
+
+    centroid = corners.mean(axis=1)
+    nearest_on_flag = np.clip(centroid[:, 0], geo.FLAG_LEFT, geo.FLAG_RIGHT)
+    to_flag = np.sqrt((centroid[:, 0] - nearest_on_flag) ** 2 + (centroid[:, 1] - geo.C_Y) ** 2)
+    to_flag = np.maximum(to_flag - geo.FLAG_THICKNESS / 2, 0.0)
+    to_cylinder = np.abs(np.linalg.norm(centroid - np.array([geo.C_X, geo.C_Y]), axis=1) - geo.R)
+    return h, np.minimum(to_flag, to_cylinder)
+
+
+def test_default_sizing_reproduces_the_original_resolution():
+    """The default ``SizingField`` must regenerate a mesh at the resolution
+    the simulation started from, not a coarser one.
+
+    This is the whole point of stating the grading explicitly (see
+    ``SizingField``'s docstring): a remesh that quietly halves the
+    resolution near the flag every time it fires is worse than no remesh.
+    Checked both overall and specifically in the refined band next to the
+    flag/cylinder, since a mesh can match on average while being far too
+    coarse exactly where it matters.
+    """
+    fd = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
+    new_fd = regenerate_mesh(fd, fd.mesh.geometry.x)
+
+    n_original = fd.mesh.topology.index_map(2).size_local
+    n_new = new_fd.mesh.topology.index_map(2).size_local
+    assert n_new == pytest.approx(n_original, rel=0.15)
+
+    h_original, d_original = _cell_sizes(fd)
+    h_new, d_new = _cell_sizes(new_fd)
+    assert h_new.mean() == pytest.approx(h_original.mean(), rel=0.1)
+
+    near = 0.01
+    assert h_new[d_new < near].mean() == pytest.approx(h_original[d_original < near].mean(), rel=0.15)
 
 
 def test_regenerate_chains_across_successive_remesh_events():

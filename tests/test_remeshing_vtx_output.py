@@ -30,7 +30,7 @@ from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.loop import _interface_points, _min_quality
 
 # Coarse-ish on purpose to keep the test fast; not the production sizing.
-TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, distance=0.1)
+TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, size_outflow=0.08)
 
 # Calibrated against data/meshes/fsi2/mesh.xdmf (see
 # notes/remeshing/implementation-plan.md): quality first drops below 0.35

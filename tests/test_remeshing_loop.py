@@ -6,7 +6,7 @@ from xfsi_solver.remeshing.domain import load_fsi2_domain
 from xfsi_solver.remeshing.loop import run_prescribed_deformation_loop
 
 # Coarse-ish on purpose to keep the tests fast; not the production sizing.
-TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, distance=0.1)
+TEST_SIZING = SizingField(size_near=0.02, size_far=0.06, size_outflow=0.08)
 
 
 @pytest.fixture
