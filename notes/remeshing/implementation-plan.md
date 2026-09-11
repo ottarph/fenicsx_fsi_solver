@@ -2,25 +2,37 @@
 
 Status: **Phases 1-4 (§7) are implemented**, in
 `src/xfsi_solver/remeshing/` with tests in `tests/test_remeshing_*.py` —
-a working, tested, standalone fluid-domain remeshing loop. Phase 5
-(swapping in a real fluid-only solve) and the deferred monolithic-FSI
+a working, tested, standalone remeshing loop. Phase 5
+(swapping in a real solve) and the deferred monolithic-FSI
 -integration work are not started. See [`literature-review.md`](literature-review.md)
 for the background that motivates the choices below, and §9 for a summary
 of what was actually built, including two real design corrections made
 during implementation that are worth reading before extending this code.
 
-Revision note: this version narrows the plan further per review. The current
-goal is **only** a standalone fluid-domain remeshing capability: a fluid-only
-mesh whose fluid–solid interface boundary is deformed by a **prescribed**
-function (not derived from solving the coupled problem), remeshed as needed,
-with fields interpolated between the old and new mesh. Everything about how
-this eventually plugs into the monolithic FSI solver — where `U`/`V` are
-still whole-mesh, spanning both solid and fluid, even in the `diffmesh`
-variants — is **explicitly out of scope for now** and not designed here; see
-§2. (Earlier revisions of this document sketched a whole-domain remesh with
-`F_hat` bookkeeping, then an interface-coupling reformulation with candidate
-mechanisms — both are superseded; this revision deliberately does not
-attempt to solve the interface-coupling question at all.)
+**Scope update (supersedes §2 below).** The prototype originally worked on
+the fluid domain *in isolation*, extracted as a submesh; §2 records why that
+narrowing was made and is kept for that rationale. It no longer describes
+what the code does. Remeshing now regenerates the **full** FSI2 mesh — both
+subdomains, all marked curves, with the fluid–solid interface coming back as
+a conforming internal boundary — per a later request from the user. See
+`implementation-log.md` §10 for what changed and what it cost. Interface
+motion is still **prescribed** rather than solved, and the monolithic-FSI
+integration question in §2 is still open; the full mesh removes a structural
+obstacle to it but does not answer it.
+
+Revision note: this version narrows the plan per review. The goal at the
+time was **only** a standalone fluid-domain remeshing capability: a
+fluid-only mesh whose fluid–solid interface boundary is deformed by a
+**prescribed** function (not derived from solving the coupled problem),
+remeshed as needed, with fields interpolated between the old and new mesh.
+Everything about how this eventually plugs into the monolithic FSI solver —
+where `U`/`V` are still whole-mesh, spanning both solid and fluid, even in
+the `diffmesh` variants — is **explicitly out of scope for now** and not
+designed here; see §2. (Earlier revisions of this document sketched a
+whole-domain remesh with `F_hat` bookkeeping, then an interface-coupling
+reformulation with candidate mechanisms — both are superseded; this revision
+deliberately does not attempt to solve the interface-coupling question at
+all.)
 
 **Local dev data**: the untracked `data/` folder (gitignored, not part of
 version control) has been copied into this worktree from the main checkout
@@ -62,7 +74,13 @@ regression test that reaches this regime**. This is the eventual motivation
 for remeshing — but see §2 for what's actually in scope right now, which
 stops well short of touching this solver.
 
-## 2. Current scope: standalone fluid-domain remeshing, interface motion prescribed
+## 2. Original scope: standalone fluid-domain remeshing, interface motion prescribed
+
+**Superseded in part** — see the scope update at the top of this document.
+The fluid-only restriction below has been lifted (remeshing now covers the
+full mesh); the prescribed-interface-motion restriction and the deferral of
+monolithic-FSI integration both still stand, and the reasoning for the
+latter is the part of this section still worth reading.
 
 Per review, the plan is narrowed to build and validate a **self-contained
 fluid-domain remeshing capability**, decoupled from the FSI solver entirely:
@@ -226,18 +244,26 @@ mesh's *current* physical boundary. After transfer, reset the ALE
 displacement `u ← 0` (`u_old ← 0` too, once history exists) since the new
 mesh *is* the current configuration.
 
-## 6. Fluid-mesh regeneration mechanics (as implemented — see §9)
+## 6. Mesh regeneration mechanics (as implemented — see §9)
 
 **Mechanism, current version: DOLFINx discrete-mesh round trip through
 gmsh, with boundary curves built directly from the mesh's own facet tags**
 (not hand-built splines, and — as of this revision — not recovered by
 asking gmsh to guess the boundary either; see below). Implemented in
-`src/xfsi_solver/remeshing/discrete_mesh.py::regenerate_fluid_mesh`; the
+`src/xfsi_solver/remeshing/discrete_mesh.py::regenerate_mesh`; the
 module's own docstring is the authoritative, up-to-date reference for the
 mechanics and the empirical findings behind each choice below.
 
-1. Gather the *deformed* geometry of the fluid mesh: `X_deformed =
-   fluid_mesh.geometry.x + u` for every geometry node, together with the
+The steps below are written for the fluid-only version this section was
+first drafted against. The mechanism is unchanged for the full mesh, with
+two additions: step 4 builds *one surface per `cell_tags` subdomain*, each
+declaring only the curves that bound it (derived from facet-to-cell
+adjacency, so the interface curve is shared by both), and step 5's sizing
+field now has to state its gradient explicitly rather than inherit it from
+CAD points. See `implementation-log.md` §10.
+
+1. Gather the *deformed* geometry of the mesh: `X_deformed =
+   mesh.geometry.x + u` for every geometry node, together with the
    existing cell connectivity (only the 3 corner nodes per cell/facet are
    used, regardless of mesh order — see the module docstring for why).
 2. Feed the 2D cells into gmsh as a **discrete entity**
@@ -277,9 +303,11 @@ mechanics and the empirical findings behind each choice below.
 6. Discard the old triangulation, `gmsh.model.mesh.generate(2)` +
    `gmsh.model.mesh.setOrder(...)` fresh, then
    `dolfinx.io.gmsh.model_to_mesh(...)`.
-7. Rebuild `fluid_mesh` and everything defined on it (function spaces,
+7. Rebuild the mesh and everything defined on it (function spaces,
    whatever fields the current prototype stage is carrying — see §5) from
-   this new mesh. There is no solid side to worry about in this scope (§2).
+   this new mesh. The solid side comes back with it, tagged as before and
+   conforming across the interface, but what a real coupled solve would
+   have to carry across that rebuild is still the open question of §2.
 
 The hard limitation carries over unchanged from the earlier version: this
 only works while the deformed boundary is still a *simple*
@@ -422,22 +450,26 @@ solver file.
 ## 9. Implementation status (Phases 1-4 done)
 
 Code lives in `src/xfsi_solver/remeshing/`, tests in
-`tests/test_remeshing_*.py` (24 tests, ~4s total). What's there and how it
+`tests/test_remeshing_*.py` (27 tests, ~5s total). What's there and how it
 maps to the phases above:
 
 - `fsi2_geometry.py`, `markers.py` — the FSI2 geometry constants and
   `PHYSICAL_MARKERS`, duplicated from (kept consistent with)
   `create_mesh_FSI2.py` (§3's flagged refactor still not done repo-wide).
-- `fluid_domain.py` — Phase-1-adjacent: extracts the fluid-only submesh
-  (`create_submesh` + `transfer_meshtags_to_submesh`).
+- `domain.py` — `FsiDomain` (mesh + cell tags + facet tags) and the loader
+  that reads all three from an XDMF file. Replaced `fluid_domain.py`, whose
+  `create_submesh` + `transfer_meshtags_to_submesh` extraction existed only
+  to produce the fluid-only domain (see the scope update at the top).
 - `deformation.py` — Phase 1's prescribed deformation, **plus**
   `incremental_interface_deformation`, added during Phase 4 (see below) for
   chaining multiple deformation+remesh segments.
 - `quality.py` — the vendored `pvmeshquality` (§3), used as-is.
-- `discrete_mesh.py` — Phase 2/2a's `regenerate_fluid_mesh`: the discrete
+- `discrete_mesh.py` — Phase 2/2a's `regenerate_mesh`: the discrete
   -mesh round trip through gmsh, with boundary curves built directly from
   `facet_tags` via `entities_to_geometry` (see the finding below — this
-  replaced an earlier `classifySurfaces`-based version).
+  replaced an earlier `classifySurfaces`-based version), one surface per
+  `cell_tags` subdomain, and a `SizingField` whose defaults reproduce the
+  original FSI2 mesh's own resolution.
 - `transfer.py` — Phase 3's `transfer_field`, with `DEFAULT_PADDING`
   calibrated to `1e-2` (see finding below).
 - `dof_geometry.py` — a utility that turned out to be necessary and is not
@@ -489,12 +521,12 @@ anticipated in §8 above:
   the latter makes `generate` silently produce an *empty* mesh rather than
   raising ("only 0 nodes on the boundary") — worth calling out since that
   failure mode gives no indication of what's actually wrong.
-- **`regenerate_fluid_mesh` can hang, not fail cleanly, on an
+- **`regenerate_mesh` can hang, not fail cleanly, on an
   already-inverted (self-intersecting) boundary.** This isn't a corner case
   to special-case around after the fact -- it's *why* the remesh trigger
   has to fire on early degradation. `loop.py` now runs a cheap, independent
   inversion check (signed corner-triangle area) *before* ever calling
-  `regenerate_fluid_mesh`, raising `RuntimeError` instead. This also means
+  `regenerate_mesh`, raising `RuntimeError` instead. This also means
   `quality_threshold` needs a real margin, not just ">0": quality vs.
   amplitude was found to fall off a cliff over a handful of steps once it
   starts degrading, so a too-low threshold plus a not-small-enough step can

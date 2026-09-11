@@ -457,11 +457,12 @@ prototyped the same way as the original `classifySurfaces` mechanism was
 
 ## 9. What's implemented, and what's explicitly not
 
-**Implemented and tested** (`src/xfsi_solver/remeshing/`, 24 tests across
+**Implemented and tested** (`src/xfsi_solver/remeshing/`, 27 tests across
 `tests/test_remeshing_*.py`, all passing in a few seconds):
-`fsi2_geometry.py`, `markers.py`, `fluid_domain.py`, `deformation.py`,
+`fsi2_geometry.py`, `markers.py`, `domain.py`, `deformation.py`,
 `quality.py`, `discrete_mesh.py`, `transfer.py`, `dof_geometry.py`,
-`loop.py` — Phases 1–4 of `implementation-plan.md` §7, in full.
+`loop.py` — Phases 1–4 of `implementation-plan.md` §7, in full, and since
+§10 below on the full mesh rather than the fluid submesh.
 
 **Not started**, and not pretended to be solved:
 

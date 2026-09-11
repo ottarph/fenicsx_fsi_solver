@@ -45,7 +45,7 @@ def test_quality_decreases_with_amplitude(mesh_path):
     mq = MeshQuality(quality_measure="scaled_jacobian", fspace=V)
 
     q_undeformed = mq(dfx.fem.Function(V))
-    assert q_undeformed.min() > 0.5, "sanity check: the undeformed fluid mesh should already be good quality"
+    assert q_undeformed.min() > 0.5, "sanity check: the undeformed mesh should already be good quality"
 
     u_healthy = dfx.fem.Function(V)
     u_healthy.interpolate(prescribed_interface_deformation(HEALTHY_AMPLITUDE))

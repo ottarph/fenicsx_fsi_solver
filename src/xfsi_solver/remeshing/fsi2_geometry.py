@@ -6,9 +6,10 @@
 
 Duplicated from (must be kept consistent with)
 ``src/xfsi_solver/scripts/create_mesh_FSI2.py:create_mesh`` (where they are
-local variables, not importable). Used by the fluid-only remeshing
-prototype (``notes/remeshing/implementation-plan.md``) to build a prescribed
-interface deformation and, later, to re-tag a regenerated fluid mesh.
+local variables, not importable). Used by the remeshing prototype
+(``notes/remeshing/implementation-plan.md``) to build a prescribed
+interface deformation, and by its tests to check a regenerated mesh's
+resolution against the original's.
 """
 
 import numpy as np

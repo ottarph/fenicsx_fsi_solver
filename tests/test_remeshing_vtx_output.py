@@ -1,4 +1,4 @@
-"""Write a genuinely remeshed (not just deformed) fluid domain to VTX, for
+"""Write a genuinely remeshed (not just deformed) domain to VTX, for
 manual inspection in ParaView -- notes/remeshing/implementation-plan.md
 Phase 4's loop produces a *new* dolfinx.mesh.Mesh object (different node
 and cell counts) at each remesh event, not just moved points on a fixed
@@ -41,7 +41,7 @@ QUALITY_THRESHOLD = 0.35
 
 
 def test_vtx_output_across_remesh_events(output_dirs):
-    """Step the fluid domain through a prescribed bending deformation,
+    """Step the domain through a prescribed bending deformation,
     remeshing as needed, writing the *actually deforming* mesh plus the
     accumulated-displacement field to VTX at every step -- one file per
     remesh segment -- so the result can be opened in ParaView.

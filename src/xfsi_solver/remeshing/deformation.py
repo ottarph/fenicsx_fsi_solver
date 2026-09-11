@@ -9,7 +9,7 @@ standalone fluid-domain remeshing prototype, the fluid-solid interface (the
 flag boundary) is deformed by a function *we choose*, standing in for
 "whatever the structural displacement would have been" -- not the output of
 solving anything. This module builds that function as a single closed-form
-formula valid over the whole fluid domain, so that:
+formula valid over the whole domain, so that:
 
 - On the flag surface, it produces a cantilever-like bending profile (zero
   at the clamped root, growing towards the tip) scaled by ``amplitude``.

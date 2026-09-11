@@ -5,12 +5,12 @@
 """Map between mesh-geometry node order and a CG1 function space's dof order.
 
 These are *not* the same ordering -- confirmed empirically on the FSI2
-fluid mesh (``mesh.geometry.x`` vs.
+mesh (``mesh.geometry.x`` vs.
 ``dfx.fem.functionspace(mesh, ("CG", 1)).tabulate_dof_coordinates()``: same
 set of points, different order) -- which is exactly the bug that broke an
 early version of the Phase 1 prescribed-deformation code here (a CG1
 ``Function``'s ``.x.array`` was added directly to ``mesh.geometry.x``,
-silently scrambling the mesh). ``discrete_mesh.regenerate_fluid_mesh`` needs
+silently scrambling the mesh). ``discrete_mesh.regenerate_mesh`` needs
 geometry-node order (it feeds gmsh raw coordinates); ``quality.MeshQuality``
 needs CG1 dof order (it warps a CG1 ``Function``). ``loop.py`` (Phase 4)
 needs to convert between the two every step, so the mapping is built once

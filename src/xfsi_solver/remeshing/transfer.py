@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Transfer a field from the old fluid mesh onto a freshly regenerated one.
+"""Transfer a field from the old mesh onto a freshly regenerated one.
 
 Implements notes/remeshing/implementation-plan.md §5: nonmatching-mesh
 interpolation via ``dolfinx.fem.create_interpolation_data`` /
@@ -35,7 +35,7 @@ DEFAULT_PADDING = 1e-2
 def transfer_field(f_from: dfx.fem.Function, V_to: dfx.fem.FunctionSpace, padding: float = DEFAULT_PADDING):
     """Interpolate ``f_from`` (defined on one mesh) onto ``V_to`` (defined
     on a different, non-matching mesh -- e.g. the old vs. a regenerated
-    fluid mesh), returning a new :class:`dolfinx.fem.Function` on ``V_to``.
+    regenerated mesh), returning a new :class:`dolfinx.fem.Function` on ``V_to``.
     """
     f_to = dfx.fem.Function(V_to)
     mesh_to = V_to.mesh

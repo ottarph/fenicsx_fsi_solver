@@ -22,8 +22,8 @@ def _known_vector(x):
 
 
 @pytest.fixture
-def old_and_new_fluid_domain():
-    """A regenerated (Phase 2) fluid mesh from a moderately deformed
+def old_and_new_domain():
+    """A regenerated (Phase 2) mesh from a moderately deformed
     (Phase 1) old one -- exactly the pair of meshes a real remesh event
     would produce."""
     old = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
@@ -40,13 +40,13 @@ def old_and_new_fluid_domain():
     [(2, (), _known_scalar), (1, (2,), _known_vector)],
     ids=["scalar_cg2", "vector_cg1"],
 )
-def test_transfer_matches_direct_interpolation(old_and_new_fluid_domain, degree, shape, fn):
+def test_transfer_matches_direct_interpolation(old_and_new_domain, degree, shape, fn):
     """Interpolating a known analytic function onto the old mesh, then
     transferring it to the new mesh, should agree with interpolating that
     same function directly onto the new mesh -- the check from
     notes/remeshing/implementation-plan.md §7 Phase 3.
     """
-    old, new = old_and_new_fluid_domain
+    old, new = old_and_new_domain
     element = ("CG", degree, shape) if shape else ("CG", degree)
 
     V_old = dfx.fem.functionspace(old.mesh, element)
@@ -67,14 +67,14 @@ def test_transfer_matches_direct_interpolation(old_and_new_fluid_domain, degree,
     assert error.max() < 1e-3
 
 
-def test_default_padding_matters(old_and_new_fluid_domain):
+def test_default_padding_matters(old_and_new_domain):
     """Guard against the DEFAULT_PADDING regressing to a value too small
     for this mesh's resolution: reproduce the failure mode found while
     calibrating it (points near a curved boundary silently left at 0,
     i.e. NOT a small numerical error but a large, easy-to-miss one) at a
     too-small padding, and confirm DEFAULT_PADDING avoids it.
     """
-    old, new = old_and_new_fluid_domain
+    old, new = old_and_new_domain
     V_old = dfx.fem.functionspace(old.mesh, ("CG", 2))
     f_old = dfx.fem.Function(V_old)
     f_old.interpolate(_known_scalar)
