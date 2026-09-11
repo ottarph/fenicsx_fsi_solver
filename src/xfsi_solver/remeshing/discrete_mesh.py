@@ -97,6 +97,51 @@ below encode:
   geometry from gmsh afterwards. This sidesteps the DOLFINx<->gmsh
   node-ordering mismatch for higher-order cells entirely, rather than
   needing per-cell-type ordering permutations.
+
+Pinning a curve's discretization across remesh events
+-------------------------------------------------------
+``gmsh.model.mesh.createGeometry()`` is what reparametrizes a discrete
+entity, and only a reparametrized curve is something ``generate()`` is
+free to reseed with fresh nodes according to the active sizing field,
+discarding whatever discretization it was given -- confirmed empirically:
+a discrete curve given only its two endpoints comes back from
+``generate()`` reseeded to whatever node count the background field
+implies if ``createGeometry`` was called on it, and comes back with
+exactly those two endpoints, verbatim, if it wasn't. So skipping
+``createGeometry`` for one curve pins its vertices -- same count, same
+positions -- across the remesh.
+
+``PINNED_BOUNDARIES`` below uses exactly this: ``solid_fluid_interface``
+is carried forward node-for-node at whatever position
+``deformed_geometry`` puts it at, rather than being resampled by
+``SizingField`` every remesh event -- requested directly, so that whatever
+eventually needs to track state at the interface across a remesh (a real
+FSI solve's structural state, some future Phase 5 work) has a stable,
+unchanging set of interface vertices to work with, not a resampled one.
+
+Getting this right took one genuine wrong turn, worth recording: calling
+``createGeometry`` with an *explicit* list of only the curves to reseed
+(instead of the bare, argument-less ``createGeometry()``, which
+reparametrizes every discrete entity of every dimension that lacks one)
+initially appeared to make ``generate()`` silently mesh *nothing* at
+all -- not just leaving the pinned curve alone, but leaving both
+subdomains' 2D interiors completely empty too, with only a terse "No
+elements in surface" warning and no exception. That looked at first like a
+fundamental incompatibility between pinning and the interface's role as a
+*shared* boundary between the two subdomains' surfaces (reproduced with a
+minimal two-square model sharing one pinned edge) -- but the same minimal
+model failed identically with *no* pinning at all once ``createGeometry``
+was given an explicit list, which pointed at the real cause: the
+argument-less call also creates geometry for the 2D discrete *surface*
+entities, not just curves, and a discrete surface only gets a
+parametrization of its own (confirmed via gmsh's own log output:
+"Discrete surface N is planar, simplifying parametrization") when
+``createGeometry`` is told about it explicitly. Once the surfaces
+themselves are always included in the explicit list -- regardless of which
+curves are pinned -- pinning works exactly as expected, including for a
+curve shared between two surfaces, and even for a subdomain whose curves
+are *all* pinned: a surface's own parametrization, not its bounding
+curves', is what ``generate()`` needs to retriangulate its interior.
 """
 
 from collections import Counter
@@ -115,8 +160,18 @@ _MARKER_TO_NAME = {v: k for k, v in PHYSICAL_MARKERS.items()}
 
 #: Facet groups the regenerated mesh's cell size is graded away from: the
 #: flag's two surfaces and the cylinder. Mirrors which boundaries
-#: ``scripts/create_mesh_FSI2.py`` attaches ``resolution_close`` to.
+#: ``scripts/create_mesh_FSI2.py`` attaches ``resolution_close`` to. Includes
+#: ``solid_fluid_interface`` even though that curve is pinned (see
+#: ``PINNED_BOUNDARIES``): grading the *interior* mesh by distance to it is
+#: still meaningful and independent of whether the curve's own nodes move.
 REFINED_BOUNDARIES = ("obstacle", "solid_fluid_interface", "solid_obstacle_interface")
+
+#: Boundary curves whose discretization is carried forward exactly, node
+#: for node, at every remesh event rather than being reseeded by
+#: ``SizingField`` -- see this module's docstring. Requested directly: the
+#: fluid-solid interface's vertices should never change across a remesh,
+#: only their positions.
+PINNED_BOUNDARIES = ("solid_fluid_interface",)
 
 
 @dataclass
@@ -375,7 +430,17 @@ def regenerate_mesh(
         gmsh.model.mesh.removeDuplicateNodes()
         gmsh.model.geo.synchronize()
 
-        gmsh.model.mesh.createGeometry()
+        # createGeometry reparametrizes an entity, and only a reparametrized
+        # curve is something generate() will reseed -- skip it for
+        # PINNED_BOUNDARIES to carry those curves' nodes forward verbatim.
+        # The 2D surfaces always need it regardless of which of their
+        # curves are pinned: it's what gives *them* a parametrization to
+        # retriangulate their interior against (see this module's
+        # docstring for the wrong turn taken before finding this).
+        remeshed_curves = [
+            (1, tag) for name, tags in curve_groups.items() if name not in PINNED_BOUNDARIES for tag in tags
+        ]
+        gmsh.model.mesh.createGeometry(remeshed_curves + list(gmsh.model.getEntities(2)))
 
         _set_sizing_field(curve_groups, sizing)
 

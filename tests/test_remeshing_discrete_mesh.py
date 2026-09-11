@@ -150,6 +150,77 @@ def test_default_sizing_reproduces_the_original_resolution():
     assert h_new[d_new < near].mean() == pytest.approx(h_original[d_original < near].mean(), rel=0.15)
 
 
+def _n_boundary_nodes(domain: FsiDomain, name: str) -> int:
+    facets = domain.facet_tags.find(PHYSICAL_MARKERS[name])
+    return len(np.unique(dfx.mesh.entities_to_geometry(domain.mesh, 1, facets)))
+
+
+def _interface_node_coords(domain: FsiDomain) -> np.ndarray:
+    """Sorted (x, y) coordinates of every node on ``solid_fluid_interface``,
+    so two regenerated meshes' interface discretizations can be compared
+    regardless of their (unrelated) node numbering."""
+    facets = domain.facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    nodes = np.unique(dfx.mesh.entities_to_geometry(domain.mesh, 1, facets)[:, :2])
+    coords = domain.mesh.geometry.x[nodes][:, :2]
+    return coords[np.lexsort((coords[:, 1], coords[:, 0]))]
+
+
+def test_pinned_interface_survives_a_resizing_remesh():
+    """``PINNED_BOUNDARIES`` (``discrete_mesh.py``'s docstring) exempts
+    ``solid_fluid_interface`` from ``SizingField`` entirely: regenerating
+    again with a much finer field must leave the interface's node count and
+    positions exactly as they were, while still changing everything else."""
+    fd = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
+    fine_sizing = SizingField(size_near=0.005, size_far=0.02, size_outflow=0.03)
+
+    fd_1 = regenerate_mesh(fd, fd.mesh.geometry.x, sizing=TEST_SIZING)
+    fd_2 = regenerate_mesh(fd_1, fd_1.mesh.geometry.x, sizing=fine_sizing)
+
+    interface_1 = _interface_node_coords(fd_1)
+    interface_2 = _interface_node_coords(fd_2)
+    assert interface_2.shape == interface_1.shape
+    np.testing.assert_allclose(interface_2, interface_1, atol=1e-12)
+
+    # The much finer field must still have visibly changed everything else,
+    # confirming the interface's stability isn't just because nothing moved.
+    assert _n_boundary_nodes(fd_2, "obstacle") > 2 * _n_boundary_nodes(fd_1, "obstacle")
+    assert fd_2.mesh.topology.index_map(2).size_local > 2 * fd_1.mesh.topology.index_map(2).size_local
+
+
+def test_pinned_interface_still_conforms_after_deformation():
+    """The interface being pinned must not compromise the conformity check
+    that motivated regenerating the whole mesh in the first place (§10 of
+    notes/remeshing/implementation-log.md) -- verify it still holds once the
+    interface has actually moved, not just on the undeformed mesh."""
+    fd = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
+    X = fd.mesh.geometry.x.copy()
+    displacement = prescribed_interface_deformation(amplitude=0.05)(X.T)
+    X[:, 0] += displacement[0]
+    X[:, 1] += displacement[1]
+
+    new_fd = regenerate_mesh(fd, X, sizing=TEST_SIZING)
+
+    mesh = new_fd.mesh
+    tdim = mesh.topology.dim
+    mesh.topology.create_connectivity(tdim - 1, tdim)
+    facet_to_cell = mesh.topology.connectivity(tdim - 1, tdim)
+    index_map = mesh.topology.index_map(tdim)
+    marker_of_cell = np.zeros(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
+    marker_of_cell[new_fd.cell_tags.indices] = new_fd.cell_tags.values
+
+    interface = new_fd.facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    assert len(interface) > 0
+    expected = {PHYSICAL_MARKERS["solid"], PHYSICAL_MARKERS["ALE_fluid"]}
+    for facet in interface:
+        cells = facet_to_cell.links(facet)
+        assert len(cells) == 2
+        assert {int(marker_of_cell[c]) for c in cells} == expected
+
+    # And the interface itself must have been carried through unresampled:
+    # same node count as the undeformed input, now at the deformed positions.
+    assert _n_boundary_nodes(new_fd, "solid_fluid_interface") == _n_boundary_nodes(fd, "solid_fluid_interface")
+
+
 def test_regenerate_chains_across_successive_remesh_events():
     """The Phase 4 loop calls this repeatedly, each time on the *previous*
     call's output -- confirm that actually works, not just a single call on
