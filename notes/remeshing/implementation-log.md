@@ -672,3 +672,80 @@ cell count within 15%, mean edge length within 10%, and the near-flag band
 while being far too coarse exactly where it matters. The tests otherwise
 keep using a deliberately coarse `TEST_SIZING` to stay fast; only that one
 test exercises the production defaults.
+
+## 11. Pinning the fluid-solid interface's vertices exactly across a remesh
+
+Requested directly, as a follow-up once §10's sizing calibration made the
+*rest* of the mesh's density stable: the user wanted the fluid-solid
+interface specifically to never drift in density either, and ideally to
+keep the exact same vertices (not just similar density) across every
+remesh event, since that's the one boundary whose accumulated state a
+future coupled solve would actually need to carry forward.
+
+### 11.1 A wrong turn, corrected
+
+The first real finding was genuinely useful and still holds:
+`gmsh.model.mesh.createGeometry()` is what reparametrizes a discrete
+curve, and only a reparametrized curve is something `generate()` will
+reseed with fresh nodes from the sizing field — skip `createGeometry` for
+a curve and it comes back with exactly the nodes it was given, confirmed
+with a minimal toy model before touching the real one.
+
+Applying that directly to `solid_fluid_interface` first appeared to prove
+the opposite of what was wanted: calling `createGeometry` with an
+*explicit* list that excluded just the interface curve (instead of the
+bare, argument-less `createGeometry()` the code had been using, which
+reparametrizes every discrete entity of every dimension lacking one) made
+`generate()` silently mesh *nothing at all* — both subdomains came back
+with zero 2D elements, only a terse "No elements in surface" warning, no
+exception. Reproduced with a minimal two-square model sharing one pinned
+edge, this looked like a fundamental conflict between pinning a curve and
+that curve being a *shared* boundary between two surfaces — plausible
+enough that it was reported to the user as a real architectural limitation
+(exact vertex preservation would require abandoning joint whole-mesh
+regeneration and going back to a fluid-only regenerate spliced against a
+permanently frozen solid mesh).
+
+That conclusion was wrong, and cheaply falsifiable in hindsight: the same
+minimal two-square model failed *identically* with no pinning at all, the
+moment `createGeometry` was given an explicit list instead of the
+bare call. The real cause was that the bare call also creates geometry for
+the 2D discrete *surface* entities, not just curves — a discrete surface
+only gets its own parametrization (visible in gmsh's log as "Discrete
+surface N is planar, simplifying parametrization") when told about it
+explicitly, and without one, `generate()` has nothing to retriangulate the
+interior against, regardless of which curves are or aren't pinned. Once
+the surfaces are always included in the explicit list, pinning works
+exactly as expected — including for a curve shared between two surfaces,
+and even (tested, not just assumed) for a subdomain whose curves are *all*
+pinned: a surface's own parametrization, not its bounding curves', is what
+`generate()` actually needs.
+
+This was reported back to the user as a correction rather than quietly
+fixed and left unmentioned, since the earlier (wrong) finding had already
+been used to talk them into a lesser fallback (fixing the interface's node
+*count* via transfinite meshing, without preserving exact positions); once
+corrected, they asked to switch to the full exact-preservation version.
+
+### 11.2 What's implemented
+
+`PINNED_BOUNDARIES = ("solid_fluid_interface",)` in `discrete_mesh.py`:
+`regenerate_mesh` builds the `createGeometry` call from every curve
+*except* those in `PINNED_BOUNDARIES`, plus every 2D surface entity
+unconditionally. Verified on the real FSI2 mesh, not just the toy model:
+regenerating twice from the same geometry with wildly different
+`SizingField`s (`size_near` 0.02 vs 0.005) gives the interface exactly the
+same node count and exactly the same coordinates (`atol=1e-12`), while the
+obstacle curve and overall cell count visibly respond to the finer field
+(16→60 nodes, 1540→10379 cells) — `test_pinned_interface_survives_a_resizing_remesh`
+and `test_pinned_interface_still_conforms_after_deformation` in
+`tests/test_remeshing_discrete_mesh.py` lock both properties in, the
+second also re-checking the §10.1 interior-facet conformity property still
+holds once the interface has actually deformed, not just on the
+undeformed mesh.
+
+`REFINED_BOUNDARIES` still includes `solid_fluid_interface`: pinning only
+exempts the curve's own node placement from `SizingField`, not its role as
+a target for grading the *interior* mesh's density by distance to it,
+which is a separate and still-meaningful thing to want independent of
+whether the curve's own nodes move.

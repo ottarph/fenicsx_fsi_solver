@@ -296,8 +296,14 @@ CAD points. See `implementation-log.md` §10.
 4. Build the 2D surface as a discrete entity too, this time declaring
    `boundary=<every curve tag from step 3>` (required — without it,
    `generate` silently produces an empty mesh rather than raising), then
-   `gmsh.model.mesh.createGeometry()` to reparametrize the whole thing
-   (curves and surface) into genuine, remeshable CAD entities.
+   `gmsh.model.mesh.createGeometry(...)` to reparametrize curves and
+   surfaces into genuine, remeshable CAD entities — every surface always,
+   but every curve *except* `PINNED_BOUNDARIES` (currently just
+   `solid_fluid_interface`): skipping a curve here carries its nodes
+   forward exactly, unchanged, rather than letting step 6 reseed them from
+   the sizing field. See `implementation-log.md` §11 for why the surfaces
+   have to be included explicitly too, and the wrong turn taken before
+   finding that out.
 5. Re-apply the graded sizing-field logic, using the curve-tag groups
    already known exactly from step 3 (no re-derivation needed).
 6. Discard the old triangulation, `gmsh.model.mesh.generate(2)` +
@@ -450,7 +456,7 @@ solver file.
 ## 9. Implementation status (Phases 1-4 done)
 
 Code lives in `src/xfsi_solver/remeshing/`, tests in
-`tests/test_remeshing_*.py` (27 tests, ~5s total). What's there and how it
+`tests/test_remeshing_*.py` (29 tests, ~6s total). What's there and how it
 maps to the phases above:
 
 - `fsi2_geometry.py`, `markers.py` — the FSI2 geometry constants and
@@ -468,8 +474,11 @@ maps to the phases above:
   -mesh round trip through gmsh, with boundary curves built directly from
   `facet_tags` via `entities_to_geometry` (see the finding below — this
   replaced an earlier `classifySurfaces`-based version), one surface per
-  `cell_tags` subdomain, and a `SizingField` whose defaults reproduce the
-  original FSI2 mesh's own resolution.
+  `cell_tags` subdomain, a `SizingField` whose defaults reproduce the
+  original FSI2 mesh's own resolution, and `PINNED_BOUNDARIES` (currently
+  `solid_fluid_interface`), which carries a curve's nodes forward exactly
+  rather than letting `SizingField` reseed them (`implementation-log.md`
+  §11).
 - `transfer.py` — Phase 3's `transfer_field`, with `DEFAULT_PADDING`
   calibrated to `1e-2` (see finding below).
 - `dof_geometry.py` — a utility that turned out to be necessary and is not
