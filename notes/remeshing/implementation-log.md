@@ -749,3 +749,21 @@ exempts the curve's own node placement from `SizingField`, not its role as
 a target for grading the *interior* mesh's density by distance to it,
 which is a separate and still-meaningful thing to want independent of
 whether the curve's own nodes move.
+
+## 12. Pinning the rest of the geometrically static boundaries
+
+Requested as a direct follow-up to §11: `inflow`, `outflow`, `obstacle`,
+and `solid_obstacle_interface` are now in `PINNED_BOUNDARIES` too. None of
+these four ever actually move — the channel ends are straight and fixed,
+the cylinder is rigid, and the flag's root is clamped to it — so, per
+§11's mechanism, there was nothing to gain from letting `SizingField`
+reseed them every remesh event, only a stable node count to gain by not
+doing so. `channel_side` (also static) is deliberately left unpinned: it
+isn't needed pinned, and keeping one static curve responsive to
+`SizingField` gives the tests a non-pinned control to check against.
+
+`test_other_pinned_boundaries_survive_a_resizing_remesh` in
+`tests/test_remeshing_discrete_mesh.py` extends §11's resizing-remesh
+check to all four, and `test_pinned_interface_survives_a_resizing_remesh`
+itself had to switch its non-pinned control from `obstacle` to
+`channel_side`, since `obstacle` is no longer available to serve as one.

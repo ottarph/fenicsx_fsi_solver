@@ -183,8 +183,35 @@ def test_pinned_interface_survives_a_resizing_remesh():
 
     # The much finer field must still have visibly changed everything else,
     # confirming the interface's stability isn't just because nothing moved.
-    assert _n_boundary_nodes(fd_2, "obstacle") > 2 * _n_boundary_nodes(fd_1, "obstacle")
+    # ``channel_side`` is the one static curve left unpinned (see
+    # ``PINNED_BOUNDARIES``'s docstring) precisely so a test like this one
+    # has a non-pinned control to check against.
+    assert _n_boundary_nodes(fd_2, "channel_side") > 2 * _n_boundary_nodes(fd_1, "channel_side")
     assert fd_2.mesh.topology.index_map(2).size_local > 2 * fd_1.mesh.topology.index_map(2).size_local
+
+
+@pytest.mark.parametrize("name", ["inflow", "outflow", "obstacle", "solid_obstacle_interface"])
+def test_other_pinned_boundaries_survive_a_resizing_remesh(name):
+    """Same guarantee as ``test_pinned_interface_survives_a_resizing_remesh``,
+    for the rest of ``PINNED_BOUNDARIES``: these curves are geometrically
+    static for the whole simulation, so a much finer sizing field must still
+    leave their node count and positions exactly as they were."""
+    fd = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
+    fine_sizing = SizingField(size_near=0.005, size_far=0.02, size_outflow=0.03)
+
+    fd_1 = regenerate_mesh(fd, fd.mesh.geometry.x, sizing=TEST_SIZING)
+    fd_2 = regenerate_mesh(fd_1, fd_1.mesh.geometry.x, sizing=fine_sizing)
+
+    def _node_coords(domain: FsiDomain) -> np.ndarray:
+        facets = domain.facet_tags.find(PHYSICAL_MARKERS[name])
+        nodes = np.unique(dfx.mesh.entities_to_geometry(domain.mesh, 1, facets)[:, :2])
+        coords = domain.mesh.geometry.x[nodes][:, :2]
+        return coords[np.lexsort((coords[:, 1], coords[:, 0]))]
+
+    coords_1 = _node_coords(fd_1)
+    coords_2 = _node_coords(fd_2)
+    assert coords_2.shape == coords_1.shape
+    np.testing.assert_allclose(coords_2, coords_1, atol=1e-12)
 
 
 def test_pinned_interface_still_conforms_after_deformation():

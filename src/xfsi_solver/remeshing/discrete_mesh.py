@@ -119,6 +119,13 @@ eventually needs to track state at the interface across a remesh (a real
 FSI solve's structural state, some future Phase 5 work) has a stable,
 unchanging set of interface vertices to work with, not a resampled one.
 
+The same mechanism is also used for ``inflow``, ``outflow``,
+``obstacle``, and ``solid_obstacle_interface`` -- none of these ever
+actually move (the channel ends and the rigid cylinder are geometrically
+fixed for the whole simulation), so there is nothing to gain from letting
+``SizingField`` reseed them on every remesh event and a stable node count
+there is otherwise free.
+
 Getting this right took one genuine wrong turn, worth recording: calling
 ``createGeometry`` with an *explicit* list of only the curves to reseed
 (instead of the bare, argument-less ``createGeometry()``, which
@@ -161,17 +168,23 @@ _MARKER_TO_NAME = {v: k for k, v in PHYSICAL_MARKERS.items()}
 #: Facet groups the regenerated mesh's cell size is graded away from: the
 #: flag's two surfaces and the cylinder. Mirrors which boundaries
 #: ``scripts/create_mesh_FSI2.py`` attaches ``resolution_close`` to. Includes
-#: ``solid_fluid_interface`` even though that curve is pinned (see
-#: ``PINNED_BOUNDARIES``): grading the *interior* mesh by distance to it is
-#: still meaningful and independent of whether the curve's own nodes move.
+#: curves that are also in ``PINNED_BOUNDARIES`` (``solid_fluid_interface``,
+#: ``obstacle``, ``solid_obstacle_interface``): grading the *interior* mesh
+#: by distance to them is still meaningful and independent of whether their
+#: own nodes are pinned.
 REFINED_BOUNDARIES = ("obstacle", "solid_fluid_interface", "solid_obstacle_interface")
 
 #: Boundary curves whose discretization is carried forward exactly, node
 #: for node, at every remesh event rather than being reseeded by
-#: ``SizingField`` -- see this module's docstring. Requested directly: the
-#: fluid-solid interface's vertices should never change across a remesh,
-#: only their positions.
-PINNED_BOUNDARIES = ("solid_fluid_interface",)
+#: ``SizingField`` -- see this module's docstring. ``solid_fluid_interface``
+#: is pinned because its vertices need to be tracked across a remesh;
+#: ``inflow``, ``outflow``, ``obstacle``, and ``solid_obstacle_interface``
+#: are pinned because they are geometrically static for the whole
+#: simulation, so there is no reason to let them drift with the sizing
+#: field either. ``channel_side`` is deliberately left out: it is also
+#: static, but nothing needs it pinned and it's a useful negative control
+#: in tests that a non-pinned curve still responds to sizing.
+PINNED_BOUNDARIES = ("solid_fluid_interface", "inflow", "outflow", "obstacle", "solid_obstacle_interface")
 
 
 @dataclass
