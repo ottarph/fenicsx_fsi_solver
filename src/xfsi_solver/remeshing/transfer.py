@@ -16,13 +16,23 @@ import numpy as np
 
 #: Default padding for create_interpolation_data. The new mesh's boundary
 #: is deliberately built to coincide with the old mesh's current physical
-#: boundary (discrete_mesh.py), but the two meshes approximate curved
-#: boundaries (the obstacle, and the interface once deformed) with
-#: *different* polygons, so points near those boundaries can miss their
-#: nominal source cell by an amount comparable to the *local mesh
+#: boundary (discrete_mesh.py), but whenever a curved boundary is
+#: *resampled* to a different discretization by the two meshes, they
+#: approximate it with different polygons, so points near it can miss
+#: their nominal source cell by an amount comparable to the *local mesh
 #: resolution there*, not just floating-point error -- and silently stay
 #: at 0 (uninterpolated) rather than raising, which is easy to miss.
-#: Empirically (see notes/remeshing/implementation-plan.md §8): with
+#:
+#: As of discrete_mesh.py's ``PINNED_BOUNDARIES``, most boundaries
+#: (``solid_fluid_interface``, ``inflow``, ``outflow``, ``obstacle``,
+#: ``solid_obstacle_interface``) are carried forward node-for-node rather
+#: than resampled, specifically so this mismatch doesn't arise for them --
+#: ``channel_side`` is the one boundary this can still happen to by
+#: default. The empirical calibration below predates that pinning and was
+#: measured with the obstacle boundary resampled (as
+#: ``test_default_padding_matters`` in ``tests/test_remeshing_transfer.py``
+#: still reproduces directly, via ``monkeypatch``, since a resampled curved
+#: boundary is the scenario this padding is actually for): with
 #: SizingField(size_near=0.02, size_far=0.06), 1e-6 left points near the
 #: (fine, ~0.02) obstacle boundary un-interpolated; even 5e-3 left points
 #: near the (coarse, ~0.06) far-field boundary un-interpolated; 1e-2
