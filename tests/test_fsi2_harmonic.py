@@ -17,7 +17,7 @@ def test_fsi2_harmonic_solve(output_dirs, cell_type, mesh_path):
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / f"fsi2_harm_{cell_type}.bp"),
         output_path_p=str(output_dirs["pv"] / f"fsi2_harm_p_{cell_type}.bp"),
-        disp_path=str(output_dirs["qoi"] / f"fsi2_harm_Adisp_{cell_type}.txt"),
+        qoi_path=str(output_dirs["qoi"] / f"fsi2_harm_qoi_{cell_type}.txt"),
     )
 
-    assert (output_dirs["qoi"] / f"fsi2_harm_Adisp_{cell_type}.txt").exists()
+    assert (output_dirs["qoi"] / f"fsi2_harm_qoi_{cell_type}.txt").exists()

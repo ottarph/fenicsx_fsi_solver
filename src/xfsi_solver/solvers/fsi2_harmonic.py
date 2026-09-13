@@ -28,7 +28,7 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
 
     # load mesh and meshtags
@@ -294,10 +294,27 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
     loc_u_spot = np.zeros(2, dtype=np.float64)
     u_spot = np.zeros(2, dtype=np.float64)
 
+    normal = ufl.FacetNormal(mesh)
+    e_x = dfx.fem.Constant(mesh, (-1.0, 0.0))
+    e_y = dfx.fem.Constant(mesh, (0.0, 1.0))
+    F = ufl.Identity(2) + ufl.grad(u)
+    transformed_normal = ufl.dot(ufl.inv(F.T), normal)
+
+    drag_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
+    lift_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
+
+    drag_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
+    lift_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
+
+    drag_form_obstacle = dfx.fem.form(drag_form_obstacle)
+    drag_form_interface = dfx.fem.form(drag_form_interface)
+    lift_form_obstacle = dfx.fem.form(lift_form_obstacle)
+    lift_form_interface = dfx.fem.form(lift_form_interface)
+
     if comm.rank == 0:
-        Path(disp_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(disp_path, "wb") as f:
-            np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tA_x\tA_y")
+        Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(qoi_path, "wb") as f:
+            np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
     t = t0
     step = -1
@@ -332,9 +349,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, disp_path):
 
         loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
         comm.Reduce(loc_u_spot, u_spot, op=MPI.SUM, root=0)
+        drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
+        lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
         if comm.rank == 0:
-            with open(disp_path, "ab") as f:
-                np.savetxt(f, [[t, *u_spot]], fmt="%.6e", delimiter="\t")
+            with open(qoi_path, "ab") as f:
+                np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
 
     end = timer()
     if comm.rank == 0:
@@ -356,7 +375,7 @@ def main():
         dt_val=0.0025,
         output_path="output/pv/fsi2_harm.bp",
         output_path_p="output/pv/fsi2_harm_p.bp",
-        disp_path="output/qoi/fsi2_harm_Adisp.txt",
+        qoi_path="output/qoi/fsi2_harm_qoi.txt",
     )
 
 
