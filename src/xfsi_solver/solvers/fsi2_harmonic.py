@@ -276,7 +276,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
             "snes_rtol": rtol,
             "snes_error_if_not_converged": True,
             "ksp_error_if_not_converged": True,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharm_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_harm_fm_snes_log.txt",
             "snes_monitor": None,
         },
     )
