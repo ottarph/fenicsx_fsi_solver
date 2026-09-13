@@ -67,14 +67,39 @@ def test_transfer_matches_direct_interpolation(old_and_new_domain, degree, shape
     assert error.max() < 1e-3
 
 
-def test_default_padding_matters(old_and_new_domain):
+def test_default_padding_matters(monkeypatch):
     """Guard against the DEFAULT_PADDING regressing to a value too small
     for this mesh's resolution: reproduce the failure mode found while
     calibrating it (points near a curved boundary silently left at 0,
     i.e. NOT a small numerical error but a large, easy-to-miss one) at a
     too-small padding, and confirm DEFAULT_PADDING avoids it.
+
+    The gap this guards against comes from a curved boundary (the
+    obstacle) being *resampled* to a different resolution than the mesh
+    it's compared against -- but ``obstacle`` (along with
+    ``solid_obstacle_interface``) is now in ``discrete_mesh.PINNED_BOUNDARIES``
+    (it never actually moves, so there's nothing to gain from letting
+    ``SizingField`` reseed it -- see that module's docstring), which means
+    ``old_and_new_domain`` alone no longer reproduces the mismatch: the
+    regenerated mesh's obstacle boundary is now carried forward node-for-
+    node rather than resampled, and probing this empirically (varying
+    deformation amplitude, mesh order, and chained coarsening) finds no
+    combination that still leaves a padding-sensitive gap on its own. So
+    this test un-pins ``obstacle`` for its own regenerate_mesh call,
+    isolating the actual property under test -- padding must handle a
+    resampled curved boundary -- from today's pinning configuration.
     """
-    old, new = old_and_new_domain
+    import xfsi_solver.remeshing.discrete_mesh as discrete_mesh
+
+    monkeypatch.setattr(discrete_mesh, "PINNED_BOUNDARIES", ())
+
+    old = load_fsi2_domain("data/meshes/fsi2/mesh.xdmf")
+    X = old.mesh.geometry.x.copy()
+    displacement = prescribed_interface_deformation(amplitude=0.05)(X.T)
+    X[:, 0] += displacement[0]
+    X[:, 1] += displacement[1]
+    new = discrete_mesh.regenerate_mesh(old, X, sizing=TEST_SIZING)
+
     V_old = dfx.fem.functionspace(old.mesh, ("CG", 2))
     f_old = dfx.fem.Function(V_old)
     f_old.interpolate(_known_scalar)

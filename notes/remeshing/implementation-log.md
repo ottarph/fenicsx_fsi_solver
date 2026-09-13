@@ -767,3 +767,27 @@ isn't needed pinned, and keeping one static curve responsive to
 check to all four, and `test_pinned_interface_survives_a_resizing_remesh`
 itself had to switch its non-pinned control from `obstacle` to
 `channel_side`, since `obstacle` is no longer available to serve as one.
+
+### 12.1 A second-order effect on `DEFAULT_PADDING`
+
+Pinning `obstacle` and `solid_obstacle_interface` together turned out to
+remove the specific geometric mismatch `test_default_padding_matters`
+(`tests/test_remeshing_transfer.py`) was built to reproduce: per
+`transfer.py`'s `DEFAULT_PADDING` docstring, that mismatch comes from the
+regenerated mesh approximating a curved boundary — the obstacle — with a
+*different* polygon than the source mesh, because the two disagree on how
+finely to resample it. With both curves now pinned from the very first
+`regenerate_mesh` call onward, the regenerated obstacle boundary is
+node-for-node identical to the source's, so that mismatch no longer
+occurs. This was checked empirically, not assumed: neither varying the
+prescribed deformation's amplitude, nor using the second-order mesh
+(`mesh_sec.xdmf`), nor chaining a further, much coarser remesh afterwards,
+reproduced a padding-sensitive gap once both curves were pinned.
+
+`test_default_padding_matters` still needs to guard against `DEFAULT_PADDING`
+regressing, though — the property it checks (a resampled curved boundary
+needs padding) is still real, just no longer reachable through today's
+`PINNED_BOUNDARIES` defaults. It now un-pins `obstacle` for its own
+`regenerate_mesh` call via `monkeypatch`, isolating that property from
+today's pinning configuration rather than deleting the coverage or
+weakening the assertion.
