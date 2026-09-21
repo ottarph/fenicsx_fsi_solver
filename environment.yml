@@ -19,3 +19,6 @@ dependencies:
   - tqdm
   - pytest
   - ruff
+
+variables:
+  OMP_NUM_THREADS: 1
