@@ -709,32 +709,119 @@ class MomentumPressurePC:
             self.pressure_pc.destroy()
 
 
-class FieldSplitSolver:
-    """Configures and instruments the linear solver of a ``NonlinearProblem``.
+class InstrumentedSolver:
+    """Instruments the linear solver of a ``NonlinearProblem``.
+
+    Replaces the SNES Jacobian callback by one that calls
+    ``dolfinx.fem.petsc.assemble_jacobian`` and then sets up the KSP, so that
+    Jacobian assembly, auxiliary assembly, preconditioner setup (e.g. the LU
+    factorization) and the Krylov solve are timed separately; SNES's own
+    ``KSPSetOperators`` with the same, unchanged matrices does not repeat the
+    setup. Every linear solve records its iterations and the true residual
+    ``b - A x`` with the Newton operator ``A``, in total and per diagnostic
+    field. The matrices, vectors and SNES remain owned by the
+    ``NonlinearProblem``.
+    """
+
+    def __init__(self, nonlinear_problem, problem):
+        from xfsi_solver.solvers.fsi2_harmonic_diffmesh import diagnostic_index_sets
+
+        self.nonlinear_problem = nonlinear_problem
+        self.problem = problem
+        A = nonlinear_problem.A
+        self.diagnostic_is = diagnostic_index_sets(A, problem)
+        self.snes = nonlinear_problem.solver
+        self.ksp = self.snes.getKSP()
+        self.prefix = self.ksp.getOptionsPrefix()
+        self.contexts = []
+
+        self._jacobian_ctx = {
+            "u": problem.solution,
+            "jacobian": nonlinear_problem.J,
+            "preconditioner": nonlinear_problem.preconditioner,
+            "bcs": problem.bcs,
+        }
+        P_mat = nonlinear_problem.P_mat if nonlinear_problem.P_mat is not None else A
+        self.snes.setJacobian(self._assemble_jacobian, A, P_mat)
+        self.ksp.setPreSolve(self._pre_solve)
+        self.ksp.setPostSolve(self._post_solve)
+        self.reset_statistics()
+
+    def reset_statistics(self):
+        self.linear_solves = []
+        self.timings = {"jacobian": 0.0, "auxiliary": 0.0, "setup": 0.0, "linear_solve": 0.0}
+        for ctx in self.contexts:
+            ctx.statistics.reset()
+
+    def context_statistics(self) -> dict:
+        """Counters of the Python PC contexts, keyed by context class."""
+        return {type(ctx).__name__: dict(ctx.statistics) for ctx in self.contexts}
+
+    def _assemble_auxiliary(self):
+        pass
+
+    def _setup(self):
+        self.ksp.setUp()
+
+    def _assemble_jacobian(self, snes, x, J, P):
+        start = timer()
+        dfx.fem.petsc.assemble_jacobian(snes, x, J, P, **self._jacobian_ctx)
+        self.timings["jacobian"] += timer() - start
+
+        start = timer()
+        self._assemble_auxiliary()
+        self.timings["auxiliary"] += timer() - start
+
+        start = timer()
+        self.ksp.setOperators(J, P)
+        self._setup()
+        self.timings["setup"] += timer() - start
+
+    def _pre_solve(self, ksp, b, x):
+        self._solve_start = timer()
+
+    def _post_solve(self, ksp, b, x):
+        self.timings["linear_solve"] += timer() - self._solve_start
+        A, _ = ksp.getOperators()
+        r = b.duplicate()
+        A.mult(x, r)
+        r.aypx(-1.0, b)
+        b_norm = b.norm()
+        self.linear_solves.append({
+            "iterations": ksp.getIterationNumber(),
+            "reason": ksp.getConvergedReason(),
+            "true_relative_residual": r.norm() / b_norm if b_norm > 0 else r.norm(),
+            "field_true_residuals": field_norms(r, self.diagnostic_is),
+            "field_rhs": field_norms(b, self.diagnostic_is),
+        })
+        r.destroy()
+
+    def view(self, viewer=None):
+        self.ksp.view(viewer)
+
+    def destroy(self):
+        for index_set in self.diagnostic_is:
+            index_set.destroy()
+
+
+class FieldSplitSolver(InstrumentedSolver):
+    """Configures the linear solver of a ``NonlinearProblem`` as FGMRES + Schur fieldsplit.
 
     Owns the index sets, the auxiliary operators and the Python PC contexts
-    it creates; the matrices, vectors and SNES of the ``NonlinearProblem``
-    remain owned by it.
+    it creates.
     """
 
     def __init__(self, nonlinear_problem, problem, config):
-        self.nonlinear_problem = nonlinear_problem
-        self.problem = problem
+        super().__init__(nonlinear_problem, problem)
         self.config = config
         fs_config = config.fieldsplit
 
         A = nonlinear_problem.A
         spaces = [problem.U, problem.V, problem.P]
         self.field_is = field_index_sets(A, spaces)
-        from xfsi_solver.solvers.fsi2_harmonic_diffmesh import diagnostic_index_sets
-        self.diagnostic_is = diagnostic_index_sets(A, problem)
         self.is_u = self.field_is[0]
         self.is_vp = union_index_set(self.field_is[1:])
         self.vp_field_is = nested_index_sets(self.is_vp, self.field_is[1:])
-
-        self.snes = nonlinear_problem.solver
-        self.ksp = self.snes.getKSP()
-        self.prefix = self.ksp.getOptionsPrefix()
 
         self.ksp.setType(PETSc.KSP.Type.FGMRES)
         self.ksp.setTolerances(rtol=config.ksp_rtol, atol=config.ksp_atol, max_it=config.ksp_max_it)
@@ -742,7 +829,6 @@ class FieldSplitSolver:
         self.ksp.setErrorIfNotConverged(True)
 
         self.aux = None
-        self.contexts = []
         if fs_config.variant == "auxiliary":
             from xfsi_solver.solvers.fsi2_harmonic_diffmesh import jacobian_forms
             pc_mode = config.preconditioner_mode or config.jacobian_mode
@@ -761,20 +847,7 @@ class FieldSplitSolver:
         opts = PETSc.Options()
         for key, value in self._full_options.items():
             opts[key] = value
-
-        self._jacobian_ctx = {
-            "u": problem.solution,
-            "jacobian": nonlinear_problem.J,
-            "preconditioner": nonlinear_problem.preconditioner,
-            "bcs": problem.bcs,
-        }
-        P_mat = nonlinear_problem.P_mat if nonlinear_problem.P_mat is not None else A
-        self.snes.setJacobian(self._assemble_jacobian, A, P_mat)
-        self.ksp.setPreSolve(self._pre_solve)
-        self.ksp.setPostSolve(self._post_solve)
-
         self._configured = False
-        self.reset_statistics()
 
     def _check_vp_layout(self, A, spaces):
         """The ``(v,p)`` split of ``A`` and ``P_vp`` must number the local DOFs identically."""
@@ -785,16 +858,6 @@ class FieldSplitSolver:
         for J_field, P_field in zip(J_rows, P_rows, strict=True):
             if not np.array_equal(_local_positions(J_field, vp_parent), P_field - P_start):
                 raise NotImplementedError("P_vp and the (v,p) split of the Jacobian number the DOFs differently")
-
-    def reset_statistics(self):
-        self.linear_solves = []
-        self.timings = {"jacobian": 0.0, "auxiliary": 0.0, "setup": 0.0, "linear_solve": 0.0}
-        for ctx in getattr(self, "contexts", []):
-            ctx.statistics.reset()
-
-    def context_statistics(self) -> dict:
-        """Counters of the Python PC contexts, keyed by context class."""
-        return {type(ctx).__name__: dict(ctx.statistics) for ctx in self.contexts}
 
     def _attach_python_contexts(self):
         fs_config = self.config.fieldsplit
@@ -823,21 +886,11 @@ class FieldSplitSolver:
         pc.setPythonContext(ctx)
         self.contexts.append(ctx)
 
-    def _assemble_jacobian(self, snes, x, J, P):
-        start = timer()
-        dfx.fem.petsc.assemble_jacobian(snes, x, J, P, **self._jacobian_ctx)
-        self.timings["jacobian"] += timer() - start
-
+    def _assemble_auxiliary(self):
         if self.aux is not None:
-            start = timer()
             self.aux.assemble()
-            self.timings["auxiliary"] += timer() - start
 
-        # Set up the preconditioner here, so that its cost is measured apart from
-        # the Krylov iterations. SNES passes the same, unchanged matrices to the
-        # KSP afterwards, which does not trigger another setup.
-        start = timer()
-        self.ksp.setOperators(J, P)
+    def _setup(self):
         if not self._configured:
             self.ksp.getPC().setFromOptions()
             self.ksp.setUp()
@@ -845,29 +898,6 @@ class FieldSplitSolver:
             self._attach_python_contexts()
             self._configured = True
         self.ksp.setUp()
-        self.timings["setup"] += timer() - start
-
-    def _pre_solve(self, ksp, b, x):
-        self._solve_start = timer()
-
-    def _post_solve(self, ksp, b, x):
-        self.timings["linear_solve"] += timer() - self._solve_start
-        A, _ = ksp.getOperators()
-        r = b.duplicate()
-        A.mult(x, r)
-        r.aypx(-1.0, b)
-        b_norm = b.norm()
-        self.linear_solves.append({
-            "iterations": ksp.getIterationNumber(),
-            "reason": ksp.getConvergedReason(),
-            "true_relative_residual": r.norm() / b_norm if b_norm > 0 else r.norm(),
-            "field_true_residuals": field_norms(r, self.diagnostic_is),
-            "field_rhs": field_norms(b, self.diagnostic_is),
-        })
-        r.destroy()
-
-    def view(self, viewer=None):
-        self.ksp.view(viewer)
 
     def destroy(self):
         opts = PETSc.Options()
@@ -878,5 +908,6 @@ class FieldSplitSolver:
             ctx.destroy()
         if self.aux is not None:
             self.aux.destroy()
-        for index_set in (*self.field_is, *self.diagnostic_is, self.is_vp, *self.vp_field_is):
+        for index_set in (*self.field_is, self.is_vp, *self.vp_field_is):
             index_set.destroy()
+        super().destroy()

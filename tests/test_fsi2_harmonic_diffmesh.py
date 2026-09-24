@@ -76,3 +76,38 @@ def test_exact_fieldsplit_matches_full_direct(output_dirs, preconditioner_mode):
         assert all(solve["iterations"] == 1 for solve in solves)
     assert all(step.field_residuals.shape == (step.snes_iterations + 1, len(DIAGNOSTIC_FIELDS))
                for step in result.steps)
+
+
+def test_restart_reproduces_continuous_run(output_dirs, tmp_path):
+    config = SolverConfig(jacobian_mode="no_ale", snes_monitor=False)
+    continuous = _solve(output_dirs, "continuous", config, n_steps=8)
+
+    checkpoints = tmp_path / "checkpoints"
+    first = solve(MESH, T=3.5 * DT, dt_val=DT, output_path=str(output_dirs["pv"] / "first.bp"),
+                  output_path_p=str(output_dirs["pv"] / "first_p.bp"), qoi_path=str(output_dirs["qoi"] / "first.txt"),
+                  config=config, checkpoint_dir=checkpoints, checkpoint_every=4 * DT)
+    assert len(first.steps) == 4
+    state = next(checkpoints.glob("state_t*.npz"))
+    second = solve(MESH, T=7.5 * DT, dt_val=DT, output_path=str(output_dirs["pv"] / "second.bp"),
+                   output_path_p=str(output_dirs["pv"] / "second_p.bp"),
+                   qoi_path=str(output_dirs["qoi"] / "second.txt"), config=config, initial_state=state)
+
+    assert [s.t for s in second.steps] == pytest.approx([s.t for s in continuous.steps[4:]])
+    for f, g in zip(second.problem.solution, continuous.problem.solution, strict=True):
+        assert relative_error(f.x.array, g.x.array, floor=1e-12) < 1e-12, f.name
+
+
+def test_benchmark_script(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    out = tmp_path / "bench"
+    cmd = [sys.executable, "-m", "xfsi_solver.scripts.fsi2_harmonic_diffmesh_benchmark", "--mesh", MESH,
+           "--dt", str(DT), "--steps", "3", "--modes", "full/direct,no_ale/fieldsplit", "--out", str(out)]
+    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, completed.stdout[-3000:] + completed.stderr[-3000:]
+    rows = {row["mode"]: row for row in json.loads((out / "results.json").read_text())["rows"]}
+    assert rows["no_ale/fieldsplit"]["rel err u"] < 1e-6
+    assert rows["no_ale/fieldsplit"]["krylov/solve"] > 1
+    assert (out / "results.md").exists()

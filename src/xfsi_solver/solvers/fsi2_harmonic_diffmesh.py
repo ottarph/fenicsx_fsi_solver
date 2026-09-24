@@ -21,7 +21,11 @@ from mpi4py import MPI
 from xfsi_solver.fsi.forms import nonzero, restrict_to_cells
 from xfsi_solver.fsi.materials import Fluid, Solid
 from xfsi_solver.linalg.fieldsplit import field_dof_rows, field_norms
-from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import FieldSplitConfig, FieldSplitSolver
+from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import (
+    FieldSplitConfig,
+    FieldSplitSolver,
+    InstrumentedSolver,
+)
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -467,7 +471,7 @@ class FieldResidualMonitor:
 
 
 def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
-    """The ``NonlinearProblem`` and, for ``linear_solver="fieldsplit"``, its ``FieldSplitSolver``."""
+    """The ``NonlinearProblem`` and the ``InstrumentedSolver`` (a ``FieldSplitSolver`` for fieldsplit) of its KSP."""
     J = jacobian_forms(problem, config.jacobian_mode)
     P = None
     if config.preconditioner_mode not in (None, config.jacobian_mode):
@@ -511,14 +515,55 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
             del opts[f"{prefix}{key}"]
     nonlinear_problem.solver.setConvergenceHistory(reset=True)
 
-    linear_solver = None
     if config.linear_solver == "fieldsplit":
         linear_solver = FieldSplitSolver(nonlinear_problem, problem, config)
+    else:
+        linear_solver = InstrumentedSolver(nonlinear_problem, problem)
     return nonlinear_problem, linear_solver
 
 
+def state_path(path) -> Path:
+    """The file holding this rank's part of the state ``path`` (suffixed by rank on several ranks)."""
+    path = Path(path)
+    if comm.size > 1:
+        path = path.with_name(f"{path.stem}_rank{comm.rank}of{comm.size}{path.suffix}")
+    return path
+
+
+def save_state(problem: FSIProblem, t_next: float, path) -> None:
+    """Save the current ``(u, v, p)`` for a restart at time ``t_next``.
+
+    The arrays are stored per rank in DOLFINx's local ordering, so a state
+    can only be loaded with the same mesh file and number of ranks.
+    """
+    path = state_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, t_next=t_next, comm_size=comm.size, **{f.name: f.x.array for f in problem.solution})
+
+
+def load_state(problem: FSIProblem, path) -> float:
+    """Load a state saved by :func:`save_state`; returns the time of the next step."""
+    path = state_path(path)
+    data = np.load(path)
+    if int(data["comm_size"]) != comm.size:
+        raise ValueError(f"State {path} was saved on {int(data['comm_size'])} ranks, not {comm.size}")
+    for f in problem.solution:
+        if data[f.name].shape != f.x.array.shape:
+            raise ValueError(f"State {path} does not match the mesh ({f.name})")
+        f.x.array[:] = data[f.name]
+    return float(data["t_next"])
+
+
 def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
-          config: SolverConfig | None = None) -> SolveResult:
+          config: SolverConfig | None = None, *, initial_state=None, checkpoint_dir=None,
+          checkpoint_every: float | None = None) -> SolveResult:
+    """Time step the FSI problem up to time ``T``.
+
+    ``initial_state`` is a file written by :func:`save_state` to restart from;
+    with ``checkpoint_dir`` and ``checkpoint_every``, states are saved to
+    ``checkpoint_dir/state_t<time>.npz`` about every ``checkpoint_every``
+    time units.
+    """
 
     config = SolverConfig() if config is None else config
 
@@ -530,8 +575,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     ds, ds_interface_fluid = problem.ds, problem.ds_interface_fluid
     entity_maps = problem.entity_maps
 
-    t0 = 0.0
+    t0 = 0.0 if initial_state is None else load_state(problem, initial_state)
     dt = problem.constants["dt"]
+    next_checkpoint = None if checkpoint_every is None else t0 + checkpoint_every
 
     save_every = 4
 
@@ -600,8 +646,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             if comm.rank == 0:
                 print(f"\n{t = :.3f}")
 
-            if linear_solver is not None:
-                linear_solver.reset_statistics()
+            linear_solver.reset_statistics()
             step_start = timer()
             nonlinear_problem.solve()
             step_time = timer() - step_start
@@ -630,9 +675,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
                 residual_history=np.array(history),
                 time=step_time,
                 field_residuals=np.array(field_monitor.history),
-                linear_solves=[] if linear_solver is None else linear_solver.linear_solves,
-                timings={} if linear_solver is None else dict(linear_solver.timings),
-                preconditioner_statistics={} if linear_solver is None else linear_solver.context_statistics(),
+                linear_solves=linear_solver.linear_solves,
+                timings=dict(linear_solver.timings),
+                preconditioner_statistics=linear_solver.context_statistics(),
                 drag=drag,
                 lift=lift,
                 tip_displacement=u_spot.copy(),
@@ -640,6 +685,10 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
             step += 1
             t += dt.value
+
+            if next_checkpoint is not None and t >= next_checkpoint - 1e-9 * dt.value:
+                save_state(problem, t, Path(checkpoint_dir) / f"state_t{t:.4f}.npz")
+                next_checkpoint += checkpoint_every
 
         end = timer()
         result.elapsed = end - start
@@ -651,8 +700,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         writer.close()
         writer_p.close()
         field_monitor.destroy()
-        if linear_solver is not None:
-            linear_solver.destroy()
+        linear_solver.destroy()
 
     return result
 
