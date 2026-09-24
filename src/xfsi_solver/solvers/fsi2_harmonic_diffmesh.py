@@ -6,14 +6,19 @@ import dolfinx as dfx
 import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import ufl
+import ufl.algorithms
 
 import sys
 import warnings
+from dataclasses import dataclass, field
+from functools import reduce
 from pathlib import Path
 from timeit import default_timer as timer
 
 from mpi4py.MPI import COMM_WORLD as comm
 from mpi4py import MPI
+
+from xfsi_solver.fsi.materials import Fluid, Solid
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -28,8 +33,92 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
+U_BAR = 1.0
+CHANNEL_HEIGHT = 0.41
 
+JACOBIAN_MODES = ("full", "no_ale")
+LINEAR_SOLVERS = ("direct",)
+
+
+class InflowFunc:
+    def __init__(self, t: float = 0.0):
+        self.t = t
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        H = CHANNEL_HEIGHT
+        values = np.zeros((2, x.shape[1]), dtype=x.dtype)
+        values[0] = 1.5 * U_BAR * 4 * x[1] * (H - x[1]) / H**2
+        if self.t < 2.0:
+            values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
+        return values
+
+
+@dataclass
+class SolverConfig:
+    """Nonlinear/linear solver configuration for :func:`solve`.
+
+    ``jacobian_mode`` selects the operator used by Newton's method:
+    ``"full"`` is the exact derivative of the residual, ``"no_ale"`` omits
+    the derivatives of the fluid momentum and incompressibility terms with
+    respect to the fluid displacement (see :func:`jacobian_forms`). The
+    residual itself is identical in both modes.
+
+    ``preconditioner_mode`` selects the matrix handed to the linear solver as
+    preconditioning operator; ``None`` means the Jacobian itself.
+    """
+    jacobian_mode: str = "full"
+    preconditioner_mode: str | None = None
+    linear_solver: str = "direct"
+    snes_max_it: int = 20
+    snes_atol: float = 1.0e-7
+    snes_rtol: float = 1.0e-12
+    snes_monitor: bool = True
+
+    def __post_init__(self):
+        if self.jacobian_mode not in JACOBIAN_MODES:
+            raise ValueError(f"Unknown jacobian_mode {self.jacobian_mode!r}, expected one of {JACOBIAN_MODES}")
+        if self.preconditioner_mode not in (None, *JACOBIAN_MODES):
+            raise ValueError(f"Unknown preconditioner_mode {self.preconditioner_mode!r}")
+        if self.linear_solver not in LINEAR_SOLVERS:
+            raise ValueError(f"Unknown linear_solver {self.linear_solver!r}, expected one of {LINEAR_SOLVERS}")
+        if self.linear_solver == "direct" and self.preconditioner_mode not in (None, self.jacobian_mode):
+            raise ValueError("A separate preconditioning matrix requires an iterative linear solver")
+
+
+@dataclass
+class FSIProblem:
+    """Discrete FSI problem on the shared fluid-solid displacement/velocity spaces."""
+    mesh: dfx.mesh.Mesh
+    fluid_mesh: dfx.mesh.Mesh
+    cell_tags: dfx.mesh.MeshTags
+    facet_tags: dfx.mesh.MeshTags
+    entity_maps: list
+    ds: ufl.Measure
+    dx_fluid: ufl.Measure
+    dx_solid: ufl.Measure
+    ds_interface_fluid: ufl.Measure
+    constants: dict
+    U: dfx.fem.FunctionSpace
+    V: dfx.fem.FunctionSpace
+    P: dfx.fem.FunctionSpace
+    u: dfx.fem.Function
+    v: dfx.fem.Function
+    p: dfx.fem.Function
+    u_old: dfx.fem.Function
+    v_old: dfx.fem.Function
+    bcs: list
+    inflow_bc_func: dfx.fem.Function
+    residual: list
+
+    @property
+    def solution(self):
+        return [self.u, self.v, self.p]
+
+    def set_inflow(self, t: float):
+        self.inflow_bc_func.interpolate(InflowFunc(t))
+        self.inflow_bc_func.x.scatter_forward()
+
+
+def build_problem(mesh_path, dt_val) -> FSIProblem:
 
     # load mesh and meshtags
 
@@ -45,7 +134,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         facet_tags = infile.read_meshtags(mesh, name= "Facet tags")
 
     assert len(np.setdiff1d(np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
-    
+
 
     # create submesh for fluid
 
@@ -97,26 +186,13 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     lambda_s = dfx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
     # lambda_s = dfx.fem.Constant(mesh, 2e6)
 
-    U_bar = 1.0
-    H = 0.41
-
-    t0 = 0.0
     dt = dfx.fem.Constant(mesh, dt_val)
 
     theta = dfx.fem.Constant(mesh, 0.5 + dt.value)
 
-    save_every = 4
+    alpha_u = dfx.fem.Constant(mesh, 1e-9)
 
-    total_steps = int(np.ceil((T - t0) / dt_val))
-    if total_steps <= save_every:
-        warnings.warn(
-            f"save_every ({save_every}) is larger than the total number of time "
-            f"steps ({total_steps}); at most one VTX snapshot will be written to "
-            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
-            f"series in ParaView."
-        )
 
-    
     # create function spaces
 
     U = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
@@ -130,13 +206,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
     u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
 
-    
+
     du, dv, dp = ufl.TestFunctions(W)
 
 
     # create Dirichlet boundary condition
-
-    from functools import reduce
 
     inflow_bc_func = dfx.fem.Function(V)
     inflow_bc_func.x.array[:] = 0.0
@@ -147,16 +221,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     inflow_bc = dfx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
 
-    class InflowFunc:
-        def __init__(self, t: float = 0.0):
-            self.t = t
-        def __call__(self, x: np.ndarray) -> np.ndarray:
-            values = np.zeros((2, x.shape[1]), dtype=x.dtype)
-            values[0] = 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2
-            if self.t < 2.0:
-                values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
-            return values
-
     noslip_bc_func = dfx.fem.Function(V)
     noslip_bc_func.x.array[:] = 0.0
     noslip_bc_facets = reduce(np.union1d, [
@@ -165,12 +229,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ])
     noslip_bc_dofs = dfx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
-    
+
     noslip_bc = dfx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
 
-    
+
     # Create ALE Dirichlet boundary condition
-    
+
     u_bc_func = dfx.fem.Function(U)
     u_bc_func.x.array[:] = 0.0
     u_bc_facets = reduce(np.union1d, [
@@ -192,8 +256,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
-    
-    from xfsi_solver.fsi.materials import Fluid, Solid
 
     # create residual form
 
@@ -213,18 +275,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         residual += rho_s * ufl.inner((u - u_old) / dt, du) * dx_solid
 
         return residual
-    
+
     def A_I(u, v, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
         normal = ufl.FacetNormal(mesh)
 
-        alpha_u0 = dfx.fem.Constant(mesh, 1e-9)
-        alpha_u = alpha_u0
-
         residual  = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
         residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
-        
+
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
         return residual
@@ -242,7 +301,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         residual -= rho_s * ufl.inner(v, du) * dx_solid
 
         return residual
-    
+
     def A_P(u, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
@@ -266,33 +325,162 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     residual_blocked = ufl.extract_blocks(residual)
 
-    max_iter = 20
-    atol = 1.0e-7
-    rtol = 1.0e-12
+    constants = dict(
+        rho_f=rho_f, nu_f=nu_f, rho_s=rho_s, mu_s=mu_s, nu_s=nu_s, lambda_s=lambda_s,
+        dt=dt, theta=theta, alpha_u=alpha_u,
+    )
 
-    problem = dfx.fem.petsc.NonlinearProblem(
-        residual_blocked, [u, v, p], bcs=bcs,
-        petsc_options_prefix="fsi2_harmonic_diffmesh_",
-        entity_maps=entity_maps,
-        petsc_options={
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 80,
-            "snes_linesearch_type": "none",
-            "snes_max_it": max_iter,
-            "snes_atol": atol,
-            "snes_rtol": rtol,
-            "snes_error_if_not_converged": True,
-            "ksp_error_if_not_converged": True,
-            # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
-            "snes_monitor": None,
-        },
+    return FSIProblem(
+        mesh=mesh, fluid_mesh=fluid_mesh, cell_tags=cell_tags, facet_tags=facet_tags,
+        entity_maps=entity_maps, ds=ds, dx_fluid=dx_fluid, dx_solid=dx_solid,
+        ds_interface_fluid=ds_interface_fluid, constants=constants,
+        U=U, V=V, P=P, u=u, v=v, p=p, u_old=u_old, v_old=v_old,
+        bcs=bcs, inflow_bc_func=inflow_bc_func, residual=residual_blocked,
     )
 
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u,v])
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
+def _subdomain_ids(integral):
+    sid = integral.subdomain_id()
+    return tuple(sid) if isinstance(sid, tuple) else (sid,)
+
+
+def restrict_to_cells(form: ufl.Form, marker: int) -> ufl.Form:
+    """The cell integrals of ``form`` over the cells tagged ``marker``.
+
+    Every integral in ``form`` must be a cell integral over a single tagged
+    subdomain, so that no contribution is silently dropped or duplicated.
+    """
+    selected = []
+    for integral in form.integrals():
+        ids = _subdomain_ids(integral)
+        if integral.integral_type() != "cell" or len(ids) != 1 or not isinstance(ids[0], int):
+            raise ValueError(
+                f"Cannot split {integral.integral_type()} integral over subdomain(s) {ids} by cell marker"
+            )
+        if ids[0] == marker:
+            selected.append(integral)
+    return ufl.Form(selected)
+
+
+def _nonzero(form: ufl.Form):
+    """``form`` with derivatives expanded, or ``None`` if it vanishes identically."""
+    form = ufl.algorithms.expand_derivatives(form)
+    return None if form.empty() else form
+
+
+def jacobian_forms(problem: FSIProblem, mode: str = "full"):
+    """Block Jacobian forms, rows and columns ordered as ``(u, v, p)``.
+
+    ``mode="full"`` differentiates the complete residual. ``mode="no_ale"``
+    omits the derivatives of the fluid momentum and incompressibility
+    residuals with respect to the displacement: block ``(v, u)`` is replaced
+    by the derivative of the solid momentum contribution alone, and block
+    ``(p, u)`` is dropped. The shared interface rows of block ``(v, u)``
+    contain both fluid and solid contributions, so the selection is made by
+    integration domain, not by rows. All velocity and pressure derivatives,
+    the mesh equation and the kinematic equation are retained.
+    """
+    if mode not in JACOBIAN_MODES:
+        raise ValueError(f"Unknown Jacobian mode {mode!r}, expected one of {JACOBIAN_MODES}")
+
+    F = problem.residual
+    w = problem.solution
+    dw = [ufl.TrialFunction(w_j.function_space) for w_j in w]
+
+    def derivative(form, j):
+        return _nonzero(ufl.derivative(form, w[j], dw[j]))
+
+    J = [[None if (mode == "no_ale" and i > 0 and j == 0) else derivative(F[i], j)
+          for j in range(len(w))] for i in range(len(F))]
+
+    if mode == "no_ale":
+        J[1][0] = derivative(restrict_to_cells(F[1], PHYSICAL_MARKERS["solid"]), 0)
+
+    return J
+
+
+@dataclass
+class StepInfo:
+    t: float
+    snes_iterations: int
+    linear_iterations: int
+    converged_reason: int
+    residual_history: np.ndarray
+    time: float
+    drag: float
+    lift: float
+    tip_displacement: np.ndarray
+
+
+@dataclass
+class SolveResult:
+    problem: FSIProblem
+    config: SolverConfig
+    steps: list = field(default_factory=list)
+    elapsed: float = 0.0
+
+
+def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig) -> dfx.fem.petsc.NonlinearProblem:
+    J = jacobian_forms(problem, config.jacobian_mode)
+    P = None
+    if config.preconditioner_mode not in (None, config.jacobian_mode):
+        P = jacobian_forms(problem, config.preconditioner_mode)
+
+    petsc_options = {
+        "ksp_type": "preonly",
+        "pc_type": "lu",
+        "pc_factor_mat_solver_type": "mumps",
+        "mat_mumps_icntl_14": 80,
+        "snes_linesearch_type": "none",
+        "snes_max_it": config.snes_max_it,
+        "snes_atol": config.snes_atol,
+        "snes_rtol": config.snes_rtol,
+        "snes_error_if_not_converged": True,
+        "ksp_error_if_not_converged": True,
+        # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
+    }
+    if config.snes_monitor:
+        petsc_options["snes_monitor"] = None
+
+    nonlinear_problem = dfx.fem.petsc.NonlinearProblem(
+        problem.residual, problem.solution, bcs=problem.bcs, J=J, P=P,
+        petsc_options_prefix="fsi2_harmonic_diffmesh_",
+        entity_maps=problem.entity_maps,
+        petsc_options=petsc_options,
+    )
+    nonlinear_problem.solver.setConvergenceHistory(reset=True)
+    return nonlinear_problem
+
+
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: SolverConfig | None = None) -> SolveResult:
+
+    config = SolverConfig() if config is None else config
+
+    problem = build_problem(mesh_path, dt_val)
+    mesh = problem.mesh
+    U = problem.U
+    u, v, p = problem.solution
+    rho_f, nu_f = problem.constants["rho_f"], problem.constants["nu_f"]
+    ds, ds_interface_fluid = problem.ds, problem.ds_interface_fluid
+    entity_maps = problem.entity_maps
+
+    t0 = 0.0
+    dt = problem.constants["dt"]
+
+    save_every = 4
+
+    total_steps = int(np.ceil((T - t0) / dt_val))
+    if total_steps <= save_every:
+        warnings.warn(
+            f"save_every ({save_every}) is larger than the total number of time "
+            f"steps ({total_steps}); at most one VTX snapshot will be written to "
+            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
+            f"series in ParaView."
+        )
+
+    nonlinear_problem = create_nonlinear_problem(problem, config)
+    snes = nonlinear_problem.solver
+
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
@@ -325,59 +513,72 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         with open(qoi_path, "wb") as f:
             np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
+    result = SolveResult(problem=problem, config=config)
 
-    t = t0
-    step = -1
-    max_steps = np.inf
-    start = timer()
-    while step < max_steps and t < T:
+    writer = dfx.io.VTXWriter(comm, output_path, [u,v])
+    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
-        inflow_bc_func.interpolate(InflowFunc(t))
-        inflow_bc_func.x.scatter_forward()
+    try:
+        t = t0
+        step = -1
+        max_steps = np.inf
+        start = timer()
+        while step < max_steps and t < T:
 
-        u_old.x.array[:] = u.x.array[:]
-        v_old.x.array[:] = v.x.array[:]
+            problem.set_inflow(t)
 
+            problem.u_old.x.array[:] = u.x.array[:]
+            problem.v_old.x.array[:] = v.x.array[:]
+
+            if comm.rank == 0:
+                print(f"\n{t = :.3f}")
+
+            step_start = timer()
+            nonlinear_problem.solve()
+            step_time = timer() - step_start
+
+            if comm.rank == 0:
+                sys.stdout.flush()
+
+            if step % save_every == 0:
+                writer.write(t)
+                writer_p.write(t)
+
+            loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
+            u_spot = comm.allreduce(loc_u_spot, op=MPI.SUM)
+            drag = comm.allreduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
+            lift = comm.allreduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
+            if comm.rank == 0:
+                with open(qoi_path, "ab") as f:
+                    np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
+
+            history, _ = snes.getConvergenceHistory()
+            result.steps.append(StepInfo(
+                t=t,
+                snes_iterations=snes.getIterationNumber(),
+                linear_iterations=snes.getLinearSolveIterations(),
+                converged_reason=snes.getConvergedReason(),
+                residual_history=np.array(history),
+                time=step_time,
+                drag=drag,
+                lift=lift,
+                tip_displacement=u_spot.copy(),
+            ))
+
+            step += 1
+            t += dt.value
+
+        end = timer()
+        result.elapsed = end - start
         if comm.rank == 0:
-            print(f"\n{t = :.3f}")
+            print(f"\n{comm.size = }")
+            print(f"Elapsed time: {end - start:.3f} s")
+            print(f"Time per step: {(end - start) / (step+1):.3f} s")
+    finally:
+        writer.close()
+        writer_p.close()
 
-        try:
-            problem.solve()
-        except Exception:
-            writer.close()
-            writer_p.close()
-            raise
-
-        if comm.rank == 0:
-            sys.stdout.flush()
-        
-        if step % save_every == 0:
-            writer.write(t)
-            writer_p.write(t)
-
-        loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
-        u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
-        if comm.rank == 0:
-            with open(qoi_path, "ab") as f:
-                np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
-
-
-        step += 1
-        t += dt.value
-
-    end = timer()
-    if comm.rank == 0:
-        print(f"\n{comm.size = }")
-        print(f"Elapsed time: {end - start:.3f} s")
-        print(f"Time per step: {(end - start) / (step+1):.3f} s")
-
-
-    writer.close()
-
-
-    return
+    return result
 
 
 def main():
