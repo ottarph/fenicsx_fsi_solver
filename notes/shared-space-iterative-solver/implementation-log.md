@@ -116,3 +116,88 @@ if the configured FGMRES/fieldsplit hierarchy was replaced by options. With
 the fix the exact-fieldsplit solve test takes 5 s (dense Schur complement)
 instead of 1.4 s, and passes: 1 FGMRES iteration per Newton step with the
 Jacobian as Pmat.
+
+## Step 3: auxiliary P_vp and approximate subsolvers
+
+`FieldSplitConfig` (in `fsi2_harmonic_diffmesh_fieldsplit`) selects every
+level; each approximation can be replaced by LU to isolate its effect.
+Production default: `variant="auxiliary"`, `displacement="block_triangular"`
+with `displacement_fluid="cholesky"`, `momentum="schur"`, `velocity="hypre"`,
+`pressure="selfp"`, `convection=True`.
+
+- `P_vp` is the user Schur preconditioning matrix of the outer split and the
+  Pmat of a Python PC (`MomentumPressurePC`) that owns an inner PCFIELDSPLIT
+  `v|p` (full Schur) on `P_vp`. `FieldSplitSolver._check_vp_layout` verifies
+  that `P_vp` and the `(v,p)` split of the Jacobian number the local DOFs
+  identically (they do; otherwise it raises).
+- With `convection=True` `H_hat = H + theta dt E_s` and `P_vp` is built
+  algebraically: copy the `(v,p)` block of Pmat into `P_vp` (subset-pattern
+  AXPY; `P_vp` has a structurally present zero `(p,p)` block and is assembled
+  once to fix its pattern) and assemble `theta dt E_s` (solid cells only) on
+  top. 16 ms instead of 82 ms (default mesh) for the form-based `P_vp`, and
+  equal to the form-assembled `[[J_vv + theta dt E_s, G], [B, 0]]` to 1e-13
+  (test). DOLFINx *inserts* the diagonal of Dirichlet rows when assembling
+  with BCs, so the added form must use `diag=1.0`; `diag=0.0` zeroed the
+  unit diagonal copied from Pmat and FGMRES diverged.
+- In this discretization `A^{-1} C = -theta dt` on the solid DOFs up to the
+  alpha-scaled interface terms, so `P_vp` with exact subsolves is almost the
+  exact reduced Schur complement: 1.0-1.1 FGMRES iterations per Newton step at
+  startup, 3.0 (with convection) / 5-5.5 (without) at developed coarse states.
+- Displacement (`DisplacementPC`): `I` = DOFs of solid cells (interface
+  included), `f` = fluid interior; `M_II y_I = r_I` with the constant solid
+  mass (Cholesky, factored once), then `A_ff y_f = r_f - A_fI y_I`.
+  `||A_II - M_II|| <= 1e-8 ||M_II||` (test). Found: with a single AMG V-cycle
+  for `A_ff` the displacement error stayed at 4e-7 while the total residual
+  converged, because the alpha-scaled mesh rows are invisible in the FGMRES
+  norm. The fluid-interior solve must therefore be accurate. It is constant
+  (linear mesh equation on the reference configuration), so it is factored
+  once (Cholesky: 3 ms per solve on the default mesh vs 29 ms for
+  BoomerAMG-CG to 1e-8); `displacement_fluid="amg"` keeps the AMG option. The
+  AMG hierarchy / factorization is rebuilt only if `A_ff` changes (checked at
+  every setup).
+- PETSc pitfall: `fieldsplit_<schur split>_inner_` is reserved (KSP for
+  `A00^{-1}` inside the Schur complement, created when options with that
+  prefix exist), so my first inner prefix `fieldsplit_vp_inner_` silently
+  replaced the `u` sub-KSP. The inner split uses `fieldsplit_vp_aux_`.
+- PETSc's separate upper KSP (`fieldsplit_u_upper_`) does not save the lower
+  `A^{-1}` in the full factorization (it adds a third solve), so the lower
+  application, of which only the solid/interface part enters `A10 y`, still
+  does the full displacement solve.
+- Velocity: `H_hat` is SPD without convection. Default mesh, CG to 1e-8 on
+  `H_hat`: BoomerAMG 10 iterations, GAMG + rigid body modes 25, GAMG without
+  near-nullspace 34, BoomerAMG nodal 18, Jacobi 236. One BoomerAMG V-cycle is
+  used (GAMG + rigid body modes is `velocity="gamg"`).
+- Pressure: GMRES iterations to 1e-8 on the inner Schur complement
+  `B H_hat^{-1} G` (exact `H_hat` solves), default mesh: Cahouet-Chabard
+  (`rho_f/dt K_p^{-1} + theta mu_f M_p^{-1}`, ALE metric `J^2/J_mid`,
+  Dirichlet at the outflow, Neumann elsewhere incl. the interface) 25,
+  `selfp` (`B diag(H_hat)^{-1} G`) + LU 17, + one BoomerAMG V-cycle 18. The
+  coarse developed state gives 17 vs 13-14. `selfp` is the default; it
+  inherits boundary conditions and the solid mass at the interface
+  algebraically. Pressure preconditioning remains the dominant source of
+  outer iterations (below).
+- Outer FGMRES iterations per linear solve (no-ALE Jacobian, ksp_rtol 1e-6):
+
+  | preconditioner | coarse startup | default startup | coarse t=3 | coarse t=6 |
+  |---|---|---|---|---|
+  | u LU, `P_vp` LU | 1.1 | 1.0 | 5.0 (3.0 conv.) | 5.5 (3.0 conv.) |
+  | inner Schur, v LU, accurate p | 1.1 | 1.0 | | |
+  | inner Schur, v LU, Cahouet-Chabard | 7.9 | 12.9 | | |
+  | inner Schur, v LU, selfp | | 8.4 | | |
+  | v BoomerAMG, Cahouet-Chabard | | 18.7 | 11.5 | 11.7 |
+  | v BoomerAMG, selfp (production) | 10.2 | 12.2 | 7.8-8.0 | 8.2-8.3 |
+  | v GAMG, Cahouet-Chabard | 19.5 | 28.2 | | |
+
+- Default mesh, startup (4 steps), s/step: direct no-ALE 0.84, production
+  1.02 (Jacobian 0.12 s, auxiliary 0.03 s, linear solve 0.30 s per Newton
+  step; displacement PC 5.4 ms and momentum-pressure PC 9.3 ms per
+  application).
+- Tests (`tests/test_fsi2_harmonic_diffmesh_preconditioners.py`, also on 2
+  ranks): algebraic `P_vp` equals the form-assembled operator, form-based
+  `H_hat` symmetric, the displacement PC equals the block-triangular solve
+  (with LU) and partitions the displacement DOFs, Cahouet-Chabard equals
+  `rho/dt K^{-1} + theta mu M^{-1}` including the pressure numbering map,
+  the production hierarchy has no LU and no dense matrices (`ksp_view`), and
+  production fieldsplit (no-ALE Jacobian, and full Jacobian with no-ALE Pmat)
+  matches full/direct over 12 steps (fields 1e-7, QoIs 1e-6) with the
+  fluid-interior mesh rows resolved to 1e-6 relative.

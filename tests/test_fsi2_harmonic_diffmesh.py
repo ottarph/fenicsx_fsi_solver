@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from xfsi_solver.solvers.fsi2_harmonic_diffmesh import SolverConfig, solve
+from xfsi_solver.solvers.fsi2_harmonic_diffmesh import DIAGNOSTIC_FIELDS, SolverConfig, solve
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 DT = 0.0025
@@ -74,4 +74,5 @@ def test_exact_fieldsplit_matches_full_direct(output_dirs, preconditioner_mode):
     if preconditioner_mode is None:
         # exact factorization of the Newton operator itself
         assert all(solve["iterations"] == 1 for solve in solves)
-    assert all(step.field_residuals.shape == (step.snes_iterations + 1, 3) for step in result.steps)
+    assert all(step.field_residuals.shape == (step.snes_iterations + 1, len(DIAGNOSTIC_FIELDS))
+               for step in result.steps)

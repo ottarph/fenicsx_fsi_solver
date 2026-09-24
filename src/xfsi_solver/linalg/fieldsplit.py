@@ -23,24 +23,39 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 
-def field_index_sets(A: PETSc.Mat, spaces: Sequence[dfx.fem.FunctionSpace]) -> list[PETSc.IS]:
-    """Global index sets of the owned rows of each field of a block matrix.
+def field_dof_rows(A: PETSc.Mat, spaces: Sequence[dfx.fem.FunctionSpace]) -> list[np.ndarray]:
+    """Global row of every owned (block-expanded) DOF of each field, in local DOF order.
 
     Args:
-        A: Block matrix assembled by DOLFINx with row spaces ``spaces``.
+        A: Matrix assembled by DOLFINx with row spaces ``spaces`` (a block
+            matrix for several spaces).
         spaces: The row function spaces of ``A``, in block order.
     """
     local_sets = dfx.cpp.la.petsc.create_index_sets([(V.dofmap.index_map, V.dofmap.index_map_bs) for V in spaces])
     lgmap, _ = A.getLGMap()
     rstart, rend = A.getOwnershipRange()
-    sets = []
+    rows = []
     for V, local in zip(spaces, local_sets, strict=True):
-        rows = np.asarray(lgmap.apply(local.getIndices()), dtype=PETSc.IntType)
-        owned = np.sort(rows[(rows >= rstart) & (rows < rend)])
-        expected = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
-        if owned.size != expected:
-            raise RuntimeError(f"Found {owned.size} owned rows for a field with {expected} owned DOFs")
-        sets.append(PETSc.IS().createGeneral(owned, comm=A.comm))
+        n_owned = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
+        field_rows = np.asarray(lgmap.apply(local.getIndices()[:n_owned]), dtype=PETSc.IntType)
+        if np.any(field_rows < rstart) or np.any(field_rows >= rend):
+            raise RuntimeError("Owned DOFs do not map to owned rows")
+        rows.append(field_rows)
+    return rows
+
+
+def field_index_sets(A: PETSc.Mat, spaces: Sequence[dfx.fem.FunctionSpace]) -> list[PETSc.IS]:
+    """Global index sets (sorted, with the space's block size) of the owned rows of each field.
+
+    Args:
+        A: Block matrix assembled by DOLFINx with row spaces ``spaces``.
+        spaces: The row function spaces of ``A``, in block order.
+    """
+    sets = []
+    for V, rows in zip(spaces, field_dof_rows(A, spaces), strict=True):
+        index_set = PETSc.IS().createGeneral(np.sort(rows), comm=A.comm)
+        index_set.setBlockSize(V.dofmap.index_map_bs)
+        sets.append(index_set)
     return sets
 
 

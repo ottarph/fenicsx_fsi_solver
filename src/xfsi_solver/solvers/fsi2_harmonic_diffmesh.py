@@ -7,7 +7,6 @@ import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import ufl
 from petsc4py import PETSc
-import ufl.algorithms
 
 import sys
 import warnings
@@ -19,9 +18,10 @@ from timeit import default_timer as timer
 from mpi4py.MPI import COMM_WORLD as comm
 from mpi4py import MPI
 
+from xfsi_solver.fsi.forms import nonzero, restrict_to_cells
 from xfsi_solver.fsi.materials import Fluid, Solid
-from xfsi_solver.linalg.fieldsplit import field_index_sets, field_norms
-from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import FieldSplitSolver
+from xfsi_solver.linalg.fieldsplit import field_dof_rows, field_norms
+from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import FieldSplitConfig, FieldSplitSolver
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -69,9 +69,11 @@ class SolverConfig:
     preconditioning operator; ``None`` means the Jacobian itself.
 
     ``linear_solver="direct"`` is MUMPS LU on the Jacobian.
-    ``linear_solver="fieldsplit"`` is FGMRES with a Schur field split, see
-    :mod:`xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit` for the
-    ``fieldsplit`` variants. The ``ksp_*`` options apply to FGMRES only.
+    ``linear_solver="fieldsplit"`` is FGMRES with a Schur field split
+    configured by ``fieldsplit`` (a :class:`FieldSplitConfig`, or its
+    ``variant`` as a string), see
+    :mod:`xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit`. The
+    ``ksp_*`` options apply to FGMRES only.
     """
     jacobian_mode: str = "full"
     preconditioner_mode: str | None = None
@@ -80,7 +82,7 @@ class SolverConfig:
     snes_atol: float = 1.0e-7
     snes_rtol: float = 1.0e-12
     snes_monitor: bool = True
-    fieldsplit: str = "exact"
+    fieldsplit: FieldSplitConfig = field(default_factory=FieldSplitConfig)
     ksp_rtol: float = 1.0e-6
     ksp_atol: float = 1.0e-50
     ksp_max_it: int = 500
@@ -88,6 +90,8 @@ class SolverConfig:
     ksp_monitor: bool = False
 
     def __post_init__(self):
+        if isinstance(self.fieldsplit, str):
+            self.fieldsplit = FieldSplitConfig(variant=self.fieldsplit)
         if self.jacobian_mode not in JACOBIAN_MODES:
             raise ValueError(f"Unknown jacobian_mode {self.jacobian_mode!r}, expected one of {JACOBIAN_MODES}")
         if self.preconditioner_mode not in (None, *JACOBIAN_MODES):
@@ -103,6 +107,7 @@ class FSIProblem:
     """Discrete FSI problem on the shared fluid-solid displacement/velocity spaces."""
     mesh: dfx.mesh.Mesh
     fluid_mesh: dfx.mesh.Mesh
+    fluid_vertex_map: dfx.mesh.EntityMap
     cell_tags: dfx.mesh.MeshTags
     facet_tags: dfx.mesh.MeshTags
     entity_maps: list
@@ -119,13 +124,31 @@ class FSIProblem:
     p: dfx.fem.Function
     u_old: dfx.fem.Function
     v_old: dfx.fem.Function
-    bcs: list
+    bcs_u: list
+    bcs_v: list
     inflow_bc_func: dfx.fem.Function
     residual: list
 
     @property
     def solution(self):
         return [self.u, self.v, self.p]
+
+    @property
+    def bcs(self):
+        return [*self.bcs_u, *self.bcs_v]
+
+    def solid_displacement_dofs(self) -> np.ndarray:
+        """Mask of the owned (block-expanded) displacement DOFs of solid cells, interface included."""
+        U = self.U
+        bs = U.dofmap.index_map_bs
+        n_owned = U.dofmap.index_map.size_local
+        solid_cells = self.cell_tags.find(PHYSICAL_MARKERS["solid"])
+        nodes = dfx.fem.locate_dofs_topological(U, self.mesh.topology.dim, solid_cells)
+        nodes = nodes[nodes < n_owned]
+        mask = np.zeros(n_owned * bs, dtype=bool)
+        for k in range(bs):
+            mask[bs * nodes + k] = True
+        return mask
 
     def set_inflow(self, t: float):
         self.inflow_bc_func.interpolate(InflowFunc(t))
@@ -262,10 +285,6 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
     u_bc = dfx.fem.dirichletbc(u_bc_func, u_bc_dofs)
 
 
-    # Collect Dirichlet boundary conditions
-
-    bcs = [u_bc, inflow_bc, noslip_bc]
-
 
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
@@ -345,41 +364,12 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
     )
 
     return FSIProblem(
-        mesh=mesh, fluid_mesh=fluid_mesh, cell_tags=cell_tags, facet_tags=facet_tags,
+        mesh=mesh, fluid_mesh=fluid_mesh, fluid_vertex_map=fluid_vertex_map, cell_tags=cell_tags, facet_tags=facet_tags,
         entity_maps=entity_maps, ds=ds, dx_fluid=dx_fluid, dx_solid=dx_solid,
         ds_interface_fluid=ds_interface_fluid, constants=constants,
         U=U, V=V, P=P, u=u, v=v, p=p, u_old=u_old, v_old=v_old,
-        bcs=bcs, inflow_bc_func=inflow_bc_func, residual=residual_blocked,
+        bcs_u=[u_bc], bcs_v=[inflow_bc, noslip_bc], inflow_bc_func=inflow_bc_func, residual=residual_blocked,
     )
-
-
-def _subdomain_ids(integral):
-    sid = integral.subdomain_id()
-    return tuple(sid) if isinstance(sid, tuple) else (sid,)
-
-
-def restrict_to_cells(form: ufl.Form, marker: int) -> ufl.Form:
-    """The cell integrals of ``form`` over the cells tagged ``marker``.
-
-    Every integral in ``form`` must be a cell integral over a single tagged
-    subdomain, so that no contribution is silently dropped or duplicated.
-    """
-    selected = []
-    for integral in form.integrals():
-        ids = _subdomain_ids(integral)
-        if integral.integral_type() != "cell" or len(ids) != 1 or not isinstance(ids[0], int):
-            raise ValueError(
-                f"Cannot split {integral.integral_type()} integral over subdomain(s) {ids} by cell marker"
-            )
-        if ids[0] == marker:
-            selected.append(integral)
-    return ufl.Form(selected)
-
-
-def _nonzero(form: ufl.Form):
-    """``form`` with derivatives expanded, or ``None`` if it vanishes identically."""
-    form = ufl.algorithms.expand_derivatives(form)
-    return None if form.empty() else form
 
 
 def jacobian_forms(problem: FSIProblem, mode: str = "full"):
@@ -402,7 +392,7 @@ def jacobian_forms(problem: FSIProblem, mode: str = "full"):
     dw = [ufl.TrialFunction(w_j.function_space) for w_j in w]
 
     def derivative(form, j):
-        return _nonzero(ufl.derivative(form, w[j], dw[j]))
+        return nonzero(ufl.derivative(form, w[j], dw[j]))
 
     J = [[None if (mode == "no_ale" and i > 0 and j == 0) else derivative(F[i], j)
           for j in range(len(w))] for i in range(len(F))]
@@ -424,6 +414,7 @@ class StepInfo:
     field_residuals: np.ndarray
     linear_solves: list
     timings: dict
+    preconditioner_statistics: dict
     drag: float
     lift: float
     tip_displacement: np.ndarray
@@ -437,15 +428,31 @@ class SolveResult:
     elapsed: float = 0.0
 
 
+DIAGNOSTIC_FIELDS = ("u_solid", "u_fluid", "v", "p")
+
+
+def diagnostic_index_sets(A, problem: FSIProblem) -> list:
+    """Index sets of the rows of ``DIAGNOSTIC_FIELDS`` in the block matrix ``A``.
+
+    The displacement is split into the DOFs of solid cells (kinematic rows)
+    and the fluid interior (mesh rows, scaled by the tiny mesh-extension
+    coefficient), so that residuals of the latter are not hidden by the former.
+    """
+    u_rows, v_rows, p_rows = field_dof_rows(A, [problem.U, problem.V, problem.P])
+    solid = problem.solid_displacement_dofs()
+    return [PETSc.IS().createGeneral(np.sort(rows), comm=A.comm)
+            for rows in (u_rows[solid], u_rows[~solid], v_rows, p_rows)]
+
+
 class FieldResidualMonitor:
-    """Records the nonlinear residual norm of each field ``(u, v, p)`` at every Newton iterate.
+    """Records the nonlinear residual norm of each of ``DIAGNOSTIC_FIELDS`` at every Newton iterate.
 
     The mesh equation is scaled by the tiny mesh-extension coefficient, so the
     total residual norm alone can hide a poorly converged displacement.
     """
 
     def __init__(self, nonlinear_problem, problem: FSIProblem):
-        self.field_is = field_index_sets(nonlinear_problem.A, [problem.U, problem.V, problem.P])
+        self.field_is = diagnostic_index_sets(nonlinear_problem.A, problem)
         self.history = []
         nonlinear_problem.solver.setMonitor(self)
 
@@ -625,6 +632,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
                 field_residuals=np.array(field_monitor.history),
                 linear_solves=[] if linear_solver is None else linear_solver.linear_solves,
                 timings={} if linear_solver is None else dict(linear_solver.timings),
+                preconditioner_statistics={} if linear_solver is None else linear_solver.context_statistics(),
                 drag=drag,
                 lift=lift,
                 tip_displacement=u_spot.copy(),
