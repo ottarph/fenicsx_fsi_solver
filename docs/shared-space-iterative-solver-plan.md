@@ -1,6 +1,6 @@
 **Implementation handoff: shared-space ALE-FSI iterative solver**
 
-Implement this plan on the existing `iterative-solver` branch, which was branched from `main`. Use Conda environment `xfsi_solver`, follow `AGENTS.md`, and preserve unrelated work. This document is the plan; the solver has not yet been implemented or benchmarked.
+Implement this plan on the existing `iterative-solver` branch, which was branched from `main`. Use Conda environment `xfsi_solver`, follow the repository agent instructions (`CLAUDE.md` for Claude Code, `AGENTS.md` for Codex), and preserve unrelated work. This document is the plan; the solver has not yet been implemented or benchmarked.
 
 The target is `src/xfsi_solver/solvers/fsi2_harmonic_diffmesh.py`. Its displacement and velocity spaces are quadratic vector spaces on the whole fluid-solid mesh; pressure is linear on the fluid submesh. Continuity is enforced through shared interface degrees of freedom. Do not introduce separate fluid/solid solution fields or Lagrange multipliers. The Lagrange-multiplier solver is outside this task.
 
@@ -8,7 +8,7 @@ The deliverable is a configurable PETSc FGMRES/fieldsplit solver with fluid ALE 
 
 1. **Establish the reference and separate solver setup from time stepping.**
 
-   Run commands through `conda run -n xfsi_solver ...`. Inspect the installed DOLFINx and PETSc APIs before implementation. Keep `dolfinx.fem.petsc.NonlinearProblem`; do not use the legacy `NewtonSolverNonlinearProblem`. Use `dolfinx.fem.petsc.LinearProblem` for standalone variational linear problems; PETSc sub-KSPs remain appropriate for algebraic preconditioner components.
+   Run commands through `conda run --no-capture-output -n xfsi_solver ...` so progress from long test and benchmark runs is visible. Inspect the installed DOLFINx and PETSc APIs before implementation. Keep `dolfinx.fem.petsc.NonlinearProblem`; do not use the legacy `NewtonSolverNonlinearProblem`. Use `dolfinx.fem.petsc.LinearProblem` for standalone variational linear problems; PETSc sub-KSPs remain appropriate for algebraic preconditioner components.
 
    Introduce small, testable helpers for residual/Jacobian construction, solver configuration, field index sets, and auxiliary operators. Keep the existing `solve()` calls compatible. Suggested configuration axes are `jacobian_mode={full,no_ale}` and `linear_solver={direct,fieldsplit}`, with an explicit diagnostic configuration using direct subsolves. Keep `full/direct` as the initial default and reference.
 
@@ -149,8 +149,10 @@ The deliverable is a configurable PETSc FGMRES/fieldsplit solver with fluid ALE 
 
    Completion requires the working no-ALE iterative mode, a retained reference mode, numerical and MPI checks, reproducible benchmark commands, and documentation of unresolved robustness limits. Do not stop at changing PETSc options or at the direct-Schur diagnostic stage.
 
-   Suggested logical commits, each including its relevant tests, are: expose solver configuration and the no-ALE Jacobian; implement distributed splits and direct block validation; implement displacement/effective-velocity preconditioning; implement the pressure PC and benchmark reporting. Keep changes coherent rather than creating arbitrary checkpoint commits.
+   Suggested logical commits, each including its relevant tests, are: expose solver configuration and the no-ALE Jacobian; implement distributed splits and direct block validation; implement displacement/effective-velocity preconditioning; implement the pressure PC and benchmark reporting. Commit each step as it is completed, without waiting for a separate instruction. Keep changes coherent rather than creating arbitrary checkpoint commits. Review the actual diff before staging, since files may be edited concurrently by the user; do not commit changes you did not make.
 
-   Use the configured Git identity and the required `Co-authored-by: Codex <noreply@openai.com>` trailer. Stay on `iterative-solver`; do not amend, squash, rebase, or force-push. Finish by reviewing `git log --oneline` and reporting the commits, validation results, measured performance, and remaining limitations.
+   Maintain an implementation log at `notes/shared-space-iterative-solver/implementation-log.md` and update it as work proceeds (decisions, API findings, measured results, open problems), not only at the end.
+
+   Use the configured Git identity and the commit attribution trailer required by the agent instructions file for the tool doing the work. Stay on `iterative-solver`; do not amend, squash, rebase, or force-push. Finish by reviewing `git log --oneline` and reporting the commits, validation results, measured performance, and remaining limitations.
 
 **References for implementation decisions.** Failer and Richter's [A Parallel Newton Multigrid Framework for Monolithic Fluid-Structure Interactions](https://doi.org/10.1007/s10915-019-01113-y), especially equations (4)-(12), motivates omitting fluid ALE derivatives while preserving solid elastic feedback. Its exact solid condensation and geometric multigrid infrastructure must not be assumed to match this shared-test-space implementation. See also the [DOLFINx NonlinearProblem API](https://docs.fenicsproject.org/dolfinx/v0.11.0.post0/python/generated/dolfinx.fem.petsc.html), [PETSc Schur preconditioning documentation](https://petsc.org/release/manualpages/PC/PCFieldSplitSetSchurPre/), and [PETSc field index sets](https://petsc.org/release/manualpages/PC/PCFieldSplitSetIS/).
