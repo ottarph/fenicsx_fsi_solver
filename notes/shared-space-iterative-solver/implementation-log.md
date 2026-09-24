@@ -96,16 +96,23 @@ about 0.08 s per step serial.
   LU (no-ALE Jacobian at the admissible state, random RHS), and so do the
   reduced RHS `r_vp - A10 A00^{-1} r_u` and the recovery
   `A00^{-1}(r_u - A01 x_vp)`.
-- Coarse mesh, 8 steps, `snes_atol=1e-10`, `ksp_rtol=1e-6`:
+- ~~Coarse mesh timings of the exact variant~~ (withdrawn, see the
+  correction below): the table first recorded here was measured after a
+  direct solve in the same process, and the fieldsplit runs were in fact
+  MUMPS LU on the whole Jacobian.
 
-  | mode | Newton/step | FGMRES/Newton | s/step |
-  |---|---|---|---|
-  | full/direct | 2 | - | 0.106 |
-  | full/fieldsplit-exact | 2 | 1 | 0.105 |
-  | full J, no-ALE Pmat, exact | 2 | 1-2 | 0.120 |
-  | no_ale/fieldsplit-exact | 2 | 1 | 0.053 |
+### Correction: leaked NonlinearProblem options
 
-  All agree with full/direct to <= 1.3e-10 relative. With the full Jacobian
-  and a no-ALE preconditioner, FGMRES needs 2 iterations to reach 1e-6 on
-  most Newton steps: at startup the omitted derivatives are a mild
-  perturbation.
+`dolfinx.fem.petsc.NonlinearProblem` (DOLFINx 0.11.0, PETSc 3.25.5) removes
+its `petsc_options` after `setFromOptions` with `prefixPush` + `del opts[k]`,
+which does not apply the pushed prefix, so every option stays in the global
+database. A later solver with the same prefix therefore picked up
+`pc_type=lu` from an earlier direct solve when its PC was set from options.
+The solve-level exact-fieldsplit test and the timing table above ran LU
+without noticing; the standalone block-factorization test used its own
+prefix and was valid. Fixed by deleting the options under their full names
+after constructing the `NonlinearProblem`; `FieldSplitSolver` now also fails
+if the configured FGMRES/fieldsplit hierarchy was replaced by options. With
+the fix the exact-fieldsplit solve test takes 5 s (dense Schur complement)
+instead of 1.4 s, and passes: 1 FGMRES iteration per Newton step with the
+Jacobian as Pmat.

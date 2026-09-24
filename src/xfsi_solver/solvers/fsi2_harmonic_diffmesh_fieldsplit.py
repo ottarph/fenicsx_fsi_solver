@@ -127,6 +127,7 @@ class FieldSplitSolver:
 
         self.snes = nonlinear_problem.solver
         self.ksp = self.snes.getKSP()
+        self.prefix = self.ksp.getOptionsPrefix()
 
         self.ksp.setType(PETSc.KSP.Type.FGMRES)
         self.ksp.setTolerances(rtol=config.ksp_rtol, atol=config.ksp_atol, max_it=config.ksp_max_it)
@@ -165,10 +166,20 @@ class FieldSplitSolver:
         self.ksp.setOperators(J, P)
         if not self._configured:
             setup_with_options(self.ksp, self._options)
+            self._check_hierarchy()
             self._configured = True
         else:
             self.ksp.setUp()
         self.timings["setup"] += timer() - start
+
+    def _check_hierarchy(self):
+        """Fail if options from the database replaced the configured outer solver."""
+        pc = self.ksp.getPC()
+        if self.ksp.getType() != PETSc.KSP.Type.FGMRES or pc.getType() != PETSc.PC.Type.FIELDSPLIT:
+            raise RuntimeError(f"Expected FGMRES/fieldsplit, found {self.ksp.getType()}/{pc.getType()}")
+        prefixes = [ksp.getOptionsPrefix() for ksp in pc.getFieldSplitSubKSP()]
+        if prefixes != [f"{self.prefix}fieldsplit_u_", f"{self.prefix}fieldsplit_vp_"]:
+            raise RuntimeError(f"Unexpected field split prefixes {prefixes}")
 
     def _pre_solve(self, ksp, b, x):
         self._solve_start = timer()

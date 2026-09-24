@@ -6,6 +6,7 @@ import dolfinx as dfx
 import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import ufl
+from petsc4py import PETSc
 import ufl.algorithms
 
 import sys
@@ -486,12 +487,21 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
     if config.ksp_monitor:
         petsc_options["ksp_monitor_true_residual"] = None
 
+    prefix = "fsi2_harmonic_diffmesh_"
     nonlinear_problem = dfx.fem.petsc.NonlinearProblem(
         problem.residual, problem.solution, bcs=problem.bcs, J=J, P=P,
-        petsc_options_prefix="fsi2_harmonic_diffmesh_",
+        petsc_options_prefix=prefix,
         entity_maps=problem.entity_maps,
         petsc_options=petsc_options,
     )
+    # NonlinearProblem removes its options with prefixPush + ClearValue, which
+    # does not apply the pushed prefix, so they stay in the options database and
+    # would configure any later solver with the same prefix (DOLFINx 0.11.0,
+    # PETSc 3.25.5).
+    opts = PETSc.Options()
+    for key in petsc_options:
+        if opts.hasName(f"{prefix}{key}"):
+            del opts[f"{prefix}{key}"]
     nonlinear_problem.solver.setConvergenceHistory(reset=True)
 
     linear_solver = None

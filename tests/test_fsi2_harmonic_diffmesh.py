@@ -29,6 +29,15 @@ def test_fsi2_harmonic_diffmesh_solve(output_dirs):
     assert all(step.converged_reason > 0 for step in result.steps)
 
 
+def test_nonlinear_problem_leaves_no_options(output_dirs):
+    """Options passed to one solver must not configure the next one with the same prefix."""
+    from petsc4py import PETSc
+
+    _solve(output_dirs, "direct", SolverConfig(snes_monitor=False), n_steps=1)
+    leftover = [key for key in PETSc.Options().getAll() if key.startswith("fsi2_harmonic_diffmesh_")]
+    assert leftover == []
+
+
 def relative_error(a, b, floor):
     return np.linalg.norm(a - b) / max(np.linalg.norm(b), floor)
 
