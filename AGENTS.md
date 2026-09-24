@@ -4,11 +4,23 @@ Choose the Conda environment `xfsi_solver` at the start of each task.
 Then run commands using the selected environment, for example:
 
 ```bash
-conda run -n xfsi_solver pytest
+conda run --no-capture-output -n xfsi_solver pytest
 ```
 
+Without `--no-capture-output`, `conda run` buffers the whole child process's
+stdout/stderr and only prints it once the process exits, which hides
+progress on long-running commands (e.g. the test suite) until they finish.
+
 # Code
-Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
+Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. 
+
+## Conventions
+- Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
+- Import `dolfinx.fem.petsc` explicitly right below `import dolfinx as dfx`, and reference it as `dfx.fem.petsc.X` (not a separate alias like `dfpetsc`):
+  ```python
+  import dolfinx as dfx
+  import dolfinx.fem.petsc  # noqa: F401
+  ```
 
 ## Git workflow
 
