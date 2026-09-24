@@ -20,6 +20,7 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
   ```python
   import dolfinx as dfx
   import dolfinx.fem.petsc  # noqa: F401
+  ```
 
 ## Git workflow
 
