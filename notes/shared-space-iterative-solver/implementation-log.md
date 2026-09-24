@@ -201,3 +201,28 @@ with `displacement_fluid="cholesky"`, `momentum="schur"`, `velocity="hypre"`,
   production fieldsplit (no-ALE Jacobian, and full Jacobian with no-ALE Pmat)
   matches full/direct over 12 steps (fields 1e-7, QoIs 1e-6) with the
   fluid-interior mesh rows resolved to 1e-6 relative.
+
+## Step 4: checkpoints, benchmarks, results
+
+- `solve(..., initial_state=, checkpoint_dir=, checkpoint_every=)` and
+  `save_state`/`load_state` (per-rank npz, same mesh and rank count);
+  `scripts/fsi2_harmonic_diffmesh_checkpoints.py` generates developed states
+  with `full/direct`; `scripts/fsi2_harmonic_diffmesh_benchmark.py` runs each
+  mode in its own process from the same state and writes
+  `results.{json,md}`. The direct solver is instrumented like the fieldsplit
+  solver (`InstrumentedSolver`), so LU factorization appears as setup time.
+- Baseline failure: `full/direct` on `mesh_sec_coarse`, dt 0.0025, failed at
+  t = 9.5675 (SNES not converged; tip A_y about -0.035, still growing towards
+  the FSI2 amplitude of about 0.08). Developed-state benchmarks therefore use
+  the t = 6 and t = 9 coarse states and the t = 5 default-mesh state.
+- Tried after the batch: fixed 2-4 BoomerAMG V-cycles (Richardson) for the
+  velocity and 2 for the `selfp` pressure. Default mesh startup: FGMRES
+  iterations 11.8 -> 8.5 but time per step 0.98 -> 1.45 s; coarse t = 9:
+  8.4 -> 4.9 iterations, 0.180 -> 0.194 s/step. Not adopted (not committed).
+- Results, commands and conclusions: `docs/shared-space-iterative-solver.md`.
+  Summary: all modes agree with `full/direct` to <= 2e-8; FGMRES needs 7-12
+  iterations per solve on both meshes and all states; the no-ALE Newton needs
+  4-5 iterations at developed motion (full: 2-3), which on the default mesh
+  cancels its 2.7x cheaper assembly; MUMPS remains faster at these 2D sizes
+  (no-ALE fieldsplit 7-25% slower than no-ALE direct on the default mesh,
+  40-50% on the coarse mesh).
