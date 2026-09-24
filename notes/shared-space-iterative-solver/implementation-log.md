@@ -55,3 +55,57 @@ about 0.08 s per step serial.
   1.3e-11 (v), 8e-13 (p) relative. Time per step 0.075 s vs 0.103 s, because
   the no-ALE Jacobian is cheaper to assemble. This is startup only; developed
   motion is still to be measured.
+
+## Step 2: distributed splits and the exact Schur diagnostic
+
+- `xfsi_solver.linalg.fieldsplit`: `field_index_sets` maps DOLFINx's local
+  (ghosted) block index sets through the matrix's local-to-global map and keeps
+  the owned rows, so the splits follow the actual storage rather than an
+  assumed field-contiguous order. `nested_index_sets` renumbers subsets of a
+  split into the numbering of the extracted submatrix (rank-wise position in
+  the parent IS, offset by the exclusive scan of parent sizes).
+- `fsi2_harmonic_diffmesh_fieldsplit.FieldSplitSolver`: FGMRES + PCFIELDSPLIT,
+  splits `u` and `vp`, Schur factorization `full`,
+  `pc_fieldsplit_diag_use_amat = off_diag_use_amat = false` (all blocks from
+  Pmat, so a no-ALE Pmat is never mixed with full-Jacobian blocks).
+  - It replaces the SNES Jacobian callback with one that calls
+    `dolfinx.fem.petsc.assemble_jacobian` and then `ksp.setUp()`, so PC setup
+    is timed separately; SNES's own `KSPSetOperators` with unchanged
+    matrices does not repeat the setup.
+  - Sub-solver options are inserted into the options database only around
+    the first setup. `PetscOptionsClearValue` ignores `prefixPush`, so full
+    names are used (a first version left all options behind).
+  - KSP pre/post-solve hooks record iterations, reason, the true relative
+    residual `||b - A x|| / ||b||` (with the Newton operator `A`) and its
+    per-field norms. `FieldResidualMonitor` records per-field nonlinear
+    residual norms in every mode.
+- PETSc behaviour observed (toy problem and FSI): the sub-KSPs of a Schur
+  fieldsplit are created at the outer `PCSetUp`, but their own `PCSetUp`
+  happens lazily at the first apply. A sub-PC can therefore still be switched
+  to a Python context after the outer setup.
+- `exact` variant: MUMPS LU on `A`, `schur_precondition=full` and LU on the
+  explicit Schur complement. The explicit Schur complement is dense: MUMPS
+  accepted a SEQDENSE matrix but failed in the solve phase (INFOG(1)=-3) in
+  standalone use, and ScaLAPACK does not accept MPIDENSE; `PCREDUNDANT` +
+  PETSc dense LU works in serial and on 2 ranks.
+- Tests (`tests/test_fsi2_harmonic_diffmesh_fieldsplit.py`, rerun on 2 ranks
+  via `mpiexec` from the serial run): index sets are disjoint and exhaustive
+  and select exactly the entries `dolfinx.fem.petsc.assign` writes for each
+  field; nested numbering reproduces `J[v,v]`, `J[v,p]`, `J[p,v]` from the
+  extracted `vp` matrix; the exact PCFIELDSPLIT application equals monolithic
+  LU (no-ALE Jacobian at the admissible state, random RHS), and so do the
+  reduced RHS `r_vp - A10 A00^{-1} r_u` and the recovery
+  `A00^{-1}(r_u - A01 x_vp)`.
+- Coarse mesh, 8 steps, `snes_atol=1e-10`, `ksp_rtol=1e-6`:
+
+  | mode | Newton/step | FGMRES/Newton | s/step |
+  |---|---|---|---|
+  | full/direct | 2 | - | 0.106 |
+  | full/fieldsplit-exact | 2 | 1 | 0.105 |
+  | full J, no-ALE Pmat, exact | 2 | 1-2 | 0.120 |
+  | no_ale/fieldsplit-exact | 2 | 1 | 0.053 |
+
+  All agree with full/direct to <= 1.3e-10 relative. With the full Jacobian
+  and a no-ALE preconditioner, FGMRES needs 2 iterations to reach 1e-6 on
+  most Newton steps: at startup the omitted derivatives are a mild
+  perturbation.

@@ -46,3 +46,23 @@ def test_no_ale_direct_matches_full_direct(output_dirs):
         assert s.drag == pytest.approx(r.drag, rel=1e-7, abs=1e-9)
         assert s.lift == pytest.approx(r.lift, rel=1e-7, abs=1e-9)
         np.testing.assert_allclose(s.tip_displacement, r.tip_displacement, rtol=1e-7, atol=1e-13)
+
+
+@pytest.mark.parametrize("preconditioner_mode", [None, "no_ale"])
+def test_exact_fieldsplit_matches_full_direct(output_dirs, preconditioner_mode):
+    tight = dict(snes_atol=1e-10, snes_rtol=1e-14)
+    reference = _solve(output_dirs, "full_direct", SolverConfig(**tight))
+    config = SolverConfig(linear_solver="fieldsplit", fieldsplit="exact", preconditioner_mode=preconditioner_mode,
+                          ksp_rtol=1e-10, **tight)
+    result = _solve(output_dirs, "full_fieldsplit", config)
+
+    for f, g in zip(result.problem.solution, reference.problem.solution, strict=True):
+        assert relative_error(f.x.array, g.x.array, floor=1e-12) < 1e-8, f.name
+
+    solves = [solve for step in result.steps for solve in step.linear_solves]
+    assert solves
+    assert all(solve["true_relative_residual"] < 1e-9 for solve in solves)
+    if preconditioner_mode is None:
+        # exact factorization of the Newton operator itself
+        assert all(solve["iterations"] == 1 for solve in solves)
+    assert all(step.field_residuals.shape == (step.snes_iterations + 1, 3) for step in result.steps)

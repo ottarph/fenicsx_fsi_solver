@@ -19,6 +19,8 @@ from mpi4py.MPI import COMM_WORLD as comm
 from mpi4py import MPI
 
 from xfsi_solver.fsi.materials import Fluid, Solid
+from xfsi_solver.linalg.fieldsplit import field_index_sets, field_norms
+from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import FieldSplitSolver
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -37,7 +39,7 @@ U_BAR = 1.0
 CHANNEL_HEIGHT = 0.41
 
 JACOBIAN_MODES = ("full", "no_ale")
-LINEAR_SOLVERS = ("direct",)
+LINEAR_SOLVERS = ("direct", "fieldsplit")
 
 
 class InflowFunc:
@@ -64,6 +66,11 @@ class SolverConfig:
 
     ``preconditioner_mode`` selects the matrix handed to the linear solver as
     preconditioning operator; ``None`` means the Jacobian itself.
+
+    ``linear_solver="direct"`` is MUMPS LU on the Jacobian.
+    ``linear_solver="fieldsplit"`` is FGMRES with a Schur field split, see
+    :mod:`xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit` for the
+    ``fieldsplit`` variants. The ``ksp_*`` options apply to FGMRES only.
     """
     jacobian_mode: str = "full"
     preconditioner_mode: str | None = None
@@ -72,6 +79,12 @@ class SolverConfig:
     snes_atol: float = 1.0e-7
     snes_rtol: float = 1.0e-12
     snes_monitor: bool = True
+    fieldsplit: str = "exact"
+    ksp_rtol: float = 1.0e-6
+    ksp_atol: float = 1.0e-50
+    ksp_max_it: int = 500
+    ksp_restart: int = 100
+    ksp_monitor: bool = False
 
     def __post_init__(self):
         if self.jacobian_mode not in JACOBIAN_MODES:
@@ -407,6 +420,9 @@ class StepInfo:
     converged_reason: int
     residual_history: np.ndarray
     time: float
+    field_residuals: np.ndarray
+    linear_solves: list
+    timings: dict
     drag: float
     lift: float
     tip_displacement: np.ndarray
@@ -420,17 +436,36 @@ class SolveResult:
     elapsed: float = 0.0
 
 
-def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig) -> dfx.fem.petsc.NonlinearProblem:
+class FieldResidualMonitor:
+    """Records the nonlinear residual norm of each field ``(u, v, p)`` at every Newton iterate.
+
+    The mesh equation is scaled by the tiny mesh-extension coefficient, so the
+    total residual norm alone can hide a poorly converged displacement.
+    """
+
+    def __init__(self, nonlinear_problem, problem: FSIProblem):
+        self.field_is = field_index_sets(nonlinear_problem.A, [problem.U, problem.V, problem.P])
+        self.history = []
+        nonlinear_problem.solver.setMonitor(self)
+
+    def __call__(self, snes, its, rnorm):
+        if its == 0:
+            self.history = []
+        self.history.append(field_norms(snes.getFunction()[0], self.field_is))
+
+    def destroy(self):
+        for index_set in self.field_is:
+            index_set.destroy()
+
+
+def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
+    """The ``NonlinearProblem`` and, for ``linear_solver="fieldsplit"``, its ``FieldSplitSolver``."""
     J = jacobian_forms(problem, config.jacobian_mode)
     P = None
     if config.preconditioner_mode not in (None, config.jacobian_mode):
         P = jacobian_forms(problem, config.preconditioner_mode)
 
     petsc_options = {
-        "ksp_type": "preonly",
-        "pc_type": "lu",
-        "pc_factor_mat_solver_type": "mumps",
-        "mat_mumps_icntl_14": 80,
         "snes_linesearch_type": "none",
         "snes_max_it": config.snes_max_it,
         "snes_atol": config.snes_atol,
@@ -439,8 +474,17 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig) -> dfx.f
         "ksp_error_if_not_converged": True,
         # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
     }
+    if config.linear_solver == "direct":
+        petsc_options |= {
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_icntl_14": 80,
+        }
     if config.snes_monitor:
         petsc_options["snes_monitor"] = None
+    if config.ksp_monitor:
+        petsc_options["ksp_monitor_true_residual"] = None
 
     nonlinear_problem = dfx.fem.petsc.NonlinearProblem(
         problem.residual, problem.solution, bcs=problem.bcs, J=J, P=P,
@@ -449,10 +493,15 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig) -> dfx.f
         petsc_options=petsc_options,
     )
     nonlinear_problem.solver.setConvergenceHistory(reset=True)
-    return nonlinear_problem
+
+    linear_solver = None
+    if config.linear_solver == "fieldsplit":
+        linear_solver = FieldSplitSolver(nonlinear_problem, problem, config)
+    return nonlinear_problem, linear_solver
 
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: SolverConfig | None = None) -> SolveResult:
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
+          config: SolverConfig | None = None) -> SolveResult:
 
     config = SolverConfig() if config is None else config
 
@@ -478,7 +527,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: So
             f"series in ParaView."
         )
 
-    nonlinear_problem = create_nonlinear_problem(problem, config)
+    nonlinear_problem, linear_solver = create_nonlinear_problem(problem, config)
+    field_monitor = FieldResidualMonitor(nonlinear_problem, problem)
     snes = nonlinear_problem.solver
 
 
@@ -533,6 +583,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: So
             if comm.rank == 0:
                 print(f"\n{t = :.3f}")
 
+            if linear_solver is not None:
+                linear_solver.reset_statistics()
             step_start = timer()
             nonlinear_problem.solve()
             step_time = timer() - step_start
@@ -560,6 +612,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: So
                 converged_reason=snes.getConvergedReason(),
                 residual_history=np.array(history),
                 time=step_time,
+                field_residuals=np.array(field_monitor.history),
+                linear_solves=[] if linear_solver is None else linear_solver.linear_solves,
+                timings={} if linear_solver is None else dict(linear_solver.timings),
                 drag=drag,
                 lift=lift,
                 tip_displacement=u_spot.copy(),
@@ -577,6 +632,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, config: So
     finally:
         writer.close()
         writer_p.close()
+        field_monitor.destroy()
+        if linear_solver is not None:
+            linear_solver.destroy()
 
     return result
 
