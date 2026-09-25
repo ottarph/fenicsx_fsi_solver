@@ -65,8 +65,8 @@ def test_developed_direct_vs_fieldsplit(shared_path):
     mesh = os.environ.get("XFSI_ELASTIC_MESH", str(ROOT / "data/meshes/fsi2/mesh_sec.xdmf"))
     state = os.environ["XFSI_ELASTIC_STATE"]
     mesh_config = MeshMotionConfig(
-        mesh_stiffening_exponent=float(os.environ.get("XFSI_ELASTIC_CHI", 2.5)),
-        mesh_poisson_ratio=float(os.environ.get("XFSI_ELASTIC_NU", 0.3)))
+        mesh_stiffening_exponent=float(os.environ.get("XFSI_ELASTIC_CHI", MeshMotionConfig.mesh_stiffening_exponent)),
+        mesh_poisson_ratio=float(os.environ.get("XFSI_ELASTIC_NU", MeshMotionConfig.mesh_poisson_ratio)))
     t0 = float(np.load(state if comm.size == 1 else
                        state.replace(".npz", f"_rank{comm.rank}of{comm.size}.npz"))["t_next"])
     tight = dict(snes_atol=1e-9, snes_rtol=1e-12, snes_monitor=False)

@@ -43,7 +43,7 @@ Example::
         xfsi_solver.solvers.fsi2_stiffened_elastic_diffmesh \\
         --mesh data/meshes/fsi2/mesh_sec.xdmf --T 15 --dt 0.0025 \\
         --linear-solver fieldsplit --jacobian-mode no_ale \\
-        --mesh-stiffening-exponent 2.5 --mesh-poisson-ratio 0.3 \\
+        --mesh-stiffening-exponent 1.25 --mesh-poisson-ratio 0.45 \\
         --output-dir output/fsi2_stiffened_elastic
 """
 
@@ -88,6 +88,14 @@ OPTIONS_PREFIX = f"{SOLVER_NAME}_"
 class MeshMotionConfig:
     """Parameters of the stiffened elastic mesh extension.
 
+    The defaults ``chi = 1.25``, ``nu_m = 0.45`` are the values validated on
+    the FSI2 meshes of this repository (``mesh_sec``, ``mesh_fine_sec``,
+    dt 0.0025 and 0.00125, 0 to 15 s). The paper's ``chi = 2.5``,
+    ``nu_m = 0.3`` (the defaults of
+    :class:`~xfsi_solver.fsi.mesh_extension.StiffenedElasticMeshExtension`)
+    inverts the large far-field cells at the channel walls near t = 7.8 s on
+    ``mesh_sec``; see ``docs/stiffened-elastic-mesh-motion.md``.
+
     Attributes:
         mesh_stiffening_exponent: ``chi`` of ``w = (j_star / j_0)^chi``.
         mesh_poisson_ratio: ``nu_m``.
@@ -98,8 +106,8 @@ class MeshMotionConfig:
         mesh_quadrature_degree: ``None`` for the default of the cell type.
         mesh_weighting: ``"pointwise"`` or the experimental ``"cell_volume"``.
     """
-    mesh_stiffening_exponent: float = 2.5
-    mesh_poisson_ratio: float = 0.3
+    mesh_stiffening_exponent: float = 1.25
+    mesh_poisson_ratio: float = 0.45
     mesh_equation_scale: float = 1e-9
     mesh_modulus: float = 1.0
     mesh_quadrature_degree: int | None = None
