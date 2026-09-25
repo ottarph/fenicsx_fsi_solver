@@ -26,3 +26,6 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# long benchmark tests are opt-in: pytest -m long
+addopts = "-m 'not long'"
+markers = ["long: long-running benchmark tests, excluded by default (run with -m long)"]
