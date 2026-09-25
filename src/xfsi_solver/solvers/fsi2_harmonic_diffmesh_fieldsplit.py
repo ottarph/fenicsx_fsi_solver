@@ -11,7 +11,7 @@ production configuration)::
 
     FGMRES on J
     +-- Schur fieldsplit: u | (v,p)
-        +-- u: solid/interface mass solve + fluid-interior harmonic extension
+        +-- u: solid/interface mass solve + fluid-interior mesh extension
         +-- (v,p): Schur fieldsplit on an assembled auxiliary operator P_vp
             +-- v: AMG on the coupled fluid-solid effective velocity operator
             +-- p: pressure Schur complement approximation
@@ -78,15 +78,20 @@ class FieldSplitConfig:
         variant: ``"exact"`` or ``"auxiliary"``, see the module docstring.
         displacement: ``"lu"`` on the displacement block of the
             preconditioning matrix, or ``"block_triangular"``: a solid mass
-            solve on the solid/interface DOFs followed by AMG on the
-            fluid-interior harmonic extension, retaining the coupling
-            ``A_fI``.
+            solve on the solid/interface DOFs followed by a solve with the
+            fluid-interior mesh extension (harmonic or elastic, extracted from
+            the preconditioning matrix), retaining the coupling ``A_fI``.
         displacement_fluid: solver for the fluid-interior block ``A_ff`` of
             ``"block_triangular"``: ``"cholesky"`` (MUMPS, factored once: the
             block is the linear mesh equation on the reference configuration
-            and does not change) or ``"amg"`` (BoomerAMG-preconditioned CG to
-            a relative tolerance of 1e-8). On the default mesh a Cholesky
-            solve takes 3 ms after a one-time 70 ms factorization, the AMG
+            and does not change), ``"amg"`` (BoomerAMG-preconditioned CG to
+            a relative tolerance of 1e-8, unknown-based coarsening of the two
+            displacement components) or ``"gamg"`` (GAMG-preconditioned CG
+            to 1e-8 with the rigid body modes of the fluid-interior DOFs as
+            near-nullspace, for vector elasticity with variable coefficients:
+            the modes are not in the kernel of the Dirichlet-restricted block).
+            For the harmonic extension on the default mesh a Cholesky solve
+            takes 3 ms after a one-time 70 ms factorization, the BoomerAMG
             solve 29 ms (7 iterations); AMG is the option that scales to 3D.
         momentum: ``"lu"`` on ``P_vp``, or ``"schur"``: an inner full Schur
             factorization ``v | p`` of ``P_vp``.
@@ -127,7 +132,7 @@ class FieldSplitConfig:
         choices = {
             "variant": FIELDSPLIT_VARIANTS,
             "displacement": ("lu", "block_triangular"),
-            "displacement_fluid": ("cholesky", "amg"),
+            "displacement_fluid": ("cholesky", "amg", "gamg"),
             "momentum": ("lu", "schur"),
             "velocity": ("lu", "hypre", "gamg"),
             "pressure": ("cahouet_chabard", "selfp", "accurate"),
@@ -217,6 +222,44 @@ def _hypre_cg(prefix: str, rtol: float) -> dict:
     }
 
 
+def _gamg_cg(prefix: str, rtol: float) -> dict:
+    return _gamg(prefix) | {
+        f"{prefix}ksp_type": "cg",
+        f"{prefix}ksp_rtol": rtol,
+        f"{prefix}ksp_max_it": 200,
+        f"{prefix}ksp_norm_type": "unpreconditioned",
+    }
+
+
+def rigid_body_modes(space: dfx.fem.FunctionSpace, template: PETSc.Vec,
+                     rows: np.ndarray | None = None) -> PETSc.NullSpace:
+    """Orthonormalized 2D rigid body modes of the owned DOFs of the vector space ``space``.
+
+    Entry ``j`` of ``template`` holds the block-expanded owned DOF ``rows[j]``
+    (default: all owned DOFs in local order).
+    """
+    bs = space.dofmap.index_map_bs
+    if bs != 2:
+        raise NotImplementedError("Rigid body modes are implemented for 2D vector spaces")
+    n_owned = space.dofmap.index_map.size_local
+    x = space.tabulate_dof_coordinates()[:n_owned]
+    expanded = np.repeat(x[:, :2], bs, axis=0)
+    component = np.tile(np.arange(bs), n_owned)
+    modes = [(component == 0).astype(float), (component == 1).astype(float),
+             np.where(component == 0, -expanded[:, 1], expanded[:, 0])]
+    rows = np.arange(n_owned * bs) if rows is None else rows
+    vectors = []
+    for mode in modes:
+        vec = template.duplicate()
+        vec.array[:] = mode[rows]
+        vectors.append(vec)
+    for i, vec in enumerate(vectors):
+        for prev in vectors[:i]:
+            vec.axpy(-vec.dot(prev), prev)
+        vec.normalize()
+    return PETSc.NullSpace().create(vectors=vectors, comm=template.comm)
+
+
 def _mass_solver(prefix: str, rtol: float = 1e-6) -> dict:
     # Diagonally scaled P2/P1 mass matrices are well conditioned
     return {
@@ -271,8 +314,10 @@ def configure_schur_fieldsplit(ksp: PETSc.KSP, is_u: PETSc.IS, is_vp: PETSc.IS, 
         options |= _cholesky("fieldsplit_u_solid_")
         if config.displacement_fluid == "cholesky":
             options |= _cholesky("fieldsplit_u_fluid_")
-        else:
+        elif config.displacement_fluid == "amg":
             options |= _hypre_cg("fieldsplit_u_fluid_", rtol=1e-8)
+        else:
+            options |= _gamg_cg("fieldsplit_u_fluid_", rtol=1e-8)
 
     if config.momentum == "lu":
         options |= _mumps_lu("fieldsplit_vp_")
@@ -485,8 +530,11 @@ class DisplacementPC:
     fluid block is used as assembled: a factorization is unaffected by the
     ``alpha`` scaling, and BoomerAMG's coarsening, interpolation and
     smoothers are invariant under the row scaling that distinguishes the
-    ``alpha``-scaled harmonic rows from the unit Dirichlet rows, so no
-    normalization is applied.
+    ``alpha``-scaled mesh rows from the unit Dirichlet rows, so no
+    normalization is applied. ``A_ff`` and ``A_fI`` are whatever mesh
+    extension the preconditioning matrix contains (harmonic, or the
+    stiffened elastic extension with its weights); ``A_ff`` is symmetric
+    (the interface flux only enters interface rows, which belong to ``I``).
     """
 
     def __init__(self, problem, aux: AuxiliaryOperators, u_rows: np.ndarray, is_u: PETSc.IS, prefix: str):
@@ -504,6 +552,10 @@ class DisplacementPC:
         self.is_I = PETSc.IS().createGeneral((offset + positions[order_I]).astype(PETSc.IntType), comm=comm)
         self.is_f = PETSc.IS().createGeneral((offset + positions[order_f]).astype(PETSc.IntType), comm=comm)
         self.is_f.setBlockSize(bs)
+        # owned block-expanded displacement DOF of every entry of is_f, in order
+        self.fluid_dofs = order_f
+        self.space = U
+        self.near_nullspace = aux.config.displacement_fluid == "gamg"
 
         # the same DOFs, in the same order, in the numbering of the solid mass matrix
         mass_rows = field_dof_rows(aux.M_u, [U])[0]
@@ -534,6 +586,9 @@ class DisplacementPC:
             if self.A_ff is not None:
                 self.A_ff.destroy()
             self.A_ff = P.createSubMatrix(self.is_f, self.is_f)
+            if self.near_nullspace:
+                self.A_ff.setNearNullSpace(rigid_body_modes(self.space, self.A_ff.createVecLeft(),
+                                                            rows=self.fluid_dofs))
             self.ksp_fluid.setOperators(self.A_ff)
             if self.A_ff.getSize()[0] > 0:
                 self.ksp_fluid.setUp()
