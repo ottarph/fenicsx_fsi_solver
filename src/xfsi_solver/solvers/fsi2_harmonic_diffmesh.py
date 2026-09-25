@@ -20,6 +20,7 @@ from mpi4py import MPI
 
 from xfsi_solver.fsi.forms import nonzero, restrict_to_cells
 from xfsi_solver.fsi.materials import Fluid, Solid
+from xfsi_solver.fsi.mesh_extension import FluidReferenceGeometry, HarmonicMeshExtension
 from xfsi_solver.linalg.fieldsplit import field_dof_rows, field_norms
 from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import (
     FieldSplitConfig,
@@ -132,6 +133,13 @@ class FSIProblem:
     bcs_v: list
     inflow_bc_func: dfx.fem.Function
     residual: list
+    mesh_extension: object = None
+    mesh_operator: object = None
+    mesh_path: str | None = None
+
+    @property
+    def mesh_extension_info(self) -> dict:
+        return {} if self.mesh_operator is None else dict(self.mesh_operator.info)
 
     @property
     def solution(self):
@@ -159,7 +167,35 @@ class FSIProblem:
         self.inflow_bc_func.x.scatter_forward()
 
 
-def build_problem(mesh_path, dt_val) -> FSIProblem:
+def interface_fluid_entities(cell_tags, interface_facets) -> np.ndarray:
+    """``(cell, local facet)`` of the fluid cell of every interface facet owned by this rank.
+
+    Every facet is checked to have exactly one fluid and one solid cell, rather
+    than relying on the ordering of the interface data.
+    """
+    import scifem
+
+    idata = scifem.compute_interface_data(cell_tags, interface_facets)
+    tagged = np.full(max(int(cell_tags.indices.max(initial=-1)) + 1, int(idata[:, [0, 2]].max(initial=-1)) + 1),
+                     -1, dtype=np.int64)
+    tagged[cell_tags.indices] = cell_tags.values
+    markers = np.column_stack((tagged[idata[:, 0]], tagged[idata[:, 2]])) if idata.size else np.empty((0, 2))
+    fluid, solid = PHYSICAL_MARKERS["ALE_fluid"], PHYSICAL_MARKERS["solid"]
+    first_fluid = (markers[:, 0] == fluid) & (markers[:, 1] == solid)
+    second_fluid = (markers[:, 1] == fluid) & (markers[:, 0] == solid)
+    if not np.all(first_fluid | second_fluid):
+        raise RuntimeError("Interface facets must have exactly one fluid and one solid cell")
+    return np.where(first_fluid[:, None], idata[:, :2], idata[:, 2:]).astype(np.int32)
+
+
+def build_problem(mesh_path, dt_val, mesh_extension=None, alpha_u: float = 1e-9) -> FSIProblem:
+    """The FSI2 problem on the mesh ``mesh_path``.
+
+    ``mesh_extension`` is the mesh-extension law of the fluid displacement
+    (see :mod:`xfsi_solver.fsi.mesh_extension`), harmonic by default;
+    ``alpha_u`` scales the mesh equation.
+    """
+    mesh_extension = HarmonicMeshExtension() if mesh_extension is None else mesh_extension
 
     # load mesh and meshtags
 
@@ -203,15 +239,9 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
 
     # Create measure for interface / solid-fluid boundary
 
-    import scifem
-
     new_tag_fluid = 101
     interface_facets = facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
-    idata = scifem.compute_interface_data(cell_tags, interface_facets)
-    if idata.shape[0] > 0 and cell_tags.values[idata[0, 0]] == PHYSICAL_MARKERS["ALE_fluid"]:
-        fluid_entities = idata[:, :2]
-    else:
-        fluid_entities = idata[:, 2:]
+    fluid_entities = interface_fluid_entities(cell_tags, interface_facets)
     new_measure_fluid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_fluid, fluid_entities.flatten())])
     ds_interface_fluid = new_measure_fluid(new_tag_fluid)
 
@@ -231,7 +261,12 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
 
     theta = dfx.fem.Constant(mesh, 0.5 + dt.value)
 
-    alpha_u = dfx.fem.Constant(mesh, 1e-9)
+    alpha_u = dfx.fem.Constant(mesh, alpha_u)
+
+    geometry = FluidReferenceGeometry(mesh, cell_tags, PHYSICAL_MARKERS["ALE_fluid"], dx_fluid, ds_interface_fluid)
+    mesh_operator = mesh_extension.bind(geometry)
+    if comm.rank == 0 and mesh_extension.name != "harmonic":
+        print(f"mesh extension: {mesh_operator.info}")
 
 
     # create function spaces
@@ -316,10 +351,9 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
     def A_I(u, v, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
-        normal = ufl.FacetNormal(mesh)
 
-        residual  = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
-        residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
+        # mesh extension: volume term and fluid-side interface flux
+        residual  = mesh_operator.residual(u, du, alpha_u)
 
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
@@ -373,6 +407,7 @@ def build_problem(mesh_path, dt_val) -> FSIProblem:
         ds_interface_fluid=ds_interface_fluid, constants=constants,
         U=U, V=V, P=P, u=u, v=v, p=p, u_old=u_old, v_old=v_old,
         bcs_u=[u_bc], bcs_v=[inflow_bc, noslip_bc], inflow_bc_func=inflow_bc_func, residual=residual_blocked,
+        mesh_extension=mesh_extension, mesh_operator=mesh_operator, mesh_path=str(mesh_path),
     )
 
 
