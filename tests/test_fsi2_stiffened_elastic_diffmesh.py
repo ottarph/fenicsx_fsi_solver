@@ -318,3 +318,20 @@ def test_stiffened_elastic_on_two_ranks():
            "-k", "not command_line"]
     result = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800)
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
+
+
+@pytest.mark.skipif(comm.size > 1, reason="serial only")
+def test_benchmark_script(tmp_path):
+    out = tmp_path / "bench"
+    cmd = [sys.executable, "-m", "xfsi_solver.scripts.fsi2_harmonic_diffmesh_benchmark", "--solver",
+           "stiffened_elastic", "--mesh", MESH, "--dt", str(DT), "--steps", "3", "--modes",
+           "full/direct,no_ale/fieldsplit,no_ale/fieldsplit(u+vp lu)", "--out", str(out)]
+    completed = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, completed.stdout[-3000:] + completed.stderr[-3000:]
+    rows = {row["mode"]: row for row in json.loads((out / "results.json").read_text())["rows"]}
+    assert set(rows) == {"full/direct", "no_ale/fieldsplit", "no_ale/fieldsplit(u+vp lu)"}
+    for mode in ("no_ale/fieldsplit", "no_ale/fieldsplit(u+vp lu)"):
+        assert rows[mode]["rel err u"] < 1e-6
+    raw = json.loads((out / "results.json").read_text())["raw"]
+    assert raw["full/direct"]["qoi"][-1][0] == pytest.approx(3 * DT)
+    assert raw["no_ale/fieldsplit"]["min_J_fluid"] > 0.99

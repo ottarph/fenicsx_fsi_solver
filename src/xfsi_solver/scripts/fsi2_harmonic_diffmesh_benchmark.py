@@ -19,6 +19,14 @@ with ``full/direct``::
 per number of ranks), or omitted to start at t = 0. ``--np`` runs every mode
 with ``mpiexec -n NP``. Results are written to ``OUT/results.json`` and
 ``OUT/results.md``.
+
+``--solver stiffened_elastic`` benchmarks
+:mod:`xfsi_solver.solvers.fsi2_stiffened_elastic_diffmesh` instead (states
+from its ``--checkpoint-every``, mesh-law parameters ``--mesh-*``), with
+accepted-time steps ``t0 + n dt``, n = 1..steps. The modes
+``no_ale/fieldsplit(u lu)``, ``(vp lu)`` and ``(u+vp lu)`` replace the
+displacement and/or momentum-pressure subsolvers of the production
+fieldsplit by LU, to isolate the effect of the approximations.
 """
 
 import argparse
@@ -36,6 +44,15 @@ MODES = {
     "full/fieldsplit(no_ale P)": dict(jacobian_mode="full", preconditioner_mode="no_ale", linear_solver="fieldsplit"),
     "no_ale/fieldsplit": dict(jacobian_mode="no_ale", linear_solver="fieldsplit"),
 }
+# diagnostic variants of the production fieldsplit (not run by default)
+FIELDSPLIT_VARIANTS = {
+    "no_ale/fieldsplit(u lu)": dict(displacement="lu"),
+    "no_ale/fieldsplit(vp lu)": dict(momentum="lu"),
+    "no_ale/fieldsplit(u+vp lu)": dict(displacement="lu", momentum="lu"),
+    "no_ale/fieldsplit(u gamg)": dict(displacement_fluid="gamg"),
+    "no_ale/fieldsplit(u amg)": dict(displacement_fluid="amg"),
+}
+ALL_MODES = MODES | {name: dict(jacobian_mode="no_ale", linear_solver="fieldsplit") for name in FIELDSPLIT_VARIANTS}
 
 
 def run_mode(args):
@@ -43,14 +60,26 @@ def run_mode(args):
     from mpi4py import MPI
 
     from xfsi_solver.solvers.fsi2_harmonic_diffmesh import SolverConfig, save_state, solve, state_path
+    from xfsi_solver.solvers.fsi2_harmonic_diffmesh_fieldsplit import FieldSplitConfig
 
     out = Path(args.out) / _dirname(args.mode)
     t0 = float(np.load(state_path(args.state))["t_next"]) if args.state else 0.0
-    config = SolverConfig(**MODES[args.mode], snes_atol=args.snes_atol, snes_rtol=args.snes_rtol,
-                          ksp_rtol=args.ksp_rtol, snes_monitor=False)
-    result = solve(args.mesh, T=t0 + (args.steps - 0.5) * args.dt, dt_val=args.dt,
-                   output_path=str(out / "uv.bp"), output_path_p=str(out / "p.bp"), qoi_path=str(out / "qoi.txt"),
-                   config=config, initial_state=args.state)
+    config = SolverConfig(**ALL_MODES[args.mode], snes_atol=args.snes_atol, snes_rtol=args.snes_rtol,
+                          ksp_rtol=args.ksp_rtol, snes_monitor=False,
+                          fieldsplit=FieldSplitConfig(**FIELDSPLIT_VARIANTS.get(args.mode, {})))
+    if args.solver == "harmonic":
+        result = solve(args.mesh, T=t0 + (args.steps - 0.5) * args.dt, dt_val=args.dt,
+                       output_path=str(out / "uv.bp"), output_path_p=str(out / "p.bp"),
+                       qoi_path=str(out / "qoi.txt"), config=config, initial_state=args.state)
+    else:
+        from xfsi_solver.solvers.fsi2_stiffened_elastic_diffmesh import MeshMotionConfig
+        from xfsi_solver.solvers.fsi2_stiffened_elastic_diffmesh import solve as elastic_solve
+
+        mesh_config = MeshMotionConfig(mesh_stiffening_exponent=args.mesh_stiffening_exponent,
+                                       mesh_poisson_ratio=args.mesh_poisson_ratio)
+        result = elastic_solve(args.mesh, T=t0 + args.steps * args.dt, dt_val=args.dt, output_dir=out,
+                               config=config, mesh_config=mesh_config, initial_state=args.state,
+                               output_every=args.steps + 1)
     save_state(result.problem, 0.0, out / "final_state.npz")
 
     peak_rss = MPI.COMM_WORLD.allreduce(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, op=MPI.MAX)
@@ -79,6 +108,8 @@ def run_mode(args):
         "step_times": [s.time for s in steps],
         "timings": timings,
         "preconditioner_statistics": pc_stats,
+        "min_J_fluid": min((s.diagnostics["geometry"]["fluid"]["J_min"] for s in steps if s.diagnostics),
+                           default=None),
         "peak_rss_mb_max_rank": peak_rss / 1024.0,
         "qoi": [[s.t, s.drag, s.lift, *s.tip_displacement.tolist()] for s in steps],
     }
@@ -119,7 +150,10 @@ def summarize(args, modes):
     lines = ["| " + " | ".join(keys) + " |", "|" + "---|" * len(keys)]
     for row in rows:
         lines.append("| " + " | ".join(_fmt(row.get(k)) for k in keys) + " |")
-    header = (f"mesh `{args.mesh}`, dt {args.dt}, {args.steps} steps from "
+    header = (f"solver {args.solver}"
+              + (f" (chi {args.mesh_stiffening_exponent}, nu {args.mesh_poisson_ratio})"
+                 if args.solver != "harmonic" else "")
+              + f", mesh `{args.mesh}`, dt {args.dt}, {args.steps} steps from "
               f"{'t = 0' if not args.state else '`' + args.state + '`'}, {ranks} rank(s), "
               f"snes_atol {args.snes_atol}, ksp_rtol {args.ksp_rtol}\n\n")
     (out / "results.md").write_text(header + "\n".join(lines) + "\n")
@@ -160,7 +194,10 @@ def main():
     parser.add_argument("--snes-rtol", type=float, default=1e-12)
     parser.add_argument("--ksp-rtol", type=float, default=1e-6)
     parser.add_argument("--np", type=int, default=1)
-    parser.add_argument("--modes", default=",".join(MODES))
+    parser.add_argument("--modes", default=",".join(MODES), help=f"comma-separated, of {list(ALL_MODES)}")
+    parser.add_argument("--solver", choices=("harmonic", "stiffened_elastic"), default="harmonic")
+    parser.add_argument("--mesh-stiffening-exponent", type=float, default=2.5)
+    parser.add_argument("--mesh-poisson-ratio", type=float, default=0.3)
     parser.add_argument("--out", default="output/benchmarks/default")
     parser.add_argument("--mode", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -171,8 +208,8 @@ def main():
 
     modes = args.modes.split(",")
     for mode in modes:
-        if mode not in MODES:
-            raise ValueError(f"Unknown mode {mode!r}, expected one of {list(MODES)}")
+        if mode not in ALL_MODES:
+            raise ValueError(f"Unknown mode {mode!r}, expected one of {list(ALL_MODES)}")
     Path(args.out).mkdir(parents=True, exist_ok=True)
     for mode in modes:
         cmd = [sys.executable, "-m", "xfsi_solver.scripts.fsi2_harmonic_diffmesh_benchmark", *sys.argv[1:],
