@@ -8,6 +8,7 @@ import numpy as np
 import ufl
 from petsc4py import PETSc
 
+import json
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -73,6 +74,10 @@ class SolverConfig:
     ``preconditioner_mode`` selects the matrix handed to the linear solver as
     preconditioning operator; ``None`` means the Jacobian itself.
 
+    ``snes_linesearch_type`` is the PETSc line search, ``"none"`` (full
+    Newton steps) by default; ``"bt"`` backtracks, also from iterates rejected
+    as a function domain error (see :class:`StepMonitor`).
+
     ``linear_solver="direct"`` is MUMPS LU on the Jacobian.
     ``linear_solver="fieldsplit"`` is FGMRES with a Schur field split
     configured by ``fieldsplit`` (a :class:`FieldSplitConfig`, or its
@@ -87,6 +92,7 @@ class SolverConfig:
     snes_atol: float = 1.0e-7
     snes_rtol: float = 1.0e-12
     snes_monitor: bool = True
+    snes_linesearch_type: str = "none"
     fieldsplit: FieldSplitConfig = field(default_factory=FieldSplitConfig)
     ksp_rtol: float = 1.0e-6
     ksp_atol: float = 1.0e-50
@@ -457,6 +463,8 @@ class StepInfo:
     drag: float
     lift: float
     tip_displacement: np.ndarray
+    dt: float | None = None
+    diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -465,6 +473,7 @@ class SolveResult:
     config: SolverConfig
     steps: list = field(default_factory=list)
     elapsed: float = 0.0
+    metadata: dict = field(default_factory=dict)
 
 
 DIAGNOSTIC_FIELDS = ("u_solid", "u_fluid", "v", "p")
@@ -505,15 +514,23 @@ class FieldResidualMonitor:
             index_set.destroy()
 
 
-def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
-    """The ``NonlinearProblem`` and the ``InstrumentedSolver`` (a ``FieldSplitSolver`` for fieldsplit) of its KSP."""
+DEFAULT_OPTIONS_PREFIX = "fsi2_harmonic_diffmesh_"
+
+
+def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig, options_prefix: str = DEFAULT_OPTIONS_PREFIX):
+    """The ``NonlinearProblem`` and the ``InstrumentedSolver`` (a ``FieldSplitSolver`` for fieldsplit) of its KSP.
+
+    The forms are derived from ``problem`` (its residual and mesh extension);
+    ``options_prefix`` is the PETSc options prefix of the solver and of the
+    auxiliary operators of the fieldsplit preconditioner.
+    """
     J = jacobian_forms(problem, config.jacobian_mode)
     P = None
     if config.preconditioner_mode not in (None, config.jacobian_mode):
         P = jacobian_forms(problem, config.preconditioner_mode)
 
     petsc_options = {
-        "snes_linesearch_type": "none",
+        "snes_linesearch_type": config.snes_linesearch_type,
         "snes_max_it": config.snes_max_it,
         "snes_atol": config.snes_atol,
         "snes_rtol": config.snes_rtol,
@@ -533,7 +550,7 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
     if config.ksp_monitor:
         petsc_options["ksp_monitor_true_residual"] = None
 
-    prefix = "fsi2_harmonic_diffmesh_"
+    prefix = options_prefix
     nonlinear_problem = dfx.fem.petsc.NonlinearProblem(
         problem.residual, problem.solution, bcs=problem.bcs, J=J, P=P,
         petsc_options_prefix=prefix,
@@ -551,7 +568,7 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig):
     nonlinear_problem.solver.setConvergenceHistory(reset=True)
 
     if config.linear_solver == "fieldsplit":
-        linear_solver = FieldSplitSolver(nonlinear_problem, problem, config)
+        linear_solver = FieldSplitSolver(nonlinear_problem, problem, config, J if P is None else P)
     else:
         linear_solver = InstrumentedSolver(nonlinear_problem, problem)
     return nonlinear_problem, linear_solver
@@ -565,23 +582,44 @@ def state_path(path) -> Path:
     return path
 
 
-def save_state(problem: FSIProblem, t_next: float, path) -> None:
+def save_state(problem: FSIProblem, t_next: float, path, metadata: dict | None = None) -> None:
     """Save the current ``(u, v, p)`` for a restart at time ``t_next``.
 
     The arrays are stored per rank in DOLFINx's local ordering, so a state
     can only be loaded with the same mesh file and number of ranks.
+    ``metadata`` (JSON-serializable) is stored with the state and checked by
+    :func:`load_state`.
     """
     path = state_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, t_next=t_next, comm_size=comm.size, **{f.name: f.x.array for f in problem.solution})
+    extra = {} if metadata is None else {"metadata": json.dumps(metadata, sort_keys=True)}
+    np.savez(path, t_next=t_next, comm_size=comm.size, **extra, **{f.name: f.x.array for f in problem.solution})
 
 
-def load_state(problem: FSIProblem, path) -> float:
-    """Load a state saved by :func:`save_state`; returns the time of the next step."""
+def load_state(problem: FSIProblem, path, metadata: dict | None = None, time_semantics: str = "legacy") -> float:
+    """Load a state saved by :func:`save_state`; returns the time of the next step.
+
+    With ``metadata``, the state must have been saved with equal values of
+    all its keys; a state saved without metadata is then rejected. The state
+    must have been saved with ``time_semantics`` (states without metadata are
+    ``"legacy"``).
+    """
     path = state_path(path)
     data = np.load(path)
     if int(data["comm_size"]) != comm.size:
         raise ValueError(f"State {path} was saved on {int(data['comm_size'])} ranks, not {comm.size}")
+    saved_semantics = json.loads(str(data["metadata"])).get("time_semantics", "legacy") if "metadata" in data \
+        else "legacy"
+    if saved_semantics != time_semantics:
+        raise ValueError(f"State {path} was saved with {saved_semantics!r} time semantics, not {time_semantics!r}")
+    if metadata is not None:
+        if "metadata" not in data:
+            raise ValueError(f"State {path} has no metadata, expected {metadata}")
+        saved = json.loads(str(data["metadata"]))
+        expected = json.loads(json.dumps(metadata, sort_keys=True))
+        mismatch = {k: (saved.get(k), v) for k, v in expected.items() if saved.get(k) != v}
+        if mismatch:
+            raise ValueError(f"State {path} does not match (saved, expected): {mismatch}")
     for f in problem.solution:
         if data[f.name].shape != f.x.array.shape:
             raise ValueError(f"State {path} does not match the mesh ({f.name})")
@@ -589,20 +627,108 @@ def load_state(problem: FSIProblem, path) -> float:
     return float(data["t_next"])
 
 
+TIME_SEMANTICS = ("legacy", "accepted")
+
+
+class StepMonitor:
+    """Solver-specific hooks of :func:`solve`; every method is optional.
+
+    ``setup`` returns metadata for :attr:`SolveResult.metadata`.
+    ``check_iterate`` is called after every residual evaluation, with the
+    iterate in ``problem.solution``; returning ``False`` reports a SNES
+    function domain error, which with the default ``snes_linesearch_type``
+    ``none`` stops the Newton solve with an error rather than accepting the
+    iterate. ``accepted`` returns diagnostics of an accepted step
+    (:attr:`StepInfo.diagnostics`) and may raise to abort on an invalid state.
+    """
+
+    def setup(self, problem, nonlinear_problem, linear_solver) -> dict:
+        return {}
+
+    def check_iterate(self, problem) -> bool:
+        return True
+
+    def begin_step(self, t: float, dt: float) -> None:
+        pass
+
+    def accepted(self, problem, step: "StepInfo") -> dict:
+        return {}
+
+    def failed(self, problem, error: BaseException) -> None:
+        pass
+
+    def destroy(self) -> None:
+        pass
+
+
+def _install_iterate_check(snes, problem, monitor):
+    residual, _ = snes.getFunction()
+    function, args, kargs = snes.getFunction()[1]
+
+    def checked(snes_, x, b):
+        function(snes_, x, b, *args, **kargs)
+        if not monitor.check_iterate(problem):
+            snes_.setFunctionDomainError()
+
+    snes.setFunction(checked, residual)
+
+
+def _steps(t0, T, dt_val, dt_const, time_semantics):
+    """``(inflow time, label, state time after the step)`` of the time steps.
+
+    ``"legacy"``: the loop ``while t < T`` with ``t += dt``, the inflow at
+    ``t`` and the label ``t``, and the saved restart time ``t + dt`` (the
+    label of the next step). Its first step from rest has zero inflow.
+    ``"accepted"``: ``N = (T - t0) / dt`` steps (an integer), step ``n``
+    advances the state from ``t0 + (n-1) dt`` to the accepted time
+    ``t0 + n dt``, at which the inflow is imposed and the state is labelled
+    and saved, without accumulating round-off.
+    """
+    if time_semantics == "legacy":
+        t = t0
+        while t < T:
+            yield t, t, t + dt_const.value
+            t += dt_const.value
+        return
+    n_steps = round((T - t0) / dt_val)
+    if n_steps < 0 or abs(n_steps * dt_val - (T - t0)) > 1e-9 * max(1.0, abs(T)):
+        raise ValueError(f"T - t0 = {T - t0} is not a nonnegative multiple of dt = {dt_val}")
+    for n in range(1, n_steps + 1):
+        t = t0 + n * dt_val
+        yield t, t, t
+
+
 def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
           config: SolverConfig | None = None, *, initial_state=None, checkpoint_dir=None,
-          checkpoint_every: float | None = None) -> SolveResult:
+          checkpoint_every: float | None = None, problem_builder=None,
+          options_prefix: str = DEFAULT_OPTIONS_PREFIX, time_semantics: str = "legacy",
+          save_every: int = 4, monitor: StepMonitor | None = None,
+          state_metadata: dict | None = None) -> SolveResult:
     """Time step the FSI problem up to time ``T``.
 
     ``initial_state`` is a file written by :func:`save_state` to restart from;
     with ``checkpoint_dir`` and ``checkpoint_every``, states are saved to
     ``checkpoint_dir/state_t<time>.npz`` about every ``checkpoint_every``
     time units.
+
+    ``problem_builder(mesh_path, dt_val)`` builds the :class:`FSIProblem`
+    (default :func:`build_problem`, harmonic mesh extension);
+    ``options_prefix`` is the PETSc options prefix of its solver.
+    ``time_semantics`` is ``"legacy"`` (the default, the original loop of
+    this solver) or ``"accepted"``, see :func:`_steps`; with ``"accepted"``
+    the initial state of a run from rest is also written to the QoI file and
+    the VTX output. VTX output is written every ``save_every`` steps.
+    ``state_metadata`` is saved with, and required of, restart states.
     """
 
     config = SolverConfig() if config is None else config
+    if time_semantics not in TIME_SEMANTICS:
+        raise ValueError(f"Unknown time_semantics {time_semantics!r}, expected one of {TIME_SEMANTICS}")
+    monitor = StepMonitor() if monitor is None else monitor
+    if time_semantics != "legacy":
+        state_metadata = {**(state_metadata or {}), "time_semantics": time_semantics}
 
-    problem = build_problem(mesh_path, dt_val)
+    problem = (build_problem if problem_builder is None else problem_builder)(mesh_path, dt_val)
     mesh = problem.mesh
     U = problem.U
     u, v, p = problem.solution
@@ -610,11 +736,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     ds, ds_interface_fluid = problem.ds, problem.ds_interface_fluid
     entity_maps = problem.entity_maps
 
-    t0 = 0.0 if initial_state is None else load_state(problem, initial_state)
+    t0 = 0.0 if initial_state is None else load_state(problem, initial_state, state_metadata, time_semantics)
     dt = problem.constants["dt"]
     next_checkpoint = None if checkpoint_every is None else t0 + checkpoint_every
-
-    save_every = 4
 
     total_steps = int(np.ceil((T - t0) / dt_val))
     if total_steps <= save_every:
@@ -625,9 +749,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             f"series in ParaView."
         )
 
-    nonlinear_problem, linear_solver = create_nonlinear_problem(problem, config)
+    nonlinear_problem, linear_solver = create_nonlinear_problem(problem, config, options_prefix)
     field_monitor = FieldResidualMonitor(nonlinear_problem, problem)
     snes = nonlinear_problem.solver
+    if type(monitor).check_iterate is not StepMonitor.check_iterate:
+        _install_iterate_check(snes, problem, monitor)
 
 
     dm_loc_size = U.dofmap.index_map.size_local
@@ -655,6 +781,18 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     lift_form_obstacle = dfx.fem.form(lift_form_obstacle, entity_maps=entity_maps)
     lift_form_interface = dfx.fem.form(lift_form_interface, entity_maps=entity_maps)
 
+    def quantities_of_interest():
+        loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
+        u_spot = comm.allreduce(loc_u_spot, op=MPI.SUM)
+        drag = comm.allreduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
+        lift = comm.allreduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
+        return drag, lift, u_spot
+
+    def write_qoi(t, drag, lift, u_spot):
+        if comm.rank == 0:
+            with open(qoi_path, "ab") as f:
+                np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
+
 
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
@@ -667,13 +805,19 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     try:
-        t = t0
-        step = -1
-        max_steps = np.inf
-        start = timer()
-        while step < max_steps and t < T:
+        result.metadata = {"time_semantics": time_semantics, "t0": t0, "T": T, "dt": dt_val,
+                           "options_prefix": options_prefix, **problem.mesh_extension_info,
+                           **monitor.setup(problem, nonlinear_problem, linear_solver)}
+        if time_semantics == "accepted" and initial_state is None:
+            write_qoi(t0, *quantities_of_interest())
+            writer.write(t0)
+            writer_p.write(t0)
 
-            problem.set_inflow(t)
+        step = -1
+        start = timer()
+        for t_inflow, t, t_after in _steps(t0, T, dt_val, dt, time_semantics):
+
+            problem.set_inflow(t_inflow)
 
             problem.u_old.x.array[:] = u.x.array[:]
             problem.v_old.x.array[:] = v.x.array[:]
@@ -681,6 +825,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             if comm.rank == 0:
                 print(f"\n{t = :.3f}")
 
+            monitor.begin_step(t, dt_val)
             linear_solver.reset_statistics()
             step_start = timer()
             nonlinear_problem.solve()
@@ -689,20 +834,16 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             if comm.rank == 0:
                 sys.stdout.flush()
 
-            if step % save_every == 0:
+            if time_semantics == "legacy" and step % save_every == 0 or \
+                    time_semantics == "accepted" and (step + 2) % save_every == 0:
                 writer.write(t)
                 writer_p.write(t)
 
-            loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
-            u_spot = comm.allreduce(loc_u_spot, op=MPI.SUM)
-            drag = comm.allreduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
-            lift = comm.allreduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
-            if comm.rank == 0:
-                with open(qoi_path, "ab") as f:
-                    np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
+            drag, lift, u_spot = quantities_of_interest()
+            write_qoi(t, drag, lift, u_spot)
 
             history, _ = snes.getConvergenceHistory()
-            result.steps.append(StepInfo(
+            info = StepInfo(
                 t=t,
                 snes_iterations=snes.getIterationNumber(),
                 linear_iterations=snes.getLinearSolveIterations(),
@@ -716,13 +857,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
                 drag=drag,
                 lift=lift,
                 tip_displacement=u_spot.copy(),
-            ))
+                dt=dt_val,
+            )
+            info.diagnostics = monitor.accepted(problem, info)
+            result.steps.append(info)
 
             step += 1
-            t += dt.value
 
-            if next_checkpoint is not None and t >= next_checkpoint - 1e-9 * dt.value:
-                save_state(problem, t, Path(checkpoint_dir) / f"state_t{t:.4f}.npz")
+            if next_checkpoint is not None and t_after >= next_checkpoint - 1e-9 * dt.value:
+                save_state(problem, t_after, Path(checkpoint_dir) / f"state_t{t_after:.4f}.npz", state_metadata)
                 next_checkpoint += checkpoint_every
 
         end = timer()
@@ -731,11 +874,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             print(f"\n{comm.size = }")
             print(f"Elapsed time: {end - start:.3f} s")
             print(f"Time per step: {(end - start) / (step+1):.3f} s")
+    except BaseException as error:
+        monitor.failed(problem, error)
+        raise
     finally:
         writer.close()
         writer_p.close()
         field_monitor.destroy()
         linear_solver.destroy()
+        monitor.destroy()
 
     return result
 

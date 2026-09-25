@@ -334,7 +334,7 @@ class AuxiliaryOperators:
     """
 
     def __init__(self, problem, config: FieldSplitConfig, jacobian_forms, P_mat: PETSc.Mat | None = None,
-                 is_vp: PETSc.IS | None = None):
+                 is_vp: PETSc.IS | None = None, prefix: str = "fsi2_harmonic_diffmesh_"):
         self.problem = problem
         self.config = config
         c = problem.constants
@@ -382,7 +382,7 @@ class AuxiliaryOperators:
             H_hat += T_s
             self.P_vp_forms = dfx.fem.form([[H_hat, G_form], [B_form, None]], entity_maps=entity_maps)
             self.P_vp = dfx.fem.petsc.create_matrix(self.P_vp_forms)
-        self.P_vp.setOptionsPrefix("fsi2_harmonic_diffmesh_P_vp_")
+        self.P_vp.setOptionsPrefix(f"{prefix}P_vp_")
 
         # Unsteady Stokes pressure Schur complement approximation on the current
         # (ALE) configuration. B M^{-1} B^T with mass density J_mid and the
@@ -811,7 +811,8 @@ class FieldSplitSolver(InstrumentedSolver):
     it creates.
     """
 
-    def __init__(self, nonlinear_problem, problem, config):
+    def __init__(self, nonlinear_problem, problem, config, preconditioner_forms):
+        """``preconditioner_forms``: the UFL block forms of the preconditioning matrix (of the Jacobian if none)."""
         super().__init__(nonlinear_problem, problem)
         self.config = config
         fs_config = config.fieldsplit
@@ -830,10 +831,9 @@ class FieldSplitSolver(InstrumentedSolver):
 
         self.aux = None
         if fs_config.variant == "auxiliary":
-            from xfsi_solver.solvers.fsi2_harmonic_diffmesh import jacobian_forms
-            pc_mode = config.preconditioner_mode or config.jacobian_mode
             P_mat = nonlinear_problem.P_mat if nonlinear_problem.P_mat is not None else A
-            self.aux = AuxiliaryOperators(problem, fs_config, jacobian_forms(problem, pc_mode), P_mat, self.is_vp)
+            self.aux = AuxiliaryOperators(problem, fs_config, preconditioner_forms, P_mat, self.is_vp,
+                                          prefix=self.prefix)
             self._check_vp_layout(A, spaces)
         self._options = configure_schur_fieldsplit(self.ksp, self.is_u, self.is_vp, fs_config,
                                                    None if self.aux is None else self.aux.P_vp)
