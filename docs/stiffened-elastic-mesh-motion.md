@@ -250,10 +250,19 @@ non-incremental extension).
 ### Mesh-resolution sensitivity
 
 `data/meshes/fsi2/mesh_fine_sec.xdmf` (21 890 cells, generated with
-`fine=True`, see Meshes below), chi 1.25 / nu_m 0.45, fieldsplit, 8 ranks:
-**in progress**. At t = 10.48 s (full amplitude, A_y 0.084) the sampled
-fluid J_min is 0.048, below the standalone prediction (0.087) for this mesh;
-the outcome will be added here.
+`fine=True`, see Meshes below), chi 1.25 / nu_m 0.45, no_ale/fieldsplit, 8
+ranks, dt 0.0025: **completed 0-15 s** (6 000 steps, 5.7 h), no rejected
+iterate, sampled fluid J >= 0.046 (predicted 0.087; the finer cells at the
+beam-tip corner deform more), max condition number 58. Statistics over
+[12, 14.6]: drag 217.5 +- 78.87 [3.852], lift -0.54 +- 242.2 [1.928], A_x
+-0.01523 +- 0.01282 [3.857], A_y 0.00127 +- 0.0825 [1.928]. Against
+`mesh_sec`: drag mean +1.1 % of the amplitude, all amplitudes within 0.25 %,
+frequencies -0.05 %; against the published data: A_y amplitude +1.0 %, drag
++4.3 / +3.7 % (mean / amplitude), frequencies -0.16 %; against biharmonic
+within 1 %. The developed motion is converged in the mesh to about 1 %. The
+fieldsplit iterations grow with the refinement: 22.6 FGMRES iterations per
+solve on average (10.6 on `mesh_sec`), at most 113 (true relative residual
+still <= 1e-6).
 
 ## Meshes
 
@@ -278,8 +287,9 @@ xfsi_solver.scripts.create_test_meshes` generates the test meshes.
 - The paper's chi = 2.5 / nu_m = 0.3 is **not validated** on this
   repository's meshes: it fails at 7.83 s on `mesh_sec` (and at 9.74 s on the
   coarse mesh; the standalone prediction fails also on the fine mesh). The
-  validated chi = 1.25 / nu_m = 0.45 sits in a narrow window; nu_m = 0.3
-  completes with a sampled J_min of only 0.035. The window depends on the
+  validated chi = 1.25 / nu_m = 0.45 sits in a narrow window (J_min 0.154
+  on `mesh_sec`, 0.046 on the fine mesh); nu_m = 0.3 completes on `mesh_sec`
+  with a sampled J_min of only 0.035. The window depends on the
   mesh grading (initial cell-size range 190x on `mesh_sec`), so other meshes
   need the standalone check (implementation log) or a full run.
 - The validity check samples 28 (49) points per cell; it is not a proof of
@@ -287,7 +297,10 @@ xfsi_solver.scripts.create_test_meshes` generates the test meshes.
   `--snes-linesearch bt` backtracks from rejected trials but was not needed
   and is not validated.
 - Performance: at 50 000 DOFs MUMPS is faster than the fieldsplit solver
-  (8 ranks: 49 vs 75 min for 0-15 s), as for the harmonic solver. The
+  (8 ranks: 49 vs 75 min for 0-15 s), as for the harmonic solver. On the
+  fine mesh the average FGMRES count doubles (22.6 per solve, maximum 113):
+  the one-V-cycle velocity and selfp pressure approximations are not
+  mesh-independent at developed motion. The
   iterative fluid-displacement solves (`amg`, `gamg`) are validated but 20x
   slower than the once-factored Cholesky solve in 2D.
 - Restart states are per rank count and require the same solver, mesh

@@ -295,4 +295,9 @@ affect the Schur complement approximation with the stiffened extension.
   (predicted 0.036).
 - Opt-in long tests pass: 800 coarse steps (serial) and 100 steps from the
   developed 8-rank state at t = 12 (8 ranks). Default suite: 91 passed.
-- Fine mesh (8 ranks): in progress, J_min 0.048 at t = 10.48.
+- Fine mesh `mesh_fine_sec` (8 ranks): completed 0-15 s in 5.7 h, 23 286
+  Newton iterations (3.9 per step), 22.6 FGMRES iterations per solve (max
+  113), J_min 0.046 (reached near t = 11, then constant), max condition
+  number 58. [12, 14.6] against `mesh_sec`: drag mean +1.1 %, amplitudes
+  within 0.25 %, frequencies -0.05 %; against the published data A_y
+  amplitude +1.0 %, frequency -0.16 %.
