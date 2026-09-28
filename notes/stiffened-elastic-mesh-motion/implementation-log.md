@@ -301,3 +301,19 @@ affect the Schur complement approximation with the stiffened extension.
   number 58. [12, 14.6] against `mesh_sec`: drag mean +1.1 %, amplitudes
   within 0.25 %, frequencies -0.05 %; against the published data A_y
   amplitude +1.0 %, frequency -0.16 %.
+
+## Geometry-monitor overhead (measured 2026-09-28, idle machine)
+
+`mesh_sec`, chi 1.25 / 0.45, serial, 40 steps from the developed state at
+t = 12 (4.15 Newton iterations per step). One `GeometryMonitor.geometry()`
+call (grad u at 28 points of each of the 5 861 cells, det and condition
+number in NumPy, global reductions) takes 8.8-9.0 ms. With the per-iterate
+check it runs 6.2 times per step (5.15 residual evaluations + the accepted
+state), 55 ms per step:
+
+| solver | step time, check on | check off | difference |
+|---|---|---|---|
+| direct | 1.643 s | 1.614 s | +1.8 % |
+| fieldsplit | 1.992 s | 1.940 s | +2.6 % |
+
+(the step time excludes the accepted-state check, another 9 ms per step).

@@ -102,7 +102,10 @@ quadrilateral, vertices and edges included) of every cell: a sampled
 validity check, not a proof of bijectivity. A Newton iterate failing it is
 rejected as a SNES function domain error (the step fails with an error; no
 coefficient is clipped and no invalid state is accepted), an accepted state
-failing it raises `InvalidStateError`.
+failing it raises `InvalidStateError`. Cost on `mesh_sec` (serial, developed
+motion): 9 ms per check, about 6 checks per step (every residual evaluation
+and the accepted state), i.e. 2-3 % of the step time; `check_iterates=False`
+keeps only the accepted-state check (0.5 %).
 
 `python -m xfsi_solver.scripts.fsi2_qoi_statistics --window 12 14.6 QOI...`
 tabulates mean, amplitude and frequency against the published FSI2 data.
