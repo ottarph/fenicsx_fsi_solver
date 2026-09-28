@@ -323,3 +323,26 @@ kept the paper's 2.5 / 0.3 until then); the operator and FSI tests pass
 with the new defaults. The experimental `cell_volume` weighting was only
 unit-tested (per-cell constant, equal to pointwise on affine cells, ghost
 values), never used in a coupled run.
+
+## Assembly cost of the cell-volume weighting (measured 2026-09-28)
+
+`mesh_sec`, chi 1.25 / 0.45, serial no_ale/direct, 8 time steps (4.4 Newton
+iterations each) from the developed state at t = 12, first step excluded;
+the 16-rank direct run was using 16 other cores. Mean time per assembly:
+
+| weighting | quadrature degree | Jacobian (all blocks) | residual | mesh block (u,u) alone |
+|---|---|---|---|---|
+| pointwise | 6 (default) | 131.3 ms | 42.9 ms | 23.3 ms |
+| cell_volume | 6 | 131.0 ms | 41.7 ms | 21.7 ms |
+| cell_volume | 2 | 122.4 ms | 39.5 ms | 13.9 ms |
+| pointwise | 2 | 122.6 ms | 39.2 ms | 13.8 ms |
+
+At the same quadrature degree the cell-volume weight saves 7 % of the mesh
+block and 0-3 % of the full assembly (about 8 ms per time step, 0.5 % of a
+1.6 s step). The larger saving comes from the lower quadrature degree that
+a per-cell constant weight permits on affine cells (degree 2 is exact
+there), and pointwise weighting at degree 2 saves exactly as much: 40 % of
+the mesh block, 7-8 % of the full assembly, about 60 ms (3.5 %) per step.
+After 8 steps the solutions of all four variants agree to 1e-8 in norm.
+The cell-volume weighting therefore has no cost advantage of its own; the
+default stays pointwise at degree 6.
