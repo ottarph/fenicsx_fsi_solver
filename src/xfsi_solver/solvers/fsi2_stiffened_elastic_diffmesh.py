@@ -90,11 +90,11 @@ class MeshMotionConfig:
 
     The defaults ``chi = 1.25``, ``nu_m = 0.45`` are the values validated on
     the FSI2 meshes of this repository (``mesh_sec``, ``mesh_fine_sec``,
-    dt 0.0025 and 0.00125, 0 to 15 s). The paper's ``chi = 2.5``,
-    ``nu_m = 0.3`` (the defaults of
-    :class:`~xfsi_solver.fsi.mesh_extension.StiffenedElasticMeshExtension`)
-    inverts the large far-field cells at the channel walls near t = 7.8 s on
-    ``mesh_sec``; see ``docs/stiffened-elastic-mesh-motion.md``.
+    dt 0.0025 and 0.00125, 0 to 15 s), as in
+    :class:`~xfsi_solver.fsi.mesh_extension.StiffenedElasticMeshExtension`.
+    The paper's ``chi = 2.5``, ``nu_m = 0.3`` inverts the large far-field
+    cells at the channel walls near t = 7.8 s on ``mesh_sec``; see
+    ``docs/stiffened-elastic-mesh-motion.md``.
 
     Attributes:
         mesh_stiffening_exponent: ``chi`` of ``w = (j_star / j_0)^chi``.

@@ -317,3 +317,9 @@ state), 55 ms per step:
 | fieldsplit | 1.992 s | 1.940 s | +2.6 % |
 
 (the step time excludes the accepted-state check, another 9 ms per step).
+
+`StiffenedElasticMeshExtension` now also defaults to chi 1.25 / nu 0.45 (it
+kept the paper's 2.5 / 0.3 until then); the operator and FSI tests pass
+with the new defaults. The experimental `cell_volume` weighting was only
+unit-tested (per-cell constant, equal to pointwise on affine cells, ghost
+values), never used in a coupled run.

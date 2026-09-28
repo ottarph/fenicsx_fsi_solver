@@ -186,6 +186,11 @@ MESH_WEIGHTINGS = ("pointwise", "cell_volume")
 class StiffenedElasticMeshExtension:
     """Reference-configuration linear elasticity with mesh-Jacobian stiffening.
 
+    The defaults ``chi = 1.25``, ``nu_m = 0.45`` are the values validated for
+    FSI2 on this repository's meshes; the paper's ``chi = 2.5``,
+    ``nu_m = 0.3`` inverts the far-field cells at the channel walls there
+    (see ``docs/stiffened-elastic-mesh-motion.md``).
+
     Attributes:
         stiffening_exponent: ``chi >= 0``; 0 gives unweighted elasticity.
         poisson_ratio: ``nu_m`` in ``[0, 0.49]``.
@@ -203,8 +208,8 @@ class StiffenedElasticMeshExtension:
         j_star: Normalization of ``j_0``; ``None`` for the mean initial
             fluid-cell volume over the parent-cell volume.
     """
-    stiffening_exponent: float = 2.5
-    poisson_ratio: float = 0.3
+    stiffening_exponent: float = 1.25
+    poisson_ratio: float = 0.45
     modulus: float = 1.0
     quadrature_degree: int | None = None
     weighting: str = "pointwise"
