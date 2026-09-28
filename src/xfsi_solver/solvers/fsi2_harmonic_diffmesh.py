@@ -78,7 +78,11 @@ class SolverConfig:
     Newton steps) by default; ``"bt"`` backtracks, also from iterates rejected
     as a function domain error (see :class:`StepMonitor`).
 
-    ``linear_solver="direct"`` is MUMPS LU on the Jacobian.
+    ``linear_solver="direct"`` is MUMPS LU on the Jacobian, with
+    ``mumps_workspace_relaxation`` percent extra working space (MUMPS
+    ``ICNTL(14)``); raise it if the factorization fails with ``INFOG(1) = -9``
+    (for example on many ranks, where numerical pivoting can exceed the
+    analysis estimate).
     ``linear_solver="fieldsplit"`` is FGMRES with a Schur field split
     configured by ``fieldsplit`` (a :class:`FieldSplitConfig`, or its
     ``variant`` as a string), see
@@ -99,6 +103,7 @@ class SolverConfig:
     ksp_max_it: int = 500
     ksp_restart: int = 100
     ksp_monitor: bool = False
+    mumps_workspace_relaxation: int = 80
 
     def __post_init__(self):
         if isinstance(self.fieldsplit, str):
@@ -543,7 +548,7 @@ def create_nonlinear_problem(problem: FSIProblem, config: SolverConfig, options_
             "ksp_type": "preonly",
             "pc_type": "lu",
             "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 80,
+            "mat_mumps_icntl_14": config.mumps_workspace_relaxation,
         }
     if config.snes_monitor:
         petsc_options["snes_monitor"] = None

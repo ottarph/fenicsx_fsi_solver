@@ -403,6 +403,8 @@ def parse_args(argv=None):
     parser.add_argument("--snes-max-it", type=int, default=SolverConfig.snes_max_it)
     parser.add_argument("--snes-linesearch", default="none")
     parser.add_argument("--ksp-rtol", type=float, default=SolverConfig.ksp_rtol)
+    parser.add_argument("--mumps-workspace-relaxation", type=int, default=SolverConfig.mumps_workspace_relaxation,
+                        help="percent extra MUMPS working space (ICNTL(14)) of the direct solver")
     parser.add_argument("--snes-monitor", action="store_true")
     parser.add_argument("--mesh-stiffening-exponent", type=float, default=MeshMotionConfig.mesh_stiffening_exponent)
     parser.add_argument("--mesh-poisson-ratio", type=float, default=MeshMotionConfig.mesh_poisson_ratio)
@@ -423,7 +425,8 @@ def main(argv=None):
         jacobian_mode=args.jacobian_mode, preconditioner_mode=args.preconditioner_mode,
         linear_solver=args.linear_solver, snes_atol=args.snes_atol, snes_rtol=args.snes_rtol,
         snes_max_it=args.snes_max_it, snes_linesearch_type=args.snes_linesearch, snes_monitor=args.snes_monitor,
-        ksp_rtol=args.ksp_rtol, fieldsplit=FieldSplitConfig(displacement_fluid=args.displacement_fluid))
+        ksp_rtol=args.ksp_rtol, mumps_workspace_relaxation=args.mumps_workspace_relaxation,
+        fieldsplit=FieldSplitConfig(displacement_fluid=args.displacement_fluid))
     mesh_config = MeshMotionConfig(
         mesh_stiffening_exponent=args.mesh_stiffening_exponent, mesh_poisson_ratio=args.mesh_poisson_ratio,
         mesh_equation_scale=args.mesh_equation_scale, mesh_quadrature_degree=args.mesh_quadrature_degree,
