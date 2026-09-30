@@ -47,16 +47,62 @@ def plot_qois(
         series.append(("harmonic", "b--", qois_harm))
 
     if reference_path is not None:
-        ref = np.loadtxt(reference_path)
-        qois_ref = np.column_stack([
-            ref[:, 0],           # time
-            ref[:, 4] + ref[:, 6],    # drag
-            -ref[:, 5] - ref[:, 7],   # lift
-            ref[:, 10],          # tip x-displacement
-            ref[:, 11],          # tip y-displacement
-        ])
-        series.append(("reference", "r:", qois_ref))
+        series.append(("reference", "r:", _load_reference(reference_path)))
 
+    _plot_series(series, output_dir)
+
+
+def plot_restricted_comparison(
+    biharmonic_path: str | os.PathLike | None = None,
+    restricted_path: str | os.PathLike | None = None,
+    reference_path: str | os.PathLike | None = None,
+    output_dir: str | os.PathLike = "output/figures",
+    filename_prefix: str = "restr_compare_",
+):
+    """Plot drag, lift, and tip displacement over time for the base
+    biharmonic solver and the biharmonic solver with restricted test
+    functions, optionally together with the FSI2 reference data. Any of the
+    three inputs may be omitted (``None``). Figures are written with
+    ``filename_prefix`` prepended so they don't overwrite those from
+    :func:`plot_qois`.
+    """
+
+    series = []
+
+    if biharmonic_path is not None:
+        series.append(("biharmonic", "k-", np.loadtxt(biharmonic_path)))
+
+    if restricted_path is not None:
+        series.append(("biharmonic, restricted test functions", "b--", np.loadtxt(restricted_path)))
+
+    if reference_path is not None:
+        series.append(("reference", "r:", _load_reference(reference_path)))
+
+    _plot_series(series, output_dir, filename_prefix)
+
+
+def _load_reference(reference_path: str | os.PathLike) -> np.ndarray:
+    """Load the FSI2 reference data into the same column layout as the
+    solver qoi files: time, drag, lift, tip x- and y-displacement.
+    """
+    ref = np.loadtxt(reference_path)
+    return np.column_stack([
+        ref[:, 0],           # time
+        ref[:, 4] + ref[:, 6],    # drag
+        -ref[:, 5] - ref[:, 7],   # lift
+        ref[:, 10],          # tip x-displacement
+        ref[:, 11],          # tip y-displacement
+    ])
+
+
+def _plot_series(
+    series: list[tuple[str, str, np.ndarray]],
+    output_dir: str | os.PathLike,
+    filename_prefix: str = "",
+):
+    """Write one PDF and one SVG figure per qoi in ``_QOI_SPECS``, each
+    showing every ``(label, style, qois)`` entry in ``series``.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,9 +115,9 @@ def plot_qois(
         plt.ylabel(ylabel)
         if series:
             plt.legend()
-        plt.savefig(output_dir / f"{stem}.pdf")
+        plt.savefig(output_dir / f"{filename_prefix}{stem}.pdf")
         with matplotlib.rc_context(_SVG_RC):
-            plt.savefig(output_dir / f"{stem}.svg")
+            plt.savefig(output_dir / f"{filename_prefix}{stem}.svg")
         plt.close()
 
 
@@ -79,6 +125,11 @@ def main():
     plot_qois(
         biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
         harmonic_path="output/qoi/fsi2_harm_dm_qoi.txt",
+        reference_path="data/fsi2_reference.txt",
+    )
+    plot_restricted_comparison(
+        biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
+        restricted_path="output/qoi/fsi2_biharm_qoi_restr.txt",
         reference_path="data/fsi2_reference.txt",
     )
 
