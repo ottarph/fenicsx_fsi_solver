@@ -216,7 +216,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     # create residual form
 
-    def A_T(u, u_old, v, v_old): # checked
+    def A_T(u, u_old, v, v_old):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
         F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_old)
@@ -229,31 +229,18 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
         residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
 
-        # This part is added later for restricted test function support
-        # residual += rho_s * ufl.inner((u - u_old) / dt, du) * dx_solid
-
         return residual
     
-    def A_I(u, v, z): # checked
+    def A_I(u, v, z):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
-        normal = ufl.FacetNormal(mesh)
 
-        # The point of restricting test functions is that an alpha-parameter
-        # is unnecessary. Set it to alpha=1.0 for now.
-        alpha_u0 = dfx.fem.Constant(mesh, 1.0)
-        alpha_u = alpha_u0
+        residual  = ufl.inner(z, dz) * dx_fluid
+        residual -= ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
 
-        residual  = alpha_u * ufl.inner(z, dz) * dx_fluid
-        residual -= alpha_u * ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
-
-        residual += alpha_u * ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
+        residual += ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
         residual += dfx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_fluid
 
-        # This one is to compensate for integration by parts with unrestricted
-        # test functions.
-        # residual -= ufl.inner(alpha_u * ufl.grad(z) * normal, du) * ds_interface_fluid
-        
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
         return residual
@@ -268,9 +255,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
         # This one stays because the test function is dv, not du.
         residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        # This one uses du, so needs to go later.
-        # residual -= rho_s * ufl.inner(v, du) * dx_solid
 
         return residual
     
@@ -292,11 +276,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     residual += dfx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
     residual += dfx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
 
-    # missing_terms = [
-    #     "residual += rho_s * ufl.inner((u - u_old) / dt, du) * dx_solid",
-    #     "residual -= ufl.inner(alpha_u * ufl.grad(z) * normal, du) * ds_interface_fluid", # Don't need to reintroduce this.
-    #     "residual -= rho_s * ufl.inner(v, du) * dx_solid",
-    # ]
 
     #--------------------------------------------
 
@@ -534,7 +513,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=0.2,
+        T=15.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr.bp",
