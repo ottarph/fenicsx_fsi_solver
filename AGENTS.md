@@ -37,12 +37,14 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
 # Running MPI simulations
 
 - Before starting, check the number of physical cores, counting cores, not
-  hardware threads (`lscpu` on Linux, `sysctl -n hw.physicalcpu` on macOS), the
+  hardware threads (`lscpu` on Linux). On Apple silicon, count only the
+  performance cores (`sysctl -n hw.perflevel0.physicalcpu`), since ranks on the
+  slower efficiency cores hold back the others. Also check the
   current load (`uptime`), and MPI runs already going
   (`ps -eo pid,etime,pcpu,args | grep "[p]ython"`).
 - Do not oversubscribe. The total number of MPI ranks across all concurrent
-  runs must leave two physical cores free, or one core free if the machine has
-  six or fewer physical cores. Ask the user rather than share cores.
+  runs must leave two of these cores free, or one core free if the machine has
+  six or fewer of them. Ask the user rather than share cores.
 - Set `OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1` for every MPI run.
 - Give each run its own output paths for qoi files, logs and VTX output.
 - Detach runs longer than a few minutes from the session (`setsid nohup ... &`

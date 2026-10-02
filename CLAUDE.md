@@ -50,12 +50,14 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
 
 ## Before starting
 - Check how many physical cores the machine has, counting cores, not hardware
-  threads: `lscpu` on Linux, `sysctl -n hw.physicalcpu` on macOS. Check the
+  threads: `lscpu` on Linux. On Apple silicon, count only the performance cores
+  (`sysctl -n hw.perflevel0.physicalcpu`): ranks on the slower efficiency cores
+  hold back the other ranks, so efficiency cores are not used for MPI. Check the
   current load (`uptime`) and the MPI runs already going, including other
   users' (`ps -eo pid,etime,pcpu,args | grep "[p]ython"`).
 - Do not oversubscribe. The total number of MPI ranks across all runs,
   including runs already going, must leave two physical cores free, or one core
-  free if the machine has six or fewer physical cores. If that leaves too few
+  free if the machine has six or fewer such cores. If that leaves too few
   cores for the runs you want, ask the user rather than share cores.
 - Always set `OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1` for MPI runs, so
   each rank uses one core.
