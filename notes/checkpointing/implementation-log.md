@@ -157,9 +157,38 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   | biharmonic dm| 2 ranks    | 1 rank  | 5.6e-19 | 1.3e-15 | 1.0e-11 | 3.6e-14 |
   | biharmonic dm| 1 rank     | 2 ranks | 4.9e-19 | 1.8e-15 | 1.7e-11 | 3.5e-14 |
 
-## Next
+## Lagrange solver (2026-10-02)
 
-`fsi2_harmonic_lagrange`: fields on fluid/solid cell submeshes (supported
-now) and the multipliers `lambda_u`, `lambda_v` on the interface facet
-submesh, which need the CG1 vertex-map transfer (or can be left out, being
-only Newton initial guesses, given the finding above).
+- `fsi2_harmonic_lagrange` checkpoints `u_f`, `v_f` (fluid submesh), `u_s`,
+  `v_s` (solid submesh) and `p` (fluid submesh). Its loop starts at
+  `step = 0`, so the checkpoint is written when `step % checkpoint_every ==
+  0` after the increment; otherwise as in the diffmesh solvers. The solid
+  VTX file gets the restart suffix too (`<name>_solid_from_t<t>.bp`), and
+  the QoI file's parent directory is now created like in the other solvers.
+- The interface multipliers `lambda_u`, `lambda_v` (facet submesh) are left
+  out by decision, and restart from zero; documented at the checkpointer set-up
+  in the solver and in its `solve` docstring.
+- In exact arithmetic that is harmless: they enter the residual linearly
+  with constant coefficients, so the Newton iterates after the first update
+  don't depend on their initial value. Measured, however (serial,
+  `mesh_sec_coarse`, 12 steps, relative to each field's max):
+  - continuous vs zeroing the multipliers in place at step 4 (no restart):
+    `u_f` 1.5e-6, `v_f` 1e-10, `u_s` 1.5e-11, `v_s` 4.9e-10, `p` 6.9e-12;
+  - continuous vs restart: the same (`u_f` 1.5e-6, others <= 1.8e-10);
+  - continuous vs continuous with Newton `atol` 1e-11 instead of 1e-7:
+    `u_f` 1.1e-6, `v_s` 3.2e-8, others ~1e-9.
+
+  So `u_f` is only resolved to ~1e-6 by the solver anyway (its equation is
+  scaled by `alpha_u = 1e-9`, so its errors barely show in the residual),
+  and the restart differences are at or below solver accuracy. Drag, lift
+  and A_x/A_y match to the printed 6 digits in serial, 2 -> 1 and 1 -> 2
+  rank restarts; only the `interface_u_gap` diagnostic (~1e-9) differs, by
+  up to 1.8e-12. Newton iteration counts after a restart are unchanged (2).
+- That `u_f` difference passed the shared test's elementwise
+  `atol = 1e-12` with only ~1.5x margin, and that `atol` was loose for small
+  fields (5e-7 relative for `u` ~ 2e-6). `restart_helpers` now compares
+  each field norm-wise against `rtol * max|field|` (default 1e-10, which the
+  other solvers pass with margin); the lagrange test uses 1e-8 and 1e-5 for
+  `u_f`. Leaving `v_s` out of the restart still fails it (abs diff 8.8e-3).
+- The lagrange solver had no test; `tests/test_fsi2_harmonic_lagrange.py`
+  adds a plain solve test besides the restart tests.
