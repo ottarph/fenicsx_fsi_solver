@@ -350,7 +350,10 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
     # practice, restarting them from zero changes the fluid mesh displacement
     # u_f by ~1e-6 relative -- as much as tightening the Newton atol does,
     # since the u_f equation is scaled by alpha_u = 1e-9 -- and the other
-    # fields by < 1e-9 relative; drag, lift and tip displacement QoIs are
+    # fields by < 1e-9 relative. That is acceptable: in the interior, u_f
+    # only defines the ALE map, which just has to stay non-degenerate, and
+    # on the interface the change (~1e-12) is far below the weak continuity
+    # mismatch u_f - u_s (~1e-8). Drag, lift and tip displacement QoIs are
     # unchanged (notes/checkpointing/implementation-log.md).
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
