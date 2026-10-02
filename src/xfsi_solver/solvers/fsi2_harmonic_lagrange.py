@@ -5,6 +5,7 @@ import basix.ufl
 import ufl
 
 import sys
+from pathlib import Path
 from timeit import default_timer as timer
 
 from mpi4py.MPI import COMM_WORLD as comm
@@ -23,7 +24,27 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path="data/models/fsi2/wf003fmcg1/model"):
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path="data/models/fsi2/wf003fmcg1/model",
+          checkpoint_dir=None, checkpoint_every=None, restart=False):
+    """Solve the FSI2 benchmark up to time ``T``.
+
+    With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
+    the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
+    steps (replacing checkpoints there from earlier runs). With
+    ``restart=True``, the run instead continues from the latest checkpoint in
+    ``checkpoint_dir``, on any number of MPI ranks: QoI rows after the
+    checkpoint time are dropped from ``qoi_path`` before appending, and the
+    VTX output is written to new files with a ``_from_t<time>`` suffix, since
+    ``VTXWriter`` cannot append.
+
+    The Lagrange multipliers ``lambda_u`` and ``lambda_v`` are not
+    checkpointed, so a restart starts them from zero; see the comment where
+    the checkpointer is set up.
+    """
+    if restart and checkpoint_dir is None:
+        raise ValueError("restart=True requires checkpoint_dir")
+    if checkpoint_every is not None and checkpoint_dir is None:
+        raise ValueError("checkpoint_every requires checkpoint_dir")
 
 
     # load mesh and meshtags
@@ -317,11 +338,50 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
     residual_blocked = ufl.extract_blocks(residual)
 
 
+    # Set up checkpointing
+    #
+    # The Lagrange multipliers lambda_u, lambda_v are deliberately left out of
+    # the checkpoint, and a restart starts them from zero, as at t = t0. They
+    # live on the interface submesh gamma_mesh, a facet (codimension 1)
+    # submesh, which Checkpointer doesn't support, and they have no _old
+    # values, so they only serve as the Newton initial guess. They enter the
+    # residual linearly with constant coefficients, so in exact arithmetic
+    # the iterates after the first Newton update don't depend on them. In
+    # practice, restarting them from zero changes the fluid mesh displacement
+    # u_f by ~1e-6 relative -- as much as tightening the Newton atol does,
+    # since the u_f equation is scaled by alpha_u = 1e-9 -- and the other
+    # fields by < 1e-9 relative; drag, lift and tip displacement QoIs are
+    # unchanged (notes/checkpointing/implementation-log.md).
+
+    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
+
+    checkpointed = [u_f, v_f, u_s, v_s, p]
+    output_path_solid = output_path.replace(".bp", "_solid.bp")
+
+    # (t, step) are the time and counter of the next step to solve
+    t = t0
+    step = 0
+    checkpointer = None
+    if checkpoint_dir is not None:
+        checkpointer = Checkpointer(checkpoint_dir, mesh,
+                                    submeshes=[(fluid_mesh, fluid_cell_map), (solid_mesh, solid_cell_map)])
+    if restart:
+        t, step = checkpointer.read(checkpointed, dt_val)
+        output_path = restart_output_path(output_path, t)
+        output_path_solid = restart_output_path(output_path_solid, t)
+        output_path_p = restart_output_path(output_path_p, t)
+        if comm.rank == 0:
+            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
+                  f"writing VTX output to {output_path}, {output_path_solid} and {output_path_p}")
+    elif checkpoint_every is not None:
+        checkpointer.clear()
+
+
     # Set up output
 
     policy = dfx.io.VTXMeshPolicy.reuse
     writer = dfx.io.VTXWriter(comm, output_path, [u_f, v_f], mesh_policy=policy, engine="BP4")
-    writer_solid = dfx.io.VTXWriter(comm, output_path.replace(".bp", "_solid.bp"), [u_s, v_s], mesh_policy=policy, engine="BP4")
+    writer_solid = dfx.io.VTXWriter(comm, output_path_solid, [u_s, v_s], mesh_policy=policy, engine="BP4")
     writer_p = dfx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=policy, engine="BP4")
 
 
@@ -362,8 +422,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
 
 
     if comm.rank == 0:
-        with open(qoi_path, "wb") as f:
-            np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y\tinterface_u_gap\tinterface_v_gap")
+        Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
+        if restart and Path(qoi_path).exists():
+            truncate_qoi_file(qoi_path, t - dt_val, dt_val)
+        else:
+            with open(qoi_path, "wb") as f:
+                np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y\tinterface_u_gap\tinterface_v_gap")
 
 
     # Set up solver
@@ -392,9 +456,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
 
     b_vec, *_ = problem.solver.getFunction()
 
-    t = t0
-    step = 0
     max_steps = np.inf
+    first_step = step
     start = timer()
     while step < max_steps and t < T:
 
@@ -429,7 +492,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
                 print(f"\nSolver did not converge")
                 print(f"{comm.size = }")
                 print(f"Elapsed time: {end - start:.3f} s")
-                print(f"Time per step: {(end - start) / (step+1):.3f} s")
+                print(f"Time per step: {(end - start) / max(step - first_step + 1, 1):.3f} s")
             quit()
 
 
@@ -454,12 +517,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
         step += 1
         t += dt.value
 
+        if checkpoint_every is not None and step % checkpoint_every == 0:
+            checkpointer.write(checkpointed, t, step, dt_val)
+
 
     end = timer()
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
-        print(f"Time per step: {(end - start) / (step+1):.3f} s")
+        print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
 
 
@@ -468,6 +534,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path, model_path
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
+    args = parser.parse_args()
+
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=15.0,
@@ -475,6 +547,9 @@ def main():
         output_path="output/pv/fsi2_harm_lg.bp",
         output_path_p="output/pv/fsi2_harm_lg_p.bp",
         qoi_path="output/qoi/fsi2_harm_lg_qoi.txt",
+        checkpoint_dir="output/checkpoints/fsi2_harm_lg",
+        checkpoint_every=100,
+        restart=args.restart,
     )
 
 
