@@ -21,8 +21,8 @@ def test_fsi2_harmonic_lagrange_solve(output_dirs):
 def test_fsi2_harmonic_lagrange_restart_reproduces_continuous_run(output_dirs, tmp_path):
     # All fields live on the fluid or solid submesh but are checkpointed on the full mesh. The
     # interface Lagrange multipliers are not checkpointed (see the solver), and restarting them from
-    # zero changes u_f by ~1e-6 and the other fields by < 1e-9 relative. u_f only needs to give a
-    # non-degenerate ALE map in the interior, and its interface change is far below the u_f - u_s gap
+    # zero changes u_f by ~1e-6 (as much as tightening the Newton tolerance does) and the other
+    # fields by < 1e-9 relative
     vector = ("Lagrange", 2, (2, ))
     elements = {"u_f": vector, "v_f": vector, "u_s": vector, "v_s": vector, "p": ("Lagrange", 1)}
     check_restart_reproduces_continuous_run(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", elements, output_dirs,

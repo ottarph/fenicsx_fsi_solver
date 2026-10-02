@@ -184,9 +184,12 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   `u_f` differences are on the interface (1.5e-6 relative, 6.8e-13
   absolute; interior 2.2e-7), far below the solver's weak continuity
   mismatch `u_f - u_s` there (`interface_u_gap` ~1e-8), while `u_s` agrees
-  to ~1e-11. In the interior, `u_f` only defines the ALE map, which just
-  has to stay non-degenerate, so its exact values don't matter (the user
-  confirmed this is acceptable). Drag, lift
+  to ~1e-11. `u_f` is not just a change of coordinates -- the mesh velocity
+  `(u_f - u_f_old) / dt` enters the fluid momentum equation -- so the
+  acceptance rests on the measured effect on the physical fields, which
+  includes that term: `v_f` ~1e-10 and `p` ~7e-12 relative, QoIs unchanged.
+  If tighter reproducibility is wanted, the multipliers can be checkpointed
+  with the CG1 vertex-map transfer from the feasibility check. Drag, lift
   and A_x/A_y match to the printed 6 digits in serial, 2 -> 1 and 1 -> 2
   rank restarts; only the `interface_u_gap` diagnostic (~1e-9) differs, by
   up to 1.8e-12. Newton iteration counts after a restart are unchanged (2).
