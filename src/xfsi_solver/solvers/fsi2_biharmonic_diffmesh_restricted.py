@@ -354,7 +354,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
     
-    # Prevent possibly overwriting the sparsity pattern on zeroRowsLocal.
+    # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
 
@@ -367,11 +367,13 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     jac_uv = dfx.fem.form(ufl.derivative(res_miss_ufl, v, ufl.TrialFunction(V)))
 
 
-    is_u = dfx.cpp.la.petsc.create_index_sets(
-        [(W_i.dofmap.index_map, W_i.dofmap.index_map_bs) for W_i in (U, V, P, Z)]
-    )[0]
-    dofs_d, _ = bc_deactivate.dof_indices()
-    rows_d = is_u.getIndices()[dofs_d]
+    # Global rows of the interface u-dofs owned by this process. The owned rows
+    # of the block matrix are numbered [u, v, p, z] from the start of the
+    # ownership range, and every interface row is owned by a process that
+    # located it, so zeroing owned rows covers all of them.
+    dofs_d, num_owned_d = bc_deactivate.dof_indices()
+    off_own, _ = problem.b.getAttr("_blocks")
+    rows_d = (J_mat.getOwnershipRange()[0] + off_own[0] + dofs_d[:num_owned_d]).astype(PETSc.IntType)
 
     def zero_block(test_space, trial_space, **kwargs):
         return dfx.fem.form(
@@ -401,7 +403,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
         pass
 
     def post_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
-        J.zeroRowsLocal(rows_d, diag=0.0)
+        J.zeroRows(rows_d, diag=0.0)
 
         dolfinx.fem.petsc.assemble_matrix(
             J, jac_post, bcs=[u_s_bc, *bcs]
