@@ -32,3 +32,27 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
 - Create commits using the Git identity already configured by the environment.
 - Do not change `user.name` or `user.email`.
 - Add `Co-authored-by: Codex <noreply@openai.com>` to every commit substantially produced by Codex.
+
+
+# Running MPI simulations
+
+- Before starting, check the number of physical cores, counting cores, not
+  hardware threads (`lscpu` on Linux, `sysctl -n hw.physicalcpu` on macOS), the
+  current load (`uptime`), and MPI runs already going
+  (`ps -eo pid,etime,pcpu,args | grep "[p]ython"`).
+- Do not oversubscribe. The total number of MPI ranks across all concurrent
+  runs must leave two physical cores free, or one core free if the machine has
+  six or fewer physical cores. Ask the user rather than share cores.
+- Set `OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1` for every MPI run.
+- Give each run its own output paths for qoi files, logs and VTX output.
+- Detach runs longer than a few minutes from the session (`setsid nohup ... &`
+  on Linux, `nohup ... &` on macOS), send all output to a log file, use
+  `python -u`, and record the PID.
+- Wrap short test runs in `timeout`.
+- Treat a run as hung when its log has had no new time step for 1 minute while
+  its ranks use 100% CPU; this is usually an MPI deadlock. Mesh loading and form
+  compilation before the first time step can take longer. Stop only the hung
+  run, by its recorded PID or process group, and report it.
+- Never use `pkill -f <pattern>` or `killall python`.
+- Report the state of every run: finished, failed, stopped or still running,
+  and how far it got.
