@@ -97,10 +97,10 @@ Some solvers expect mesh/reference data to already exist under ``data/`` (genera
 
 ## Checkpointing and restarts
 
-``fsi2_harmonic`` saves restart checkpoints (via [io4dolfinx](https://jsdokken.com/io4dolfinx/))
-when ``solve`` is given ``checkpoint_dir`` and ``checkpoint_every`` (in time steps). ``main()`` checkpoints to
-``output/checkpoints/fsi2_harm`` every 100 steps. To continue a stopped or crashed run from its latest
-checkpoint, pass ``restart=True`` or run:
+``fsi2_harmonic``, ``fsi2_harmonic_diffmesh`` and ``fsi2_biharmonic_diffmesh`` save restart checkpoints (via
+[io4dolfinx](https://jsdokken.com/io4dolfinx/)) when ``solve`` is given ``checkpoint_dir`` and ``checkpoint_every``
+(in time steps). Their ``main()`` checkpoints to ``output/checkpoints/<run name>`` every 100 steps. To continue a
+stopped or crashed run from its latest checkpoint, pass ``restart=True`` or run, for example:
 
 ```bash
 conda run --no-capture-output -n xfsi_solver mpiexec -n 24 python -m xfsi_solver.solvers.fsi2_harmonic --restart

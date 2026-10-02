@@ -116,8 +116,50 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
 - `tests/test_checkpoint.py` now carries a CG2 field on a cell submesh
   (`x <= 0.5`) through every test, including the 2-rank restart.
 
+## Diffmesh solvers (2026-10-02)
+
+- `fsi2_harmonic_diffmesh` checkpoints `u`, `v`, `p` and
+  `fsi2_biharmonic_diffmesh` `u`, `v`, `p`, `z`, with `p` and `z` on the
+  fluid submesh passed to `Checkpointer` as `(fluid_mesh, fluid_cell_map)`.
+- Their loop is shifted from `fsi2_harmonic`'s: the first solve is at
+  `t = t0`, and `step`/`t` are incremented at the end of the iteration. The
+  checkpoint is written after the increment, so it stores the loop-carried
+  `(t, step)` of the next step to solve, and on restart the QoI file keeps
+  rows up to `t - dt`. `save_every` alignment and the inflow BC follow from
+  the restored values as before.
+- "Time per step" in all three solvers now divides by the steps solved in
+  this run rather than the total step counter, which is wrong after a
+  restart.
+- The restart-equivalence test is shared in `tests/restart_helpers.py`; it
+  reads the checkpoints back as full-mesh functions, which is how submesh
+  fields are stored.
+- Findings from mutation checks (not restoring a field on restart):
+  - Leaving out `v` fails the test (relative error ~3).
+  - Leaving out `p` (harmonic diffmesh) or `z` (biharmonic) changes nothing
+    measurable: final-state differences stay at ~1e-11 in `p` (|p| ~ 90) and
+    the QoI files are identical. Both only seed Newton (no `_old` values),
+    and the converged solution doesn't remember the initial guess beyond
+    round-off. They are still checkpointed so the Newton iterations are the
+    same as in a continuous run.
+  - A correct serial restart of the diffmesh solvers is not bitwise
+    identical (unlike `fsi2_harmonic`): the submesh -> parent -> submesh
+    `interpolate` round trip perturbs values at round-off (~1e-14 relative
+    in `p`).
+- Solver level, `mesh_sec_coarse`, 12 steps, checkpoint every 4, restart
+  from step 4 after a run stopped at step 6, against a continuous serial run
+  (max abs difference at the end; max |u| 1.8e-6, |v| 9.0e-4, |p| 84,
+  |z| 1.2e-2; QoI files identical in all cases):
+
+  | solver       | first part | restart | u       | v       | p       | z       |
+  |--------------|------------|---------|---------|---------|---------|---------|
+  | harmonic dm  | 2 ranks    | 1 rank  | 4.3e-19 | 1.6e-15 | 7.8e-12 |         |
+  | harmonic dm  | 1 rank     | 2 ranks | 3.8e-19 | 1.9e-15 | 1.2e-11 |         |
+  | biharmonic dm| 2 ranks    | 1 rank  | 5.6e-19 | 1.3e-15 | 1.0e-11 | 3.6e-14 |
+  | biharmonic dm| 1 rank     | 2 ranks | 4.9e-19 | 1.8e-15 | 1.7e-11 | 3.5e-14 |
+
 ## Next
 
-Roll out to `fsi2_harmonic_diffmesh` and `fsi2_biharmonic_diffmesh` (`p`,
-and `z` for biharmonic, on the fluid submesh), then `fsi2_harmonic_lagrange`
-(fields on fluid/solid submeshes, multipliers on the interface submesh).
+`fsi2_harmonic_lagrange`: fields on fluid/solid cell submeshes (supported
+now) and the multipliers `lambda_u`, `lambda_v` on the interface facet
+submesh, which need the CG1 vertex-map transfer (or can be left out, being
+only Newton initial guesses, given the finding above).
