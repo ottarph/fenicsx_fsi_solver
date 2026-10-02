@@ -351,6 +351,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
                 np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
     max_steps = np.inf
+    first_step = step
     start = timer()
     while step < max_steps and t < T:
 
@@ -394,7 +395,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
-        print(f"Time per step: {(end - start) / (step+1):.3f} s")
+        print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
 
     writer.close()
