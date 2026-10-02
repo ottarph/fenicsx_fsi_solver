@@ -28,7 +28,23 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
+def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
+          checkpoint_dir=None, checkpoint_every=None, restart=False):
+    """Solve the FSI2 benchmark up to time ``T``.
+
+    With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
+    the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
+    steps (replacing checkpoints there from earlier runs). With
+    ``restart=True``, the run instead continues from the latest checkpoint in
+    ``checkpoint_dir``, on any number of MPI ranks: QoI rows after the
+    checkpoint time are dropped from ``qoi_path`` before appending, and the
+    VTX output is written to new files with a ``_from_t<time>`` suffix, since
+    ``VTXWriter`` cannot append.
+    """
+    if restart and checkpoint_dir is None:
+        raise ValueError("restart=True requires checkpoint_dir")
+    if checkpoint_every is not None and checkpoint_dir is None:
+        raise ValueError("checkpoint_every requires checkpoint_dir")
 
 
     # load mesh and meshtags
@@ -282,6 +298,21 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     )
 
 
+    from xfsi_solver.tools.checkpoint import Checkpointer
+
+    t = t0
+    step = -1
+    checkpointer = Checkpointer(checkpoint_dir, mesh) if checkpoint_dir is not None else None
+    if restart:
+        t, step = checkpointer.read([u, v, p], dt_val)
+        output_path = _restart_output_path(output_path, t)
+        output_path_p = _restart_output_path(output_path_p, t)
+        if comm.rank == 0:
+            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
+                  f"writing VTX output to {output_path} and {output_path_p}")
+    elif checkpoint_every is not None:
+        checkpointer.clear()
+
     writer = dfx.io.VTXWriter(comm, output_path, [u,v])
     writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
@@ -313,11 +344,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
 
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(qoi_path, "wb") as f:
-            np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
+        if restart and Path(qoi_path).exists():
+            _truncate_qoi_file(qoi_path, t, dt_val)
+        else:
+            with open(qoi_path, "wb") as f:
+                np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
-    t = t0
-    step = -1
     max_steps = np.inf
     start = timer()
     while step < max_steps and t < T:
@@ -355,6 +387,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
             with open(qoi_path, "ab") as f:
                 np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
 
+        if checkpoint_every is not None and (step + 1) % checkpoint_every == 0:
+            checkpointer.write([u, v, p], t, step, dt_val)
+
     end = timer()
     if comm.rank == 0:
         print(f"\n{comm.size = }")
@@ -368,7 +403,28 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     return
 
 
+def _restart_output_path(path, t):
+    """``out/name.bp`` -> ``out/name_from_t<t>.bp``, so a restart does not overwrite earlier VTX output."""
+    path = Path(path)
+    return str(path.with_name(f"{path.stem}_from_t{t:.4f}{path.suffix}"))
+
+
+def _truncate_qoi_file(qoi_path, t, dt_val):
+    """Drop the QoI rows after time ``t`` (written after the checkpoint a run restarts from)."""
+    with open(qoi_path) as f:
+        lines = f.readlines()
+    kept = [line for line in lines if line.startswith("#") or float(line.split()[0]) <= t + 0.5 * dt_val]
+    with open(qoi_path, "w") as f:
+        f.writelines(kept)
+
+
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
+    args = parser.parse_args()
+
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=12.0,
@@ -376,6 +432,9 @@ def main():
         output_path="output/pv/fsi2_harm.bp",
         output_path_p="output/pv/fsi2_harm_p.bp",
         qoi_path="output/qoi/fsi2_harm_qoi.txt",
+        checkpoint_dir="output/checkpoints/fsi2_harm",
+        checkpoint_every=100,
+        restart=args.restart,
     )
 
 
