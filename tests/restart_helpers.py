@@ -23,8 +23,13 @@ def read_checkpoint_state(mesh_path, checkpoint_dir, dt_val, elements):
     return t, step, functions
 
 
-def check_restart_reproduces_continuous_run(solve, mesh_path, elements, output_dirs, tmp_path, dt_val=0.0025):
-    """Compare a continuous 8-step run with a run stopped after 6 steps and restarted from step 4."""
+def check_restart_reproduces_continuous_run(solve, mesh_path, elements, output_dirs, tmp_path, dt_val=0.0025,
+                                            rtol=1e-10, field_rtol=None):
+    """Compare a continuous 8-step run with a run stopped after 6 steps and restarted from step 4.
+
+    Each final field must agree to ``rtol`` (or ``field_rtol[name]``) relative
+    to its largest absolute value in the continuous run.
+    """
 
     def run(name, n_steps, restart=False):
         solve(
@@ -54,7 +59,8 @@ def check_restart_reproduces_continuous_run(solve, mesh_path, elements, output_d
     t_r, step_r, state_r = read_checkpoint_state(mesh_path, tmp_path / "restarted", dt_val, elements)
     assert (t_r, step_r) == (t_c, step_c)
     for name in elements:
-        np.testing.assert_allclose(state_r[name].x.array, state_c[name].x.array, rtol=1e-10, atol=1e-12)
+        tol = (field_rtol or {}).get(name, rtol) * np.max(np.abs(state_c[name].x.array))
+        np.testing.assert_allclose(state_r[name].x.array, state_c[name].x.array, rtol=0, atol=tol, err_msg=name)
 
 
 def check_restart_rejects_different_dt(solve, mesh_path, output_dirs, tmp_path, dt_val=0.0025):
