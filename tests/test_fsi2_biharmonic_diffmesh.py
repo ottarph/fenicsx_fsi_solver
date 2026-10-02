@@ -1,3 +1,5 @@
+from restart_helpers import check_restart_rejects_different_dt, check_restart_reproduces_continuous_run
+
 from xfsi_solver.solvers.fsi2_biharmonic_diffmesh import solve
 
 
@@ -14,3 +16,16 @@ def test_fsi2_biharmonic_diffmesh_solve(output_dirs):
     )
 
     assert (output_dirs["qoi"] / "fsi2_biharm_qoi.txt").exists()
+
+
+def test_fsi2_biharmonic_diffmesh_restart_reproduces_continuous_run(output_dirs, tmp_path):
+    # p and z live on the fluid submesh but are checkpointed on the full mesh
+    elements = {
+        "u": ("Lagrange", 2, (2, )), "v": ("Lagrange", 2, (2, )), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2, )),
+    }
+    check_restart_reproduces_continuous_run(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", elements, output_dirs,
+                                            tmp_path)
+
+
+def test_fsi2_biharmonic_diffmesh_restart_rejects_different_dt(output_dirs, tmp_path):
+    check_restart_rejects_different_dt(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", output_dirs, tmp_path)
