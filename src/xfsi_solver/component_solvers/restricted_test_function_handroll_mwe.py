@@ -81,7 +81,7 @@ compiled_fluid = dolfinx.fem.form(kernel * dxF)
 Af = dolfinx.fem.petsc.assemble_matrix(compiled_fluid, bcs=bcs, diag=1.0)
 Af.assemble()
 for bc in [bc_deactivate]:
-    dofs, _ = bc._cpp_object.dof_indices()
+    dofs, _ = bc.dof_indices()
     Af.zeroRowsLocal(dofs, diag=0)
 Af.assemble()
 A = As + Af

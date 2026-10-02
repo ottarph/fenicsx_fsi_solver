@@ -370,7 +370,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     is_u = dfx.cpp.la.petsc.create_index_sets(
         [(W_i.dofmap.index_map, W_i.dofmap.index_map_bs) for W_i in (U, V, P, Z)]
     )[0]
-    dofs_d, _ = bc_deactivate._cpp_object.dof_indices()
+    dofs_d, _ = bc_deactivate.dof_indices()
     rows_d = is_u.getIndices()[dofs_d]
 
     def zero_block(test_space, trial_space, **kwargs):

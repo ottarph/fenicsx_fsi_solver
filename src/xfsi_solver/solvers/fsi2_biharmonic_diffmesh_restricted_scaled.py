@@ -368,7 +368,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     is_u = dfx.cpp.la.petsc.create_index_sets(
         [(W_i.dofmap.index_map, W_i.dofmap.index_map_bs) for W_i in (U, V, P, Z)]
     )[0]
-    dofs_d, _ = bc_deactivate._cpp_object.dof_indices()
+    dofs_d, _ = bc_deactivate.dof_indices()
     rows_d = is_u.getIndices()[dofs_d]
 
     def zero_block(test_space, trial_space, **kwargs):
@@ -415,7 +415,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path):
     ))
     u_fluid_rows = np.setdiff1d(u_fluid_rows, dofs_d)    # interface rows hold the solid equation
     for bc in (u_f_bc, u_s_bc):                           # Dirichlet rows hold x - g
-        u_fluid_rows = np.setdiff1d(u_fluid_rows, bc._cpp_object.dof_indices()[0])
+        u_fluid_rows = np.setdiff1d(u_fluid_rows, bc.dof_indices()[0])
     u_fluid_rows = u_fluid_rows[u_fluid_rows < n_u_own]   # owned rows only
 
     d_vec = problem.b.duplicate()

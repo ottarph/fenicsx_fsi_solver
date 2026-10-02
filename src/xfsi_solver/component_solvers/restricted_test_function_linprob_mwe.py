@@ -108,7 +108,7 @@ b = problem.b
 problem.assemble_matrix()
 
 for bc in [bc_deactivate]:
-    dofs, _ = bc._cpp_object.dof_indices()
+    dofs, _ = bc.dof_indices()
     A.zeroRowsLocal(dofs, diag=0)
 A.assemble()
 
