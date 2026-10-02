@@ -298,15 +298,15 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     )
 
 
-    from xfsi_solver.tools.checkpoint import Checkpointer
+    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
 
     t = t0
     step = -1
     checkpointer = Checkpointer(checkpoint_dir, mesh) if checkpoint_dir is not None else None
     if restart:
         t, step = checkpointer.read([u, v, p], dt_val)
-        output_path = _restart_output_path(output_path, t)
-        output_path_p = _restart_output_path(output_path_p, t)
+        output_path = restart_output_path(output_path, t)
+        output_path_p = restart_output_path(output_path_p, t)
         if comm.rank == 0:
             print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
                   f"writing VTX output to {output_path} and {output_path_p}")
@@ -345,7 +345,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
         if restart and Path(qoi_path).exists():
-            _truncate_qoi_file(qoi_path, t, dt_val)
+            truncate_qoi_file(qoi_path, t, dt_val)
         else:
             with open(qoi_path, "wb") as f:
                 np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
@@ -401,21 +401,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
 
     return
-
-
-def _restart_output_path(path, t):
-    """``out/name.bp`` -> ``out/name_from_t<t>.bp``, so a restart does not overwrite earlier VTX output."""
-    path = Path(path)
-    return str(path.with_name(f"{path.stem}_from_t{t:.4f}{path.suffix}"))
-
-
-def _truncate_qoi_file(qoi_path, t, dt_val):
-    """Drop the QoI rows after time ``t`` (written after the checkpoint a run restarts from)."""
-    with open(qoi_path) as f:
-        lines = f.readlines()
-    kept = [line for line in lines if line.startswith("#") or float(line.split()[0]) <= t + 0.5 * dt_val]
-    with open(qoi_path, "w") as f:
-        f.writelines(kept)
 
 
 def main():

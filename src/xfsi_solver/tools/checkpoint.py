@@ -112,3 +112,22 @@ class Checkpointer:
             io4dolfinx.read_function(self._file(i), f, time=t, name=f.name)
         self._next_file = (i + 1) % _NUM_FILES
         return t, step
+
+
+def restart_output_path(path: str | Path, t: float) -> str:
+    """``out/name.bp`` -> ``out/name_from_t<t>.bp``, so a restart at time ``t`` keeps earlier VTX output."""
+    path = Path(path)
+    return str(path.with_name(f"{path.stem}_from_t{t:.4f}{path.suffix}"))
+
+
+def truncate_qoi_file(qoi_path: str | Path, t_last: float, dt: float) -> None:
+    """Drop rows after time ``t_last`` from a QoI text file whose first column is time.
+
+    ``t_last`` is the time of the last QoI row of the checkpointed state; rows
+    after it were written between the checkpoint and the end of the run.
+    """
+    with open(qoi_path) as f:
+        lines = f.readlines()
+    kept = [line for line in lines if line.startswith("#") or float(line.split()[0]) <= t_last + 0.5 * dt]
+    with open(qoi_path, "w") as f:
+        f.writelines(kept)
