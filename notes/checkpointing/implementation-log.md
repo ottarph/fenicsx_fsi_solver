@@ -98,9 +98,26 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
 - Cost on `mesh_sec` (5861 cells), 2 ranks: 12–25 ms per checkpoint write,
   13 ms per read, 2.3 MB per checkpoint file.
 
+## Submesh fields (2026-10-02)
+
+- `Checkpointer(directory, mesh, submeshes=[(submesh, entity_map), ...])`:
+  a function on a listed cell submesh is copied to a function with the same
+  element on the parent mesh (`interpolate` with `cells0`/`cells1` from the
+  entity map, over owned and ghost cells), and that is what is written; on
+  read it is copied back. Parent dofs outside the submesh are zero and
+  unused. Submeshes are matched by identity (`f.function_space.mesh is
+  submesh`), since the `EntityMap` topologies are new Python wrappers on each
+  access and don't compare equal to `submesh.topology`.
+- Facet submeshes (`fsi2_harmonic_lagrange`'s interface multipliers) raise
+  `NotImplementedError` for now; the vertex-map transfer from the
+  feasibility check would cover CG1 fields there.
+- `restart_output_path` and `truncate_qoi_file` moved from `fsi2_harmonic`
+  into `tools/checkpoint.py` to be shared by the solvers.
+- `tests/test_checkpoint.py` now carries a CG2 field on a cell submesh
+  (`x <= 0.5`) through every test, including the 2-rank restart.
+
 ## Next
 
-Roll out to `fsi2_harmonic_diffmesh`, `fsi2_biharmonic_diffmesh` (`p`, `z` on
-the fluid submesh) and `fsi2_harmonic_lagrange` (fields on fluid/solid
-submeshes, multipliers on the interface submesh) with the submesh transfer
-above.
+Roll out to `fsi2_harmonic_diffmesh` and `fsi2_biharmonic_diffmesh` (`p`,
+and `z` for biharmonic, on the fluid submesh), then `fsi2_harmonic_lagrange`
+(fields on fluid/solid submeshes, multipliers on the interface submesh).

@@ -8,8 +8,12 @@ Functions are stored in the cell ordering of the input mesh file
 (``write_mesh_input_order`` / ``write_function_on_input_mesh``), so a restart
 reads the mesh from the same XDMF file as a fresh run and the number of MPI
 ranks may differ between the run that wrote the checkpoint and the restart
-(N-to-M). This only works for functions on meshes read from file; submeshes
-have no ``original_cell_index`` and io4dolfinx cannot reorder their dofs.
+(N-to-M). This only works for functions on meshes read from file: submeshes
+have no ``original_cell_index``, so io4dolfinx cannot reorder their dofs.
+Functions on cell submeshes (from ``dolfinx.mesh.create_submesh``) are
+therefore stored as functions with the same element on the parent mesh,
+copied cell by cell through the submesh's entity map (exact, since the
+elements match), and copied back to the submesh after reading.
 
 Each checkpoint is a self-contained file, and the checkpoint directory
 alternates between two of them. io4dolfinx stores a function's dofmap (in the
@@ -37,13 +41,45 @@ def _num_global_cells(mesh: dfx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
 
 
-class Checkpointer:
-    """Write and read restart checkpoints of a list of functions in ``directory``."""
+def _all_cells(mesh: dfx.mesh.Mesh) -> np.ndarray:
+    index_map = mesh.topology.index_map(mesh.topology.dim)
+    return np.arange(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
 
-    def __init__(self, directory: str | Path, mesh: dfx.mesh.Mesh):
+
+class Checkpointer:
+    """Write and read restart checkpoints of a list of functions in ``directory``.
+
+    The functions live on ``mesh``, read from file, or on one of the cell
+    submeshes of it listed in ``submeshes`` as ``(submesh, entity_map)``
+    pairs, with the entity map returned by ``dolfinx.mesh.create_submesh``.
+    """
+
+    def __init__(self, directory: str | Path, mesh: dfx.mesh.Mesh,
+                 submeshes: list[tuple[dfx.mesh.Mesh, dfx.mesh.EntityMap]] = ()):
         self.directory = Path(directory)
         self.mesh = mesh
         self._next_file = 0
+        self._submesh_cells = []
+        for submesh, entity_map in submeshes:
+            if submesh.topology.dim != mesh.topology.dim:
+                raise NotImplementedError("Only functions on cell submeshes (codimension 0) can be checkpointed")
+            sub_cells = _all_cells(submesh)
+            parent_cells = entity_map.sub_topology_to_topology(sub_cells, inverse=False)
+            self._submesh_cells.append((submesh, (sub_cells, parent_cells)))
+        self._parent_functions = {}
+
+    def _on_parent(self, f: dfx.fem.Function):
+        """The function stored for ``f``, and the submesh and parent cells to copy between (None on ``mesh``)."""
+        f_mesh = f.function_space.mesh
+        if f_mesh is self.mesh:
+            return f, None
+        cells = next((cells for submesh, cells in self._submesh_cells if submesh is f_mesh), None)
+        if cells is None:
+            raise ValueError(f"Function {f.name!r} is neither on the checkpoint mesh nor on one of its submeshes")
+        if f.name not in self._parent_functions:
+            V = dfx.fem.functionspace(self.mesh, f.function_space.ufl_element())
+            self._parent_functions[f.name] = dfx.fem.Function(V, name=f.name)
+        return self._parent_functions[f.name], cells
 
     def _file(self, i: int) -> Path:
         return self.directory / f"checkpoint_{i}.bp"
@@ -64,7 +100,11 @@ class Checkpointer:
         self.mesh.comm.Barrier()
         io4dolfinx.write_mesh_input_order(path, self.mesh)
         for f in functions:
-            io4dolfinx.write_function_on_input_mesh(path, f, time=t)
+            g, cells = self._on_parent(f)
+            if cells is not None:
+                sub_cells, parent_cells = cells
+                g.interpolate(f, cells0=sub_cells, cells1=parent_cells)
+            io4dolfinx.write_function_on_input_mesh(path, g, time=t)
         attrs = {
             "t": np.array([t], dtype=np.float64),
             "step": np.array([step], dtype=np.int64),
@@ -109,7 +149,11 @@ class Checkpointer:
                 f"not {_num_global_cells(self.mesh)}"
             )
         for f in functions:
-            io4dolfinx.read_function(self._file(i), f, time=t, name=f.name)
+            g, cells = self._on_parent(f)
+            io4dolfinx.read_function(self._file(i), g, time=t, name=f.name)
+            if cells is not None:
+                sub_cells, parent_cells = cells
+                f.interpolate(g, cells0=parent_cells, cells1=sub_cells)
         self._next_file = (i + 1) % _NUM_FILES
         return t, step
 
