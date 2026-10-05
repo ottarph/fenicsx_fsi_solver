@@ -262,5 +262,12 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
 - In the diffmesh solvers the first loop iteration ran with `step = -1`, so
   VTX snapshots were written at steps 1, 5, 9, ...; they are now written at
   0, 4, 8, ... like the other solvers. `fsi2_harmonic` incremented `step` at
-  the top of the loop, so its snapshots don't change; it still advances `t`
-  at the top, i.e. its `t` labels the level being solved.
+  the top of the loop, so its snapshots don't change.
+- `fsi2_harmonic` also advanced `t` at the top of the loop, so its first step
+  was labelled `t = dt` and used the inflow at `dt`, while the other solvers
+  label it `t = 0` and use the inflow at 0. It now advances `t` at the end of
+  the loop like the others; on restart it truncates QoI rows after
+  `t - dt` like them. As the step at `t = 0` starts from rest with zero
+  inflow, it stays at rest: an 8-step coarse-mesh run gives an all-zero QoI
+  row at `t = 0` and otherwise rows identical (to the printed 6 digits) to
+  the old ones at the same `t`, ending at `T - dt` instead of `T`.
