@@ -1,36 +1,37 @@
 import pytest
 from restart_helpers import check_restart_rejects_different_dt, check_restart_reproduces_continuous_run
 
-from xfsi_solver.solvers.fsi2_harmonic_diffmesh import solve
+from xfsi_solver.solvers.fsi2_biharmonic_diffmesh_restricted import solve
 
-# p lives on the fluid submesh but is checkpointed on the full mesh
-ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1)}
+# p and z live on the fluid submesh but are checkpointed on the full mesh
+ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
 
 
-def test_fsi2_harmonic_diffmesh_solve(output_dirs):
+def test_fsi2_biharmonic_diffmesh_restricted_solve(output_dirs):
     dt_val = 0.0025
     solve(
-        # smaller stand-in for the default "mesh_quad_fine_sec.xdmf" mesh
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
         # save_every=4 in the solver, so run enough steps to save at least 2 snapshots
         T=6 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "fsi2_harm_dm.bp"),
-        output_path_p=str(output_dirs["pv"] / "fsi2_harm_p_dm.bp"),
-        qoi_path=str(output_dirs["qoi"] / "fsi2_harm_dm_qoi.txt"),
+        output_path=str(output_dirs["pv"] / "fsi2_biharm_dm_restricted.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_biharm_p_dm_restricted.bp"),
+        qoi_path=str(output_dirs["qoi"] / "fsi2_biharm_qoi_restricted.txt"),
     )
 
-    assert (output_dirs["qoi"] / "fsi2_harm_dm_qoi.txt").exists()
+    assert (output_dirs["qoi"] / "fsi2_biharm_qoi_restricted.txt").exists()
 
 
-def test_fsi2_harmonic_diffmesh_restart_reproduces_continuous_run(output_dirs, tmp_path):
+def test_fsi2_biharmonic_diffmesh_restricted_restart_reproduces_continuous_run(output_dirs, tmp_path):
     check_restart_reproduces_continuous_run(
         solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", ELEMENTS, output_dirs, tmp_path
     )
 
 
 @pytest.mark.parametrize("first_ranks,restart_ranks", [(2, 1), (1, 2)], ids=["2to1", "1to2"])
-def test_fsi2_harmonic_diffmesh_restart_on_different_number_of_ranks(output_dirs, tmp_path, first_ranks, restart_ranks):
+def test_fsi2_biharmonic_diffmesh_restricted_restart_on_different_number_of_ranks(
+    output_dirs, tmp_path, first_ranks, restart_ranks
+):
     # Not bitwise identical across partitions; QoIs are printed to 6 digits, so the last one may flip
     check_restart_reproduces_continuous_run(
         solve,
@@ -44,5 +45,5 @@ def test_fsi2_harmonic_diffmesh_restart_on_different_number_of_ranks(output_dirs
     )
 
 
-def test_fsi2_harmonic_diffmesh_restart_rejects_different_dt(output_dirs, tmp_path):
+def test_fsi2_biharmonic_diffmesh_restricted_restart_rejects_different_dt(output_dirs, tmp_path):
     check_restart_rejects_different_dt(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", output_dirs, tmp_path)

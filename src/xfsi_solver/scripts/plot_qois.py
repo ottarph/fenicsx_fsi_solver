@@ -86,13 +86,15 @@ def _load_reference(reference_path: str | os.PathLike) -> np.ndarray:
     solver qoi files: time, drag, lift, tip x- and y-displacement.
     """
     ref = np.loadtxt(reference_path)
-    return np.column_stack([
-        ref[:, 0],           # time
-        ref[:, 4] + ref[:, 6],    # drag
-        -ref[:, 5] - ref[:, 7],   # lift
-        ref[:, 10],          # tip x-displacement
-        ref[:, 11],          # tip y-displacement
-    ])
+    return np.column_stack(
+        [
+            ref[:, 0],  # time
+            ref[:, 4] + ref[:, 6],  # drag
+            -ref[:, 5] - ref[:, 7],  # lift
+            ref[:, 10],  # tip x-displacement
+            ref[:, 11],  # tip y-displacement
+        ]
+    )
 
 
 def _plot_series(
