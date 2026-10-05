@@ -15,6 +15,8 @@ from timeit import default_timer as timer
 from mpi4py.MPI import COMM_WORLD as comm
 from mpi4py import MPI
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -523,12 +525,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        converged = problem.solver.getConvergedReason()
-
-        if converged < 0:
-            writer.close()
-            writer_p.close()
-            break
+        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
 
 
         if comm.rank == 0:
@@ -548,9 +545,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
 
-    if problem.solver.getConvergedReason() > 0:
-        writer.close()
-        writer_p.close()
+    writer.close()
+    writer_p.close()
 
 
     return
