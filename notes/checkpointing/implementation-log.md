@@ -249,25 +249,34 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
     test in the 3-rank run, with wrong values (max abs diff ~0.3, 60-97 %
     of entries) -- the corruption found in the first design.
 
-## Step counter from 0 (2026-10-05)
+## Step counter and time labels (2026-10-05)
 
-- All FSI2 solvers in `solvers/` now start at `step = 0` and increment it at
-  the end of the loop body, as `fsi2_harmonic_lagrange` already did, so
-  `step` is the number of completed steps (the counter of the next step) and
-  a checkpoint is written when `step % checkpoint_every == 0`. The
-  `(step + 1) % checkpoint_every` above is the old form. Checkpoint times are
-  unchanged; the stored `step` is one larger than before, so checkpoints from
-  before this change restart with a VTX/checkpoint schedule shifted by one
-  step.
-- In the diffmesh solvers the first loop iteration ran with `step = -1`, so
-  VTX snapshots were written at steps 1, 5, 9, ...; they are now written at
-  0, 4, 8, ... like the other solvers. `fsi2_harmonic` incremented `step` at
-  the top of the loop, so its snapshots don't change.
-- `fsi2_harmonic` also advanced `t` at the top of the loop, so its first step
-  was labelled `t = dt` and used the inflow at `dt`, while the other solvers
-  label it `t = 0` and use the inflow at 0. It now advances `t` at the end of
-  the loop like the others; on restart it truncates QoI rows after
-  `t - dt` like them. As the step at `t = 0` starts from rest with zero
-  inflow, it stays at rest: an 8-step coarse-mesh run gives an all-zero QoI
-  row at `t = 0` and otherwise rows identical (to the printed 6 digits) to
-  the old ones at the same `t`, ending at `T - dt` instead of `T`.
+- The FSI2 solvers in `solvers/` disagreed on both. The diffmesh solvers
+  started at `step = -1` with the increment at the end of the loop, so the
+  first step ran as step -1 and VTX snapshots were written at steps 1, 5,
+  9, ...; `fsi2_harmonic` advanced `step` and `t` at the top of the loop, so
+  its first step was labelled `t = dt`, while the others labelled it `t = 0`
+  and used the inflow at 0. And all of them looped `while t < T` on a `t`
+  accumulated with `t += dt`, so the number of steps depended on rounding:
+  `T = 15`, `dt = 0.0025` ran 6001 steps (ending at ~`T`), the short test
+  runs `T/dt` steps (ending at `T - dt`).
+- Now all of them fix `num_steps = round((T - t0) / dt_val)` up front and
+  loop `while step < num_steps`, with `(t, step)` the time and number of
+  completed steps of the current state: the initial condition is the state
+  at `t0`, and the step solving for `t = t0 + (step + 1) * dt_val` (computed,
+  not accumulated) uses the inflow at that `t`. The run ends exactly at `T`.
+- `write_output(t, step)` writes the QoI row, and every `save_every` steps
+  the VTX snapshot, of the current state. It is called for the initial
+  state (except on restart, where that row and snapshot are already in the
+  first run's output) and after every step, so snapshots are at steps 0,
+  `save_every`, `2 * save_every`, ...
+- Checkpoints are written when `step % checkpoint_every == 0` (the
+  `(step + 1) % checkpoint_every` above is the old form) and store the
+  time of the checkpointed state, so a restart truncates QoI rows after `t`
+  (instead of `t - dt`). Checkpoints from before this change don't follow
+  these conventions and shouldn't be restarted.
+- Results don't change: in 8-step coarse-mesh runs of all four solvers, the
+  QoI rows at every `t` shared with the previous convention (where the step
+  labelled `t = 0` started from rest with zero inflow and stayed there) are
+  identical to the printed 6 digits, and the new runs add an all-zero row for
+  the initial state at `t = 0` and end at `T` instead of `T - dt`.

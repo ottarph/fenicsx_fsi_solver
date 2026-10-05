@@ -37,7 +37,8 @@ def solve(
     checkpoint_every=None,
     restart=False,
 ):
-    """Solve the FSI2 benchmark up to time ``T``.
+    """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
+    steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -134,11 +135,11 @@ def solve(
 
     save_every = 4
 
-    total_steps = int(np.ceil((T - t0) / dt_val))
-    if total_steps <= save_every:
+    num_steps = round((T - t0) / dt_val)
+    if num_steps < save_every:
         warnings.warn(
             f"save_every ({save_every}) is larger than the total number of time "
-            f"steps ({total_steps}); at most one VTX snapshot will be written to "
+            f"steps ({num_steps}); at most one VTX snapshot will be written to "
             f"{output_path!r} or {output_path_p!r}, which is not a usable time "
             f"series in ParaView."
         )
@@ -322,7 +323,7 @@ def solve(
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
 
-    # (t, step) are the time and counter of the next step to solve
+    # (t, step) are the time and number of completed steps of the current state
     t = t0
     step = 0
     checkpointer = None
@@ -385,15 +386,32 @@ def solve(
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
         if restart and Path(qoi_path).exists():
-            truncate_qoi_file(qoi_path, t - dt_val, dt_val)
+            truncate_qoi_file(qoi_path, t, dt_val)
         else:
             with open(qoi_path, "wb") as f:
                 np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
-    max_steps = np.inf
+    def write_output(t, step):
+        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
+        if step % save_every == 0:
+            writer.write(t)
+            writer_p.write(t)
+
+        loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
+        u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
+        drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
+        lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
+        if comm.rank == 0:
+            with open(qoi_path, "ab") as f:
+                np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
+
+    if not restart:
+        write_output(t, step)
+
     first_step = step
     start = timer()
-    while step < max_steps and t < T:
+    while step < num_steps:
+        t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
 
@@ -413,20 +431,8 @@ def solve(
         if comm.rank == 0:
             sys.stdout.flush()
 
-        if step % save_every == 0:
-            writer.write(t)
-            writer_p.write(t)
-
-        loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
-        u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
-        if comm.rank == 0:
-            with open(qoi_path, "ab") as f:
-                np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
-
         step += 1
-        t += dt.value
+        write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p], t, step, dt_val)
