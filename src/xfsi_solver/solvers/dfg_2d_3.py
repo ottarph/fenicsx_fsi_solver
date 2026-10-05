@@ -305,6 +305,7 @@ def solve(
         print(f"Time per step: {(end - start) / i:.3e} s")
 
     writer.close()
+    writer_p.close()
 
     # dfx.common.list_timings(comm, [dfx.common.TimingType.wall])
     # log.view()

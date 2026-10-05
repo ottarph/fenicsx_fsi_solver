@@ -444,6 +444,7 @@ def solve(
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
     writer.close()
+    writer_p.close()
 
     return
 
