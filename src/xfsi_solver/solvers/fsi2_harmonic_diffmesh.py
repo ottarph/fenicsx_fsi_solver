@@ -14,6 +14,8 @@ import ufl
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -314,8 +316,8 @@ def solve(
             "snes_max_it": max_iter,
             "snes_atol": atol,
             "snes_rtol": rtol,
-            "snes_error_if_not_converged": True,
-            "ksp_error_if_not_converged": True,
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
             # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
             "snes_monitor": None,
         },
@@ -421,12 +423,8 @@ def solve(
         if comm.rank == 0:
             print(f"\n{t = :.3f}")
 
-        try:
-            problem.solve()
-        except Exception:
-            writer.close()
-            writer_p.close()
-            raise
+        problem.solve()
+        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
 
         if comm.rank == 0:
             sys.stdout.flush()
@@ -444,6 +442,7 @@ def solve(
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
     writer.close()
+    writer_p.close()
 
     return
 

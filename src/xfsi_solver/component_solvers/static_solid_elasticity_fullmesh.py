@@ -8,6 +8,8 @@ import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -130,19 +132,16 @@ def solve(mesh_path, output_path):
             "snes_max_it": max_iter,
             "snes_atol": atol,
             "snes_rtol": rtol,
-            "snes_error_if_not_converged": True,
-            "ksp_error_if_not_converged": True,
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
         },
     )
 
     # vtx writer for output
     writer = dfx.io.VTXWriter(comm, output_path, [u])
 
-    try:
-        problem.solve()
-    except Exception:
-        writer.close()
-        raise
+    problem.solve()
+    check_converged(problem, f"g = {g.value}", writers=[writer])
     writer.write(0)
 
     u.x.array[:] = 0.0
@@ -150,11 +149,8 @@ def solve(mesh_path, output_path):
 
     g.value = (0.0, +9.81 * 4)
 
-    try:
-        problem.solve()
-    except Exception:
-        writer.close()
-        raise
+    problem.solve()
+    check_converged(problem, f"g = {g.value}", writers=[writer])
     writer.write(1)
 
     writer.close()

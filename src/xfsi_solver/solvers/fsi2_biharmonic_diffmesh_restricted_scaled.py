@@ -15,6 +15,8 @@ from timeit import default_timer as timer
 from mpi4py.MPI import COMM_WORLD as comm
 from mpi4py import MPI
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -487,6 +489,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         def apply(self, pc: PETSc.PC, r: PETSc.Vec, y: PETSc.Vec) -> None:
             self.tmp.pointwiseMult(r, d_vec)
             self.lu.solve(self.tmp, y)
+            # Report a failed factorization or solve to the outer KSP, which
+            # otherwise takes y as a valid preconditioned residual
+            if self.lu.getConvergedReason() < 0:
+                reason = self.lu.getPC().getFailedReason()
+                pc.setFailedReason(reason if reason != 0 else PETSc.PC.FailedReason.SUBPC_ERROR)
 
     pc = solver.getKSP().getPC()
     pc.setType(PETSc.PC.Type.PYTHON)
@@ -588,12 +595,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        converged = problem.solver.getConvergedReason()
-
-        if converged < 0:
-            writer.close()
-            writer_p.close()
-            break
+        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
 
 
         if comm.rank == 0:
@@ -613,9 +615,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
 
-    if problem.solver.getConvergedReason() > 0:
-        writer.close()
-        writer_p.close()
+    writer.close()
+    writer_p.close()
 
 
     return
