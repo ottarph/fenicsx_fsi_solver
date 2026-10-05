@@ -2,52 +2,58 @@
 #
 # SPDX-License-Identifier: MIT
 
+import sys
+
 import dolfinx as dfx
 import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import ufl
-
-import sys
-
 from mpi4py.MPI import COMM_WORLD as comm
 
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
-
     "solid_fluid_interface": 11,
-
-    "obstacle": 21,                 # no-slip for fluid
-    "inflow": 22,                   # parabolic inflow for fluid
-    "outflow": 23,                  # do-nothing for fluid
-    "channel_side": 24,             # no-slip for fluid
-    "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
+    "obstacle": 21,  # no-slip for fluid
+    "inflow": 22,  # parabolic inflow for fluid
+    "outflow": 23,  # do-nothing for fluid
+    "channel_side": 24,  # no-slip for fluid
+    "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path):
 
+def solve(mesh_path, T, dt_val, output_path):
 
     # load mesh and meshtags
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(mesh, name= "Cell tags")
+        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
-        facet_tags = infile.read_meshtags(mesh, name= "Facet tags")
+        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
 
-    assert len(np.setdiff1d(np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
-    
+    assert (
+        len(
+            np.setdiff1d(
+                np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS]
+            )
+        )
+        == 0
+    ), "Physical markers and cell tags do not match"
 
     # create submeshes for fluid and solid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
-    solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(
+        mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
+    )
+    solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(
+        mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+    )
 
     if comm.rank == 0:
         print(f"{solid_mesh.geometry.x.shape = }")
 
     solid_mesh.topology.create_connectivity(1, 2)
-
 
     # transfer meshtags to submeshes
     fluid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
@@ -56,14 +62,14 @@ def solve(mesh_path, T, dt_val, output_path):
     if comm.rank == 0:
         print(f"{solid_facet_tags.indices.shape = }, {np.unique(solid_facet_tags.values) = }")
 
-    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.unique(facet_tags.values)), "Transferred facet tags do not match"
-
+    assert np.all(np.union1d(fluid_facet_tags.values, solid_facet_tags.values) == np.unique(facet_tags.values)), (
+        "Transferred facet tags do not match"
+    )
 
     # Create measure with  meshtags
 
     dx = ufl.Measure("dx", domain=solid_mesh)
     ds = ufl.Measure("ds", domain=solid_mesh, subdomain_data=solid_facet_tags)
-
 
     # create problem parameters
 
@@ -74,16 +80,14 @@ def solve(mesh_path, T, dt_val, output_path):
     dt = dfx.fem.Constant(solid_mesh, dt_val)
     t0 = 0.0
 
-    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81*4))
+    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81 * 4))
     traction = dfx.fem.Constant(solid_mesh, (0.0, 0.0))
 
-    
     # create function spaces
 
-    U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
-    V = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2, )))
+    U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
+    V = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
     W = ufl.MixedFunctionSpace(U, V)
-
 
     # create functions
 
@@ -92,10 +96,9 @@ def solve(mesh_path, T, dt_val, output_path):
 
     du, dv = ufl.TestFunctions(W)
 
-
     # Implicit Euler discretization of STVK under influence of gravitational body force and
     # fixed Dirichlet BC on left boundary and otherwise zero traction.
-    
+
     du_dt = (u - u_old) / dt
     dv_dt = (v - v_old) / dt
 
@@ -104,7 +107,6 @@ def solve(mesh_path, T, dt_val, output_path):
     F = ufl.Identity(solid_mesh.geometry.dim) + ufl.grad(u)
     J = ufl.det(F)
     n = ufl.FacetNormal(solid_mesh)
-    
 
     # create Dirichlet boundary condition
 
@@ -132,7 +134,9 @@ def solve(mesh_path, T, dt_val, output_path):
     rtol = 1.0e-8
 
     problem = dfx.fem.petsc.NonlinearProblem(
-        residual_blocked, [u, v], bcs=bcs,
+        residual_blocked,
+        [u, v],
+        bcs=bcs,
         petsc_options_prefix="solid_elasticity_",
         petsc_options={
             "ksp_type": "preonly",
@@ -147,13 +151,11 @@ def solve(mesh_path, T, dt_val, output_path):
         },
     )
 
-
     writer = dfx.io.VTXWriter(comm, output_path, [u])
 
     t = t0
 
     while t < T:
-
         t += dt.value
 
         u_old.x.array[:] = u.x.array
@@ -175,9 +177,7 @@ def solve(mesh_path, T, dt_val, output_path):
 
         writer.write(t)
 
-
     writer.close()
-
 
     return
 

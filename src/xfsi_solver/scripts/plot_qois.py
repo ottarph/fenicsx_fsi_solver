@@ -48,13 +48,15 @@ def plot_qois(
 
     if reference_path is not None:
         ref = np.loadtxt(reference_path)
-        qois_ref = np.column_stack([
-            ref[:, 0],           # time
-            ref[:, 4] + ref[:, 6],    # drag
-            -ref[:, 5] - ref[:, 7],   # lift
-            ref[:, 10],          # tip x-displacement
-            ref[:, 11],          # tip y-displacement
-        ])
+        qois_ref = np.column_stack(
+            [
+                ref[:, 0],  # time
+                ref[:, 4] + ref[:, 6],  # drag
+                -ref[:, 5] - ref[:, 7],  # lift
+                ref[:, 10],  # tip x-displacement
+                ref[:, 11],  # tip y-displacement
+            ]
+        )
         series.append(("reference", "r:", qois_ref))
 
     output_dir = Path(output_dir)
