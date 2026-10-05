@@ -227,3 +227,24 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   and drag, lift, A_x, A_y keep 1e-5.
 - Not restoring `v` in `fsi2_harmonic` fails the 1 -> 2 test (abs diff
   0.54), so the `mpiexec` run executes the branch's code.
+
+## Checkpointer tests on the FSI meshes (2026-10-05)
+
+- `tests/test_checkpoint.py` only used a dolfinx-created unit square, while
+  the solvers read their meshes from XDMF (ordering and partitioning can
+  differ). Every test there is now parametrized over `unit_square`,
+  `fsi_tri` (`mesh_sec_coarse.xdmf`) and `fsi_quad`
+  (`mesh_quad_coarse.xdmf`). The FSI variants carry solver-like fields:
+  CG2 `u` on the full mesh, CG1 `p` on the fluid submesh and CG2 `v_s` on
+  the solid submesh, built from the cell tags.
+- The N-to-M test now chains 1 -> 2 -> 3 -> 1 ranks: each run reads the
+  latest checkpoint, checks every field exactly (1e-14) on its own ranks,
+  and writes two more steps. The `mpiexec` runner moved to
+  `restart_helpers.run_mpi_python`, shared with the solver tests.
+- Mutation checks, all caught on all three meshes:
+  - writing with io4dolfinx's native `write_mesh` / `write_function`
+    (dolfinx ordering) instead of input-mesh ordering fails the serial
+    read test as well as the N-to-M one;
+  - the original single-file, append-across-runs design fails the N-to-M
+    test in the 3-rank run, with wrong values (max abs diff ~0.3, 60-97 %
+    of entries) -- the corruption found in the first design.

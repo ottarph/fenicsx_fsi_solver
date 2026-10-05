@@ -20,21 +20,29 @@ importlib.import_module({module!r}).solve(**{kwargs!r})
 """
 
 
-def _run(solve, ranks, **kwargs):
-    """Call ``solve(**kwargs)`` in this process, or on ``ranks`` MPI ranks in an ``mpiexec`` subprocess."""
-    if ranks == 1:
-        solve(**kwargs)
-        return
+def run_mpi_python(script, ranks):
+    """Run the Python source ``script`` on ``ranks`` MPI ranks with ``mpiexec``, in the current directory.
+
+    Skips the calling test if ``mpiexec`` is missing or the test process
+    itself runs on more than one rank.
+    """
     if MPI.COMM_WORLD.size > 1 or shutil.which("mpiexec") is None:
         pytest.skip("spawns its own MPI run, so needs mpiexec and a serial test process")
-    kwargs = {k: str(v) if isinstance(v, Path) else v for k, v in kwargs.items()}
-    script = _MPI_SOLVE_SCRIPT.format(module=solve.__module__, kwargs=kwargs)
     # Run the same xfsi_solver source as this process, which may not be the installed one
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in [str(Path(xfsi_solver.__file__).resolve().parents[1]), env.get("PYTHONPATH")] if p
     )
     subprocess.run(["mpiexec", "-n", str(ranks), sys.executable, "-c", script], check=True, env=env)
+
+
+def _run(solve, ranks, **kwargs):
+    """Call ``solve(**kwargs)`` in this process, or on ``ranks`` MPI ranks in an ``mpiexec`` subprocess."""
+    if ranks == 1:
+        solve(**kwargs)
+        return
+    kwargs = {k: str(v) if isinstance(v, Path) else v for k, v in kwargs.items()}
+    run_mpi_python(_MPI_SOLVE_SCRIPT.format(module=solve.__module__, kwargs=kwargs), ranks)
 
 
 def _read_qoi(path):
