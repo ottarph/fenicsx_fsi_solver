@@ -6,7 +6,6 @@ import dolfinx as dfx
 import dolfinx.fem.petsc  # noqa: F401
 import numpy as np
 import ufl
-
 from mpi4py.MPI import COMM_WORLD as comm
 
 from xfsi_solver.tools.custom_linear_problem import MyLinearProblem
@@ -30,7 +29,7 @@ def biharmonic(u_bc: dfx.fem.Function):
     dx = ufl.Measure("dx", domain=mesh)
     f = dfx.fem.Constant(mesh, (0.0, 0.0))
 
-    a  = ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * dx - ufl.inner(v, phi_v) * dx
+    a = ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * dx - ufl.inner(v, phi_v) * dx
     a += ufl.inner(ufl.grad(v), ufl.grad(phi_u)) * dx
     a += ufl.inner(dfx.fem.Constant(mesh, 0.0) * u, phi_u) * dx
 
@@ -43,7 +42,10 @@ def biharmonic(u_bc: dfx.fem.Function):
     vh = dfx.fem.Function(V, name="vh")
 
     prob = MyLinearProblem(
-        a_block, L_block, bcs=[bc], u=[uh, vh],
+        a_block,
+        L_block,
+        bcs=[bc],
+        u=[uh, vh],
         petsc_options_prefix="biharmonic_",
         petsc_options={
             "ksp_type": "preonly",
@@ -64,11 +66,11 @@ def solve(N, output_path):
     mesh = dfx.mesh.create_unit_square(comm, N, N, cell_type=dfx.mesh.CellType.triangle)
     mesh.topology.create_connectivity(1, 2)
 
-    V = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
+    V = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
 
     def bc_func(x):
         H = 0.2
-        values = np.zeros_like(x[:2,:])
+        values = np.zeros_like(x[:2, :])
         values[0] = 0.0
         values[1] = np.where(np.isclose(x[1], 1.0), 1.0, 0.0) * 4 * x[0] * (1 - x[0]) * H
         return values

@@ -1,6 +1,9 @@
 import pytest
+from restart_helpers import check_restart_rejects_different_dt, check_restart_reproduces_continuous_run
 
 from xfsi_solver.solvers.fsi2_harmonic import solve
+
+ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1)}
 
 
 @pytest.mark.parametrize(
@@ -21,3 +24,26 @@ def test_fsi2_harmonic_solve(output_dirs, cell_type, mesh_path):
     )
 
     assert (output_dirs["qoi"] / f"fsi2_harm_qoi_{cell_type}.txt").exists()
+
+
+def test_fsi2_harmonic_restart_reproduces_continuous_run(output_dirs, tmp_path):
+    check_restart_reproduces_continuous_run(solve, "data/meshes/fsi2/mesh_coarse.xdmf", ELEMENTS, output_dirs, tmp_path)
+
+
+@pytest.mark.parametrize("first_ranks,restart_ranks", [(2, 1), (1, 2)], ids=["2to1", "1to2"])
+def test_fsi2_harmonic_restart_on_different_number_of_ranks(output_dirs, tmp_path, first_ranks, restart_ranks):
+    # Not bitwise identical across partitions; QoIs are printed to 6 digits, so the last one may flip
+    check_restart_reproduces_continuous_run(
+        solve,
+        "data/meshes/fsi2/mesh_coarse.xdmf",
+        ELEMENTS,
+        output_dirs,
+        tmp_path,
+        qoi_rtol=1e-5,
+        first_ranks=first_ranks,
+        restart_ranks=restart_ranks,
+    )
+
+
+def test_fsi2_harmonic_restart_rejects_different_dt(output_dirs, tmp_path):
+    check_restart_rejects_different_dt(solve, "data/meshes/fsi2/mesh_coarse.xdmf", output_dirs, tmp_path)

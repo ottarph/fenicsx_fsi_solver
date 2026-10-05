@@ -95,6 +95,22 @@ conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_
 Some solvers expect mesh/reference data to already exist under ``data/`` (generated via the scripts in
 ``src/xfsi_solver/scripts/``) before they can run.
 
+## Checkpointing and restarts
+
+The monolithic FSI2 solvers in ``src/xfsi_solver/solvers/`` (all except ``dfg_2d_3``) save restart checkpoints (via
+[io4dolfinx](https://jsdokken.com/io4dolfinx/)) when ``solve`` is given ``checkpoint_dir`` and ``checkpoint_every``
+(in time steps). Their ``main()`` checkpoints to ``output/checkpoints/<run name>`` every 100 steps. To continue a
+stopped or crashed run from its latest checkpoint, pass ``restart=True`` or run, for example:
+
+```bash
+conda run --no-capture-output -n xfsi_solver mpiexec -n 24 python -m xfsi_solver.solvers.fsi2_harmonic --restart
+```
+
+A restart can use a different number of MPI ranks than the original run. It drops QoI rows written after the
+checkpoint and appends new ones to the same file. VTX output goes to new ``*_from_t<time>.bp`` files, since VTX
+files can't be appended to. ``fsi2_harmonic_lagrange`` doesn't checkpoint its interface Lagrange multipliers, which
+restart from zero. See ``notes/checkpointing/implementation-log.md`` for design details.
+
 ## Reference data
 
 ``plot_qois.py`` compares solver output against the published FSI2 benchmark reference values, which
