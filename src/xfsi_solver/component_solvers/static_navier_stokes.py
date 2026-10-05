@@ -8,6 +8,8 @@ import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -150,8 +152,8 @@ def solve(mesh_path, output_path, t):
             "snes_max_it": max_iter,
             "snes_atol": atol,
             "snes_rtol": rtol,
-            "snes_error_if_not_converged": True,
-            "ksp_error_if_not_converged": True,
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
         },
     )
 
@@ -160,11 +162,8 @@ def solve(mesh_path, output_path, t):
     if comm.rank == 0:
         print(f"\n{t = :.3f}", end="\t")
 
-    try:
-        problem.solve()
-    except Exception:
-        writer.close()
-        raise
+    problem.solve()
+    check_converged(problem, "the steady state", writers=[writer])
 
     writer.write(0.0)
 

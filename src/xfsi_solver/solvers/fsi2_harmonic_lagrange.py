@@ -10,6 +10,8 @@ import ufl
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.convergence import check_converged
+
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
@@ -543,17 +545,7 @@ def solve(
             print(f"{converged = }", end="\n")
             sys.stdout.flush()
 
-        if not converged:
-            writer.close()
-            writer_solid.close()
-            writer_p.close()
-            end = timer()
-            if comm.rank == 0:
-                print(f"\nSolver did not converge")
-                print(f"{comm.size = }")
-                print(f"Elapsed time: {end - start:.3f} s")
-                print(f"Time per step: {(end - start) / max(step - first_step + 1, 1):.3f} s")
-            quit()
+        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_solid, writer_p])
 
         step += 1
         write_output(t, step)

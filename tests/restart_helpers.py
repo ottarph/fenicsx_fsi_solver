@@ -20,11 +20,12 @@ importlib.import_module({module!r}).solve(**{kwargs!r})
 """
 
 
-def run_mpi_python(script, ranks):
+def run_mpi_python(script, ranks, timeout=None):
     """Run the Python source ``script`` on ``ranks`` MPI ranks with ``mpiexec``, in the current directory.
 
     Skips the calling test if ``mpiexec`` is missing or the test process
-    itself runs on more than one rank.
+    itself runs on more than one rank. With ``timeout`` (in seconds), a run
+    that takes longer, e.g. because it hangs, fails the test.
     """
     if MPI.COMM_WORLD.size > 1 or shutil.which("mpiexec") is None:
         pytest.skip("spawns its own MPI run, so needs mpiexec and a serial test process")
@@ -33,7 +34,7 @@ def run_mpi_python(script, ranks):
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in [str(Path(xfsi_solver.__file__).resolve().parents[1]), env.get("PYTHONPATH")] if p
     )
-    subprocess.run(["mpiexec", "-n", str(ranks), sys.executable, "-c", script], check=True, env=env)
+    subprocess.run(["mpiexec", "-n", str(ranks), sys.executable, "-c", script], check=True, env=env, timeout=timeout)
 
 
 def _run(solve, ranks, **kwargs):
