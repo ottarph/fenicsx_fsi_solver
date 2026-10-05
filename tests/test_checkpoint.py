@@ -64,12 +64,27 @@ def test_reads_latest_checkpoint(tmp_path):
 
 
 def test_skips_incomplete_checkpoint(tmp_path):
+    """A run killed while writing a checkpoint restarts from the previous, complete one.
+
+    Checkpointer alternates between checkpoint_0.bp and checkpoint_1.bp, and
+    writes the attributes (t, step, dt, num_cells) last, as the marker that a
+    file is complete. Here a crash halfway through a write is simulated by
+    writing a file by hand without that marker.
+    """
+    # Complete checkpoints of step 0 (in checkpoint_0.bp, t = DT) and step 1 (in checkpoint_1.bp, t = 2 DT)
     _write_steps(tmp_path, [0, 1])
-    # A run killed while writing step 2: functions written into the next file, but no attributes
+
+    # The next write, of step 2 at t = 3 DT, goes to checkpoint_0.bp. Simulate a run killed during it:
+    # writing the mesh recreates the file (so the step-0 checkpoint is gone), then only the first
+    # function (u) is written before the "crash", and the attributes never are. The values are
+    # those of t = 3 DT, so the state check below would fail if they were read back.
     mesh, _, functions = _setup()
     _fill(functions, 3 * DT)
     io4dolfinx.write_mesh_input_order(tmp_path / "checkpoint_0.bp", mesh)
     io4dolfinx.write_function_on_input_mesh(tmp_path / "checkpoint_0.bp", functions[0], time=3 * DT)
+
+    # A restart must ignore checkpoint_0.bp, which has no attributes, and read step 1 from
+    # checkpoint_1.bp: every function (also those on the submesh) with its values at t = 2 DT
     t, step, functions = _read(tmp_path)
     assert step == 1
     _assert_state(functions, t)
