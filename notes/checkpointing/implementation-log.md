@@ -201,3 +201,29 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   `u_f`. Leaving `v_s` out of the restart still fails it (abs diff 8.8e-3).
 - The lagrange solver had no test; `tests/test_fsi2_harmonic_lagrange.py`
   adds a plain solve test besides the restart tests.
+
+## Restarts on a different number of ranks in the test suite (2026-10-05)
+
+- `restart_helpers.check_restart_reproduces_continuous_run` takes
+  `first_ranks` / `restart_ranks`. A part on more than one rank runs as
+  `mpiexec -n <ranks> python -c ...` calling the same `solve`, with
+  `PYTHONPATH` prepended by the source directory of the imported
+  `xfsi_solver`; otherwise a worktree run would execute the editable install
+  in the main checkout. The continuous reference run stays serial. Skipped if
+  the test process itself runs under MPI or `mpiexec` is missing.
+- Every solver test file has
+  `test_<solver>_restart_on_different_number_of_ranks[2to1, 1to2]`.
+- QoI columns are now compared per column against `qoi_rtol * max|column|`,
+  with overrides by header name (`qoi_column_rtol`), like the fields. Across
+  partitions the printed 6-digit QoIs may differ in the last digit, so these
+  tests use `qoi_rtol = 1e-5`; the serial tests keep 1e-10.
+- Margins (worst observed difference / tolerance) in the 2 -> 1 and 1 -> 2
+  tests, at the field tolerance 1e-10: harmonic <= 7e-3, harmonic diffmesh
+  <= 2.6e-2, biharmonic diffmesh <= 2.8e-2. Lagrange was tight at its serial
+  tolerances: `u_f` 0.28 of 1e-5 (a different partition moves the loosely
+  resolved `u_f` by ~3e-6) and `interface_u_gap` 0.52 of 1e-3 (a
+  solver-tolerance diagnostic, ~1e-8). Its different-rank test uses 1e-4
+  for `u_f` and 1e-2 for the two gap columns; the other fields keep 1e-8
+  and drag, lift, A_x, A_y keep 1e-5.
+- Not restoring `v` in `fsi2_harmonic` fails the 1 -> 2 test (abs diff
+  0.54), so the `mpiexec` run executes the branch's code.
