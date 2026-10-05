@@ -29,7 +29,6 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
-    model_path="data/models/fsi2/wf003fmcg1/model",
     checkpoint_dir=None,
     checkpoint_every=None,
     restart=False,
@@ -362,8 +361,9 @@ def solve(
     # submesh, which Checkpointer doesn't support, and they have no _old
     # values, so they only serve as the Newton initial guess. They enter the
     # residual linearly with constant coefficients, so in exact arithmetic
-    # the iterates after the first Newton update don't depend on them. In
-    # practice, restarting them from zero changes the fluid mesh displacement
+    # the iterates after the first Newton update don't depend on them.
+    #
+    # In practice, restarting them from zero changes the fluid mesh displacement
     # u_f by ~1e-6 relative -- as much as tightening the Newton atol does,
     # since the u_f equation is scaled by alpha_u = 1e-9 -- and the other
     # fields by < 1e-9 relative. That is at the level the solver resolves
