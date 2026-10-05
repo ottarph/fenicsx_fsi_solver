@@ -248,3 +248,19 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   - the original single-file, append-across-runs design fails the N-to-M
     test in the 3-rank run, with wrong values (max abs diff ~0.3, 60-97 %
     of entries) -- the corruption found in the first design.
+
+## Step counter from 0 (2026-10-05)
+
+- All FSI2 solvers in `solvers/` now start at `step = 0` and increment it at
+  the end of the loop body, as `fsi2_harmonic_lagrange` already did, so
+  `step` is the number of completed steps (the counter of the next step) and
+  a checkpoint is written when `step % checkpoint_every == 0`. The
+  `(step + 1) % checkpoint_every` above is the old form. Checkpoint times are
+  unchanged; the stored `step` is one larger than before, so checkpoints from
+  before this change restart with a VTX/checkpoint schedule shifted by one
+  step.
+- In the diffmesh solvers the first loop iteration ran with `step = -1`, so
+  VTX snapshots were written at steps 1, 5, 9, ...; they are now written at
+  0, 4, 8, ... like the other solvers. `fsi2_harmonic` incremented `step` at
+  the top of the loop, so its snapshots don't change; it still advances `t`
+  at the top, i.e. its `t` labels the level being solved.

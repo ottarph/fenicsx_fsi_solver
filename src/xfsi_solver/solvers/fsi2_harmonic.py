@@ -311,8 +311,9 @@ def solve(
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
 
+    # t is the time of the last solved step, step the counter of the next step to solve
     t = t0
-    step = -1
+    step = 0
     checkpointer = Checkpointer(checkpoint_dir, mesh) if checkpoint_dir is not None else None
     if restart:
         t, step = checkpointer.read([u, v, p], dt_val)
@@ -381,7 +382,6 @@ def solve(
     first_step = step
     start = timer()
     while step < max_steps and t < T:
-        step += 1
         t += dt.value
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
@@ -414,7 +414,9 @@ def solve(
             with open(qoi_path, "ab") as f:
                 np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
 
-        if checkpoint_every is not None and (step + 1) % checkpoint_every == 0:
+        step += 1
+
+        if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p], t, step, dt_val)
 
     end = timer()

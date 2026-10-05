@@ -324,7 +324,7 @@ def solve(
 
     # (t, step) are the time and counter of the next step to solve
     t = t0
-    step = -1
+    step = 0
     checkpointer = None
     if checkpoint_dir is not None:
         checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)])
@@ -428,7 +428,7 @@ def solve(
         step += 1
         t += dt.value
 
-        if checkpoint_every is not None and (step + 1) % checkpoint_every == 0:
+        if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p], t, step, dt_val)
 
     end = timer()
