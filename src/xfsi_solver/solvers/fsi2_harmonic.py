@@ -2,34 +2,41 @@
 #
 # SPDX-License-Identifier: MIT
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
-import numpy as np
-import ufl
-
 import sys
 import warnings
 from pathlib import Path
 from timeit import default_timer as timer
 
-from mpi4py.MPI import COMM_WORLD as comm
+import dolfinx as dfx
+import dolfinx.fem.petsc  # noqa: F401
+import numpy as np
+import ufl
 from mpi4py import MPI
+from mpi4py.MPI import COMM_WORLD as comm
 
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
-
     "solid_fluid_interface": 11,
-
-    "obstacle": 21,                 # no-slip for fluid
-    "inflow": 22,                   # parabolic inflow for fluid
-    "outflow": 23,                  # do-nothing for fluid
-    "channel_side": 24,             # no-slip for fluid
-    "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
+    "obstacle": 21,  # no-slip for fluid
+    "inflow": 22,  # parabolic inflow for fluid
+    "outflow": 23,  # do-nothing for fluid
+    "channel_side": 24,  # no-slip for fluid
+    "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
-          checkpoint_dir=None, checkpoint_every=None, restart=False):
+
+def solve(
+    mesh_path,
+    T,
+    dt_val,
+    output_path,
+    output_path_p,
+    qoi_path,
+    checkpoint_dir=None,
+    checkpoint_every=None,
+    restart=False,
+):
     """Solve the FSI2 benchmark up to time ``T``.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
@@ -46,17 +53,22 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     if checkpoint_every is not None and checkpoint_dir is None:
         raise ValueError("checkpoint_every requires checkpoint_dir")
 
-
     # load mesh and meshtags
 
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(mesh, name= "Cell tags")
+        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
-        facet_tags = infile.read_meshtags(mesh, name= "Facet tags")
+        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
 
-    assert len(np.setdiff1d(np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
-    
+    assert (
+        len(
+            np.setdiff1d(
+                np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS]
+            )
+        )
+        == 0
+    ), "Physical markers and cell tags do not match"
 
     # Create measure with  meshtags
 
@@ -71,7 +83,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     if comm.rank == 0:
         print(f"{fluid_volume = }")
         print(f"{solid_volume = }")
-
 
     # Create measure for interface / solid-fluid boundary
 
@@ -89,7 +100,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     ds_interface_fluid = new_measure_fluid(new_tag_fluid)
     new_measure_solid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_solid, solid_entities.flatten())])
     ds_interface_solid = new_measure_solid(new_tag_solid)
-
 
     # create problem parameters
 
@@ -121,23 +131,19 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             f"series in ParaView."
         )
 
-    
     # create function spaces
 
-    U = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
-    V = dfx.fem.functionspace(mesh, ("CG", 2, (2, )))
+    U = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    V = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
     P = dfx.fem.functionspace(mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(U, V, P)
-
 
     # create functions
 
     u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
     u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
 
-    
     du, dv, dp = ufl.TestFunctions(W)
-
 
     # create Dirichlet boundary condition
 
@@ -145,9 +151,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
     inflow_bc_func = dfx.fem.Function(V)
     inflow_bc_func.x.array[:] = 0.0
-    inflow_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["inflow"]),
-        ])
+    inflow_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+        ],
+    )
     inflow_bc_dofs = dfx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, inflow_bc_facets)
 
     inflow_bc = dfx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
@@ -155,49 +164,53 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     class InflowFunc:
         def __init__(self, t: float = 0.0):
             self.t = t
+
         def __call__(self, x: np.ndarray) -> np.ndarray:
             values = np.zeros((2, x.shape[1]), dtype=x.dtype)
             values[0] = 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2
             if self.t < 2.0:
-                values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
+                values[0] *= 0.5 * (1.0 - np.cos(0.5 * np.pi * self.t))
             return values
 
     noslip_bc_func = dfx.fem.Function(V)
     noslip_bc_func.x.array[:] = 0.0
-    noslip_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
-        facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
-        facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
-        ])
+    noslip_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+            facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+        ],
+    )
     noslip_bc_dofs = dfx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
-    
+
     noslip_bc = dfx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
 
-    
     # Create ALE Dirichlet boundary condition
-    
+
     u_bc_func = dfx.fem.Function(U)
     u_bc_func.x.array[:] = 0.0
-    u_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["inflow"]),
-        facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
-        facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
-        facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
-        facet_tags.find(PHYSICAL_MARKERS["outflow"]),
-    ])
+    u_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+            facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+            facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+            facet_tags.find(PHYSICAL_MARKERS["outflow"]),
+        ],
+    )
     u_bc_dofs = dfx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, u_bc_facets)
     u_bc = dfx.fem.dirichletbc(u_bc_func, u_bc_dofs)
-
 
     # Collect Dirichlet boundary conditions
 
     bcs = [u_bc, inflow_bc, noslip_bc]
 
-
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
-    
+
     from xfsi_solver.fsi.materials import Fluid, Solid
 
     # create residual form
@@ -209,7 +222,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         J_old = ufl.det(F_old)
         J_mid = 0.5 * (J + J_old)
 
-        residual  = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
+        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
 
         residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
 
@@ -218,7 +231,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         residual += rho_s * ufl.inner((u - u_old) / dt, du) * dx_solid
 
         return residual
-    
+
     def A_I(u, v, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
@@ -228,7 +241,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
         alpha_p = dfx.fem.Constant(mesh, 1e-9)
 
-        residual  = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
+        residual = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
         residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
         # residual += ufl.inner(p, dp) * dx_solid # IF QUADS
@@ -240,37 +253,34 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual  = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
+        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
 
         residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
 
         residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
 
         residual -= rho_s * ufl.inner(v, du) * dx_solid
-        
 
         return residual
-    
+
     def A_P(u, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual  = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
 
         return residual
 
-    residual  = A_T(u, u_old, v, v_old)
+    residual = A_T(u, u_old, v, v_old)
     residual += A_I(u, v, p)
     residual += A_P(u, p)
     residual += theta * A_E(u, v)
     residual += (1.0 - theta) * A_E(u_old, v_old)
 
-
-    #--------------------------------------------
+    # --------------------------------------------
 
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
-
 
     residual_blocked = ufl.extract_blocks(residual)
 
@@ -279,7 +289,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     rtol = 1.0e-8
 
     problem = dfx.fem.petsc.NonlinearProblem(
-        residual_blocked, [u, v, p], bcs=bcs,
+        residual_blocked,
+        [u, v, p],
+        bcs=bcs,
         petsc_options_prefix="fsi2_harmonic_",
         petsc_options={
             "ksp_type": "preonly",
@@ -297,7 +309,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         },
     )
 
-
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
 
     t = t0
@@ -308,17 +319,21 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
         if comm.rank == 0:
-            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
-                  f"writing VTX output to {output_path} and {output_path_p}")
+            print(
+                f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
+                f"writing VTX output to {output_path} and {output_path_p}"
+            )
     elif checkpoint_every is not None:
         checkpointer.clear()
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u,v])
+    writer = dfx.io.VTXWriter(comm, output_path, [u, v])
     writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
-    spot_dof_cand = np.flatnonzero(np.all(np.isclose(U.tabulate_dof_coordinates()[:dm_loc_size,:], spot, atol=1e-6), axis=1))
+    spot_dof_cand = np.flatnonzero(
+        np.all(np.isclose(U.tabulate_dof_coordinates()[:dm_loc_size, :], spot, atol=1e-6), axis=1)
+    )
     spot_dof = spot_dof_cand[0] if len(spot_dof_cand) > 0 else None
     assert comm.allreduce(len(spot_dof_cand), op=MPI.SUM) == 1, "None or multiple dofs found for measurement point"
 
@@ -331,11 +346,23 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     F = ufl.Identity(2) + ufl.grad(u)
     transformed_normal = ufl.dot(ufl.inv(F.T), normal)
 
-    drag_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
-    lift_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
+    drag_form_obstacle = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x)
+        * ufl.det(F)
+        * ds(PHYSICAL_MARKERS["obstacle"])
+    )
+    lift_form_obstacle = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y)
+        * ufl.det(F)
+        * ds(PHYSICAL_MARKERS["obstacle"])
+    )
 
-    drag_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
-    lift_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
+    drag_form_interface = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
+    )
+    lift_form_interface = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
+    )
 
     drag_form_obstacle = dfx.fem.form(drag_form_obstacle)
     drag_form_interface = dfx.fem.form(drag_form_interface)
@@ -354,7 +381,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     first_step = step
     start = timer()
     while step < max_steps and t < T:
-
         step += 1
         t += dt.value
         inflow_bc_func.interpolate(InflowFunc(t))
@@ -375,12 +401,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
         if comm.rank == 0:
             sys.stdout.flush()
-        
+
         if step % save_every == 0:
             writer.write(t)
             writer_p.write(t)
 
-        loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
+        loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
         comm.Reduce(loc_u_spot, u_spot, op=MPI.SUM, root=0)
         drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
         lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
@@ -397,9 +423,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
-
     writer.close()
-
 
     return
 

@@ -25,7 +25,7 @@ def test_fsi2_harmonic_solve(output_dirs, cell_type, mesh_path):
 
 
 def test_fsi2_harmonic_restart_reproduces_continuous_run(output_dirs, tmp_path):
-    elements = {"u": ("Lagrange", 2, (2, )), "v": ("Lagrange", 2, (2, )), "p": ("Lagrange", 1)}
+    elements = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1)}
     check_restart_reproduces_continuous_run(solve, "data/meshes/fsi2/mesh_coarse.xdmf", elements, output_dirs, tmp_path)
 
 

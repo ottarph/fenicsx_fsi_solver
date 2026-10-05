@@ -17,14 +17,16 @@ def read_checkpoint_state(mesh_path, checkpoint_dir, dt_val, elements):
     """
     with dfx.io.XDMFFile(MPI.COMM_WORLD, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
-    functions = {name: dfx.fem.Function(dfx.fem.functionspace(mesh, element), name=name)
-                 for name, element in elements.items()}
+    functions = {
+        name: dfx.fem.Function(dfx.fem.functionspace(mesh, element), name=name) for name, element in elements.items()
+    }
     t, step = Checkpointer(checkpoint_dir, mesh).read(list(functions.values()), dt_val)
     return t, step, functions
 
 
-def check_restart_reproduces_continuous_run(solve, mesh_path, elements, output_dirs, tmp_path, dt_val=0.0025,
-                                            rtol=1e-10, field_rtol=None):
+def check_restart_reproduces_continuous_run(
+    solve, mesh_path, elements, output_dirs, tmp_path, dt_val=0.0025, rtol=1e-10, field_rtol=None
+):
     """Compare a continuous 8-step run with a run stopped after 6 steps and restarted from step 4.
 
     Each final field must agree to ``rtol`` (or ``field_rtol[name]``) relative

@@ -7,11 +7,10 @@
 # https://creativecommons.org/licenses/by/4.0/.
 
 
+import dolfinx.io
 import gmsh
 import numpy as np
-
 from mpi4py import MPI
-import dolfinx.io
 
 gmsh.initialize()
 
@@ -64,19 +63,16 @@ def create_mesh(
         rectangle = gmsh.model.occ.addRectangle(0, 0, 0, L, H, tag=1)
         obstacle = gmsh.model.occ.addDisk(c_x, c_y, 0, r, r)
 
-
     if mesh_comm.rank == model_rank:
         fluid = gmsh.model.occ.cut([(gdim, rectangle)], [(gdim, obstacle)])
         gmsh.model.occ.synchronize()
 
-
     fluid_marker = 1
     if mesh_comm.rank == model_rank:
         volumes = gmsh.model.getEntities(dim=gdim)
-        assert (len(volumes) == 1)
+        assert len(volumes) == 1
         gmsh.model.addPhysicalGroup(volumes[0][0], [volumes[0][1]], fluid_marker)
         gmsh.model.setPhysicalName(volumes[0][0], fluid_marker, "Fluid")
-
 
     inlet_marker, outlet_marker, wall_marker, obstacle_marker = 22, 23, 24, 21
     inflow, outflow, walls, obstacle = [], [], [], []
@@ -101,7 +97,6 @@ def create_mesh(
         gmsh.model.addPhysicalGroup(1, obstacle, obstacle_marker)
         gmsh.model.setPhysicalName(1, obstacle_marker, "Obstacle")
 
-
     # Create distance field from obstacle.
     # Add threshold of mesh sizes based on the distance field
     # LcMax -                  /--------
@@ -121,7 +116,6 @@ def create_mesh(
         min_field = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", [threshold_field])
         gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
-
 
     if mesh_comm.rank == model_rank:
         # Mesh.Algorithm:
@@ -152,13 +146,14 @@ def create_mesh(
         # gmsh.fltk.finalize()
         # gmsh.fltk.run()
 
-
     out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, model_rank, gdim=gdim)
     mesh = out.mesh
     ft = out.facet_tags
     ft.name = "Facet tags"
 
-    with dolfinx.io.XDMFFile(mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if quads else 'tri'}{'_coarse' if coarse else ''}.xdmf", "w") as xdmf:
+    with dolfinx.io.XDMFFile(
+        mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if quads else 'tri'}{'_coarse' if coarse else ''}.xdmf", "w"
+    ) as xdmf:
         xdmf.write_mesh(mesh)
         xdmf.write_meshtags(ft, mesh.geometry)
 

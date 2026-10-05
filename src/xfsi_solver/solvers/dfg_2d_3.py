@@ -2,35 +2,44 @@
 #
 # SPDX-License-Identifier: MIT
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
-import numpy as np
-import ufl
-from petsc4py import PETSc
-
 import sys
 import warnings
 from os import PathLike
 from pathlib import Path
 
+import dolfinx as dfx
+import dolfinx.fem.petsc  # noqa: F401
+import numpy as np
+import ufl
 from matplotlib import pyplot as plt
-
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
+from petsc4py import PETSc
 
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
-
     "solid_fluid_interface": 11,
-
-    "obstacle": 21,                 # no-slip for fluid
-    "inflow": 22,                   # parabolic inflow for fluid
-    "outflow": 23,                  # do-nothing for fluid
-    "channel_side": 24,             # no-slip for fluid
+    "obstacle": 21,  # no-slip for fluid
+    "inflow": 22,  # parabolic inflow for fluid
+    "outflow": 23,  # do-nothing for fluid
+    "channel_side": 24,  # no-slip for fluid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path, drag_plot_path, lift_plot_path, drag_coeff_plot_path, lift_coeff_plot_path):
+
+def solve(
+    mesh_path,
+    T,
+    dt_val,
+    output_path,
+    output_path_p,
+    drag_path,
+    lift_path,
+    drag_plot_path,
+    lift_plot_path,
+    drag_coeff_plot_path,
+    lift_coeff_plot_path,
+):
 
     log = PETSc.Log()
     log.begin()
@@ -44,19 +53,16 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
         fluid_mesh = infile.read_mesh()
         fluid_mesh.topology.create_connectivity(1, 2)
-        fluid_facet_tags = infile.read_meshtags(fluid_mesh, name= "Facet tags")
+        fluid_facet_tags = infile.read_meshtags(fluid_mesh, name="Facet tags")
 
-    
     if comm.rank == 0:
         print(f"{fluid_mesh.geometry.x.shape = }")
         print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
-
 
     # Create measure with  meshtags
 
     dx = ufl.Measure("dx", domain=fluid_mesh)
     ds = ufl.Measure("ds", domain=fluid_mesh, subdomain_data=fluid_facet_tags)
-
 
     # create problem parameters
 
@@ -82,37 +88,32 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             f"{output_path!r} or {output_path_p!r}."
         )
 
-    
     # create function spaces
 
-    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
+    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
     P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(V, P)
-
 
     # create functions
 
     v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
     v_old = dfx.fem.Function(V)
 
-    
     # Crank-Nicolson discretization of Navier-Stokes, with pressure treated fully implicitly
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
-    
+
     dv_dt = (v - v_old) / dt
 
     v_theta = theta * v + (1.0 - theta) * v_old
-    
-    dv, dp = ufl.TestFunctions(W)
 
+    dv, dp = ufl.TestFunctions(W)
 
     # Eulerian formulation of transient Navier-Stokes
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
-    
+
     from xfsi_solver.fsi.materials import Fluid
 
     n = ufl.FacetNormal(fluid_mesh)
-    
 
     # create Dirichlet boundary condition
 
@@ -120,31 +121,35 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
 
     bc_func = dfx.fem.Function(V)
     bc_func.x.array[:] = 0.0
-    bc_facets = reduce(np.union1d, [
-        fluid_facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
-        fluid_facet_tags.find(PHYSICAL_MARKERS["inflow"]),
-        fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
-        ])
+    bc_facets = reduce(
+        np.union1d,
+        [
+            fluid_facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            fluid_facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+            fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+        ],
+    )
     bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
 
     class BCFunc:
         def __init__(self, t: float = 0.0):
             self.t = t
+
         def __call__(self, x: np.ndarray) -> np.ndarray:
             values = np.zeros((2, x.shape[1]), dtype=x.dtype)
             values[0] = np.where(np.isclose(x[0], 0.0), 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2, 0.0)
             values[0] *= np.sin(self.t * np.pi / 8)
             return values
+
     bc_func.interpolate(BCFunc(t0))
 
     bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
-
     # create residual form
 
-    residual  = rho_f * ufl.inner(dv_dt, dv) * dx
+    residual = rho_f * ufl.inner(dv_dt, dv) * dx
 
     residual += theta * rho_f * ufl.inner(ufl.dot(v, ufl.nabla_grad(v)), dv) * dx
     residual += (1.0 - theta) * rho_f * ufl.inner(ufl.dot(v_old, ufl.nabla_grad(v_old)), dv) * dx
@@ -157,10 +162,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     residual += ufl.div(v) * dp * dx
 
     # Do-nothing condition
-    # Effect on measured drag and lift is negligible compared to the 
+    # Effect on measured drag and lift is negligible compared to the
     # do-nothing condition where the term is dropped.
     residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
-
 
     residual_blocked = ufl.extract_blocks(residual)
 
@@ -169,7 +173,9 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     rtol = 1.0e-8
 
     problem = dfx.fem.petsc.NonlinearProblem(
-        residual_blocked, [v, p], bcs=bcs,
+        residual_blocked,
+        [v, p],
+        bcs=bcs,
         petsc_options_prefix="dfg_2d_3_",
         petsc_options={
             "ksp_type": "preonly",
@@ -184,12 +190,10 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
         },
     )
 
-
     writer = dfx.io.VTXWriter(comm, output_path, [v])
     writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
 
     from timeit import default_timer as timer
-
 
     # Set up computing drag and lift
 
@@ -208,22 +212,22 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             if not isinstance(self.save_to, list):
                 Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
                 with open(self.save_to, "wb") as f:
-                    np.savetxt(f, [], header="time drag", fmt='%.4e', delimiter=' ')
+                    np.savetxt(f, [], header="time drag", fmt="%.4e", delimiter=" ")
 
             return
-        
+
         def __call__(self, t: float):
-            
+
             drag = self.comm.reduce(dfx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
             if comm.rank == 0:
                 if isinstance(self.save_to, list):
                     self.save_to.append([t, drag])
                 else:
                     with open(self.save_to, "ab") as f:
-                        np.savetxt(f, [[t, drag]], fmt='%.4e', delimiter=' ')
+                        np.savetxt(f, [[t, drag]], fmt="%.4e", delimiter=" ")
 
             return
-        
+
     class Lift:
         def __init__(self, save_to: PathLike | list, mesh: dfx.mesh.Mesh, tags: int | tuple[int]):
 
@@ -239,22 +243,22 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             if comm.rank == 0 and not isinstance(self.save_to, list):
                 Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
                 with open(self.save_to, "wb") as f:
-                    np.savetxt(f, [], header="time lift", fmt='%.4e', delimiter=' ')
+                    np.savetxt(f, [], header="time lift", fmt="%.4e", delimiter=" ")
 
             return
-        
+
         def __call__(self, t: float):
-            
+
             lift = self.comm.reduce(dfx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
             if comm.rank == 0:
                 if isinstance(self.save_to, list):
                     self.save_to.append([t, lift])
                 else:
                     with open(self.save_to, "ab") as f:
-                        np.savetxt(f, [[t, lift]], fmt='%.4e', delimiter=' ')
+                        np.savetxt(f, [[t, lift]], fmt="%.4e", delimiter=" ")
 
             return
-        
+
     drag_hook = Drag(drag_path, fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     lift_hook = Lift(lift_path, fluid_mesh, PHYSICAL_MARKERS["obstacle"])
     # drag_hook = Drag([], fluid_mesh, PHYSICAL_MARKERS["obstacle"])
@@ -267,7 +271,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
     i = 0
     t = t0
     while t < T:
-
         i += 1
         t += dt.value
         bc_func.interpolate(BCFunc(t))
@@ -303,7 +306,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
 
     writer.close()
 
-
     # dfx.common.list_timings(comm, [dfx.common.TimingType.wall])
     # log.view()
 
@@ -316,43 +318,40 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, drag_path, lift_path
             lift_arr = np.array(lift_hook.save_to)
         else:
             lift_arr = np.loadtxt(lift_hook.save_to)
-        
+
         Path(drag_plot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(lift_plot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(drag_coeff_plot_path).parent.mkdir(parents=True, exist_ok=True)
         Path(lift_coeff_plot_path).parent.mkdir(parents=True, exist_ok=True)
 
         plt.figure()
-        plt.plot(drag_arr[:, 0], drag_arr[:, 1], 'k-')
+        plt.plot(drag_arr[:, 0], drag_arr[:, 1], "k-")
         plt.xlabel("Time")
         plt.ylabel("Drag")
         plt.savefig(drag_plot_path)
 
         plt.figure()
-        plt.plot(lift_arr[:, 0], lift_arr[:, 1], 'k-')
+        plt.plot(lift_arr[:, 0], lift_arr[:, 1], "k-")
         plt.xlabel("Time")
         plt.ylabel("Lift")
         plt.savefig(lift_plot_path)
 
-        
         # Compare with values at https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html
 
         drag_coeff = -2 / 0.1 * drag_arr[:, 1]
         lift_coeff = 2 / 0.1 * lift_arr[:, 1]
 
-        plt.figure(figsize=(25,8))
-        plt.plot(drag_arr[:, 0], drag_coeff, 'k-', label="drag coefficient")
+        plt.figure(figsize=(25, 8))
+        plt.plot(drag_arr[:, 0], drag_coeff, "k-", label="drag coefficient")
         plt.grid()
         plt.legend()
         plt.savefig(drag_coeff_plot_path)
 
-        plt.figure(figsize=(25,8))
-        plt.plot(lift_arr[:, 0], lift_coeff, 'k-', label="lift coefficient")
+        plt.figure(figsize=(25, 8))
+        plt.plot(lift_arr[:, 0], lift_coeff, "k-", label="lift coefficient")
         plt.grid()
         plt.legend()
         plt.savefig(lift_coeff_plot_path)
-
-
 
     return
 

@@ -18,8 +18,9 @@ def _setup(comm=MPI.COMM_WORLD):
     """Fields u, p on a mesh and q on a cell submesh of it."""
     mesh = dfx.mesh.create_unit_square(comm, 6, 5, dfx.mesh.CellType.triangle)
     submesh, entity_map, _, _ = dfx.mesh.create_submesh(
-        mesh, 2, dfx.mesh.locate_entities(mesh, 2, lambda x: x[0] <= 0.5 + 1e-12))
-    u = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 2, (2, ))), name="u")
+        mesh, 2, dfx.mesh.locate_entities(mesh, 2, lambda x: x[0] <= 0.5 + 1e-12)
+    )
+    u = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 2, (2,))), name="u")
     p = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 1)), name="p")
     q = dfx.fem.Function(dfx.fem.functionspace(submesh, ("Lagrange", 2)), name="q")
     return mesh, [(submesh, entity_map)], [u, p, q]
@@ -124,8 +125,7 @@ for step in {steps!r}:
 def test_restart_on_different_number_of_ranks(tmp_path):
     """Restart a serial run on 2 ranks, then read its checkpoints back in serial."""
     _write_steps(tmp_path, [0, 1])
-    script = _MPI_SCRIPT.format(tests=str(Path(__file__).parent), directory=str(tmp_path),
-                                steps=[2, 3])
+    script = _MPI_SCRIPT.format(tests=str(Path(__file__).parent), directory=str(tmp_path), steps=[2, 3])
     subprocess.run(["mpiexec", "-n", "2", sys.executable, "-c", script], check=True)
     t, step, functions = _read(tmp_path)
     assert step == 3

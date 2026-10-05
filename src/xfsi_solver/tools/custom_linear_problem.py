@@ -2,17 +2,16 @@
 #
 # SPDX-License-Identifier: MIT
 
-from petsc4py import PETSc
+from typing import Sequence
 
 import dolfinx
 import dolfinx.fem.petsc
-
-from dolfinx.fem.function import Function as _Function
-from typing import Sequence
-
 from dolfinx.fem.bcs import bcs_by_block as _bcs_by_block
-from dolfinx.fem.petsc import assemble_matrix, assemble_vector, apply_lifting
 from dolfinx.fem.forms import extract_function_spaces as _extract_function_spaces
+from dolfinx.fem.function import Function as _Function
+from dolfinx.fem.petsc import apply_lifting, assemble_matrix, assemble_vector
+from petsc4py import PETSc
+
 
 class MyLinearProblem(dolfinx.fem.petsc.LinearProblem):
     """
@@ -34,7 +33,6 @@ class MyLinearProblem(dolfinx.fem.petsc.LinearProblem):
             self.P_mat.zeroEntries()
             assemble_matrix(self.P_mat, self.preconditioner, bcs=self.bcs)  # type: ignore[arg-type, misc]
             self.P_mat.assemble()
-
 
     def assemble_rhs(self) -> None:
         """Assemble the right-hand side without solving the system."""

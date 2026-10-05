@@ -54,8 +54,9 @@ class Checkpointer:
     pairs, with the entity map returned by ``dolfinx.mesh.create_submesh``.
     """
 
-    def __init__(self, directory: str | Path, mesh: dfx.mesh.Mesh,
-                 submeshes: list[tuple[dfx.mesh.Mesh, dfx.mesh.EntityMap]] = ()):
+    def __init__(
+        self, directory: str | Path, mesh: dfx.mesh.Mesh, submeshes: list[tuple[dfx.mesh.Mesh, dfx.mesh.EntityMap]] = ()
+    ):
         self.directory = Path(directory)
         self.mesh = mesh
         self._next_file = 0

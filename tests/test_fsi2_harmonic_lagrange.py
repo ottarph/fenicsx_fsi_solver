@@ -23,10 +23,17 @@ def test_fsi2_harmonic_lagrange_restart_reproduces_continuous_run(output_dirs, t
     # interface Lagrange multipliers are not checkpointed (see the solver), and restarting them from
     # zero changes u_f by ~1e-6 (as much as tightening the Newton tolerance does) and the other
     # fields by < 1e-9 relative
-    vector = ("Lagrange", 2, (2, ))
+    vector = ("Lagrange", 2, (2,))
     elements = {"u_f": vector, "v_f": vector, "u_s": vector, "v_s": vector, "p": ("Lagrange", 1)}
-    check_restart_reproduces_continuous_run(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", elements, output_dirs,
-                                            tmp_path, rtol=1e-8, field_rtol={"u_f": 1e-5})
+    check_restart_reproduces_continuous_run(
+        solve,
+        "data/meshes/fsi2/mesh_sec_coarse.xdmf",
+        elements,
+        output_dirs,
+        tmp_path,
+        rtol=1e-8,
+        field_rtol={"u_f": 1e-5},
+    )
 
 
 def test_fsi2_harmonic_lagrange_restart_rejects_different_dt(output_dirs, tmp_path):

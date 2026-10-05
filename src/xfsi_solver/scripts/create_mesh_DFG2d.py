@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-import gmsh, sys
+import sys
+
+import gmsh
+
 gmsh.initialize(sys.argv)
 import numpy as np
 
@@ -24,7 +27,6 @@ def create_mesh(quads: bool = False):
 
     E_2_left = 0.9
 
-
     resolution_far = 0.025
     resolution_close = resolution_far / 5
     # resolution_ultra_far = H / 8
@@ -34,7 +36,6 @@ def create_mesh(quads: bool = False):
     #     resolution_far *= 2
     #     resolution_close *= 2
     #     resolution_ultra_far *= 2
-
 
     obstacle = gmsh.model.occ.addDisk(C_x, C_y, 0.0, r, r)
 
@@ -46,17 +47,19 @@ def create_mesh(quads: bool = False):
 
     tags = gmsh.model.getEntities(dim=2)
 
-    cylinder_tag = next(filter(lambda x: np.allclose(gmsh.model.occ.getCenterOfMass(*x), [C_x, C_y, 0], atol=1e-3), gmsh.model.getEntities(dim=2)))
+    cylinder_tag = next(
+        filter(
+            lambda x: np.allclose(gmsh.model.occ.getCenterOfMass(*x), [C_x, C_y, 0], atol=1e-3),
+            gmsh.model.getEntities(dim=2),
+        )
+    )
     tags, _ = gmsh.model.occ.cut(tags, [cylinder_tag])
 
-
     gmsh.model.occ.synchronize()
-
 
     fluid_tags = []
     fluid_tags.append(tags[0][1])
     gmsh.model.addPhysicalGroup(2, fluid_tags, 2, name="fluid")
-
 
     inflow_tags = []
     outflow_tags = []
@@ -75,7 +78,6 @@ def create_mesh(quads: bool = False):
         elif np.isclose(com[1], 0.0) or np.isclose(com[1], H):
             channel_side_tags.append(line_tag[1])
 
-
     gmsh.model.addPhysicalGroup(1, obstacle_tags, 21, name="obstacle")
     gmsh.model.addPhysicalGroup(1, inflow_tags, 22, name="inflow")
     gmsh.model.addPhysicalGroup(1, outflow_tags, 23, name="outflow")
@@ -83,16 +85,13 @@ def create_mesh(quads: bool = False):
 
     gmsh.model.occ.synchronize()
 
-
     gmsh.model.occ.addPoint(E_2_left, 0.0, 0.0, meshSize=resolution_far)
     gmsh.model.occ.addPoint(E_2_left, H, 0.0, meshSize=resolution_far)
 
-
-    gmsh.model.occ.addPoint(C_x, C_y+r, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x, C_y-r, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x+r, C_y, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x-r, C_y, 0.0, meshSize=resolution_close)
-
+    gmsh.model.occ.addPoint(C_x, C_y + r, 0.0, meshSize=resolution_close)
+    gmsh.model.occ.addPoint(C_x, C_y - r, 0.0, meshSize=resolution_close)
+    gmsh.model.occ.addPoint(C_x + r, C_y, 0.0, meshSize=resolution_close)
+    gmsh.model.occ.addPoint(C_x - r, C_y, 0.0, meshSize=resolution_close)
 
     gmsh.model.occ.synchronize()
 
@@ -106,7 +105,6 @@ def create_mesh(quads: bool = False):
             if np.isclose(point_x[0], 0.0) or np.isclose(point_x[1], 0.0) or np.isclose(point_x[1], H):
                 gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_far)
 
-
     # 1: MeshAdapt
     # 2: Automatic
     # 3: Initial mesh only
@@ -119,13 +117,11 @@ def create_mesh(quads: bool = False):
 
     # gmsh.option.setNumber("Mesh.Algorithm", 5)
 
-
     if quads:
         gmsh.option.setNumber("Mesh.Algorithm", 8)
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
         gmsh.option.setNumber("Mesh.RecombineAll", 1)
         # gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)
-
 
     gmsh.model.occ.synchronize()
 
@@ -134,11 +130,11 @@ def create_mesh(quads: bool = False):
     # Use second order mesh
     # gmsh.model.mesh.setOrder(2)
 
-
     # gmsh.write("test.msh")
 
     import dolfinx.io
     from mpi4py import MPI
+
     gmsh_model_rank = 0
     mesh_comm = MPI.COMM_WORLD
     out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, gmsh_model_rank, gdim=gdim)
@@ -154,9 +150,11 @@ def create_mesh(quads: bool = False):
         print(f"{domain.geometry.x.shape = }")
 
     from pathlib import Path
+
     mesh_path = Path("data/meshes/dfg2d/mesh.xdmf")
 
     from dolfinx.io import XDMFFile
+
     with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
         xdmf.write_mesh(domain)
         xdmf.write_meshtags(cell_markers, domain.geometry)
