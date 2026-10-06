@@ -563,6 +563,102 @@ def solve(
     writer.close()
     writer_p.close()
 
+    import matplotlib.pyplot as plt
+
+    # Spy plots and block norms of the Jacobian at the current state, with the
+    # dofs reordered block by block (the global numbering is [u, v, p, z] per rank).
+    dfx.fem.petsc.assign([u, v, p, z], problem.x)
+    wrapped_jacobian(solver, problem.x, J_mat, P_mat)
+
+    row_start = J_mat.getOwnershipRange()[0]
+    indptr, cols, vals = J_mat.getValuesCSR()
+    rows = row_start + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    nonzero = vals != 0.0
+    rows, cols, vals = rows[nonzero], cols[nonzero], vals[nonzero]
+    rows = comm.gather(rows, root=0)
+    cols = comm.gather(cols, root=0)
+    vals = comm.gather(vals, root=0)
+    if comm.rank == 0:
+        rows, cols, vals = np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)
+
+    # Owned global dofs of the storage blocks [u, v, p, z]
+    u_dofs, v_dofs, p_dofs, z_dofs = (
+        row_start + np.arange(off_own[k], off_own[k + 1]) for k in range(len(off_own) - 1)
+    )
+    # Split u into the solid-supported dofs u_S (including the interface) and the
+    # remaining fluid-interior dofs u_I, as in eq. (1) of docs/restricted-iterative-solver.md
+    solid_cells = cell_tags.find(PHYSICAL_MARKERS["solid"])
+    u_bs = U.dofmap.index_map_bs
+    u_solid = dfx.fem.locate_dofs_topological(U, mesh.topology.dim, solid_cells)
+    u_solid = (u_bs * u_solid[:, None] + np.arange(u_bs)).ravel()
+    u_solid = np.isin(np.arange(len(u_dofs)), u_solid)
+
+    def plot_blocks(block_dofs, names, label):
+        """Save spy_{label}.png and block_norms_{label}.png with the owned global dofs block_dofs per block."""
+        block_dofs = comm.gather(block_dofs, root=0)
+        if comm.rank != 0:
+            return
+        import matplotlib.colors
+        import scipy.sparse
+
+        num_blocks = len(names)
+        blocks = [np.concatenate([bd[k] for bd in block_dofs]) for k in range(num_blocks)]
+        perm = np.concatenate(blocks)
+        new_index = np.empty_like(perm)
+        new_index[perm] = np.arange(len(perm))
+        new_rows, new_cols = new_index[rows], new_index[cols]
+        n = len(perm)
+        J_spy = scipy.sparse.coo_matrix((np.ones(len(new_rows)), (new_rows, new_cols)), shape=(n, n))
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.spy(J_spy, markersize=0.05, color="black")
+        bounds = np.cumsum([0] + [len(b) for b in blocks])
+        for b in bounds[1:-1]:
+            ax.axhline(b - 0.5, color="tab:red", linewidth=0.8)
+            ax.axvline(b - 0.5, color="tab:red", linewidth=0.8)
+        centers = 0.5 * (bounds[:-1] + bounds[1:])
+        ax.set_xticks(centers, names)
+        ax.set_yticks(centers, names)
+        ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
+        ax.set_xlabel(f"Jacobian nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
+        fig.savefig(f"spy_{label}.png", dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved spy plot to spy_{label}.png ({J_spy.nnz} nonzeros, {n} dofs)")
+
+        # Frobenius norms of the blocks, with blocks without nonzeros left blank
+        row_blocks = np.searchsorted(bounds, new_rows, side="right") - 1
+        col_blocks = np.searchsorted(bounds, new_cols, side="right") - 1
+        sq_norms = np.zeros((num_blocks, num_blocks))
+        np.add.at(sq_norms, (row_blocks, col_blocks), vals**2)
+        block_norms = np.ma.masked_equal(np.sqrt(sq_norms), 0.0)
+
+        cmap = plt.get_cmap("viridis").copy()
+        cmap.set_bad("white")
+        fig, ax = plt.subplots()
+        im = ax.matshow(block_norms, cmap=cmap, norm=matplotlib.colors.LogNorm())
+        fig.colorbar(im, ax=ax, label="Frobenius norm")
+        for (i, j), norm in np.ndenumerate(block_norms):
+            if norm is not np.ma.masked:
+                ax.text(j, i, f"{norm:.2e}", ha="center", va="center", color="white", fontsize="small")
+        ax.set_xticks(range(num_blocks), names)
+        ax.set_yticks(range(num_blocks), names)
+        ax.set_xlabel(f"Jacobian block norms at t = {t:.4f}", fontsize="large")
+        fig.savefig(f"block_norms_{label}.png", dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved block norm plot to block_norms_{label}.png")
+
+    plot_blocks([u_dofs, v_dofs, p_dofs, z_dofs], ["u", "v", "p", "z"], "storage")
+    plot_blocks(
+        [u_dofs[u_solid], v_dofs, p_dofs, z_dofs, u_dofs[~u_solid]],
+        ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"],
+        "eq1",
+    )
+
+    # Destroying the MUMPS factorization is collective, so destroy the solver on all
+    # ranks here instead of leaving it to garbage collection, which can run at
+    # different points on rank 0 after the plotting.
+    solver.destroy()
+
     return
 
 
@@ -575,7 +671,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=15.7,
+        T=15.5 + 2 * 0.0025,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr_split.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr_split.bp",
