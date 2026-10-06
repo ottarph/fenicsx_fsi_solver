@@ -8,6 +8,7 @@ from pathlib import Path
 from timeit import default_timer as timer
 
 import dolfinx
+import dolfinx.fem.forms
 import dolfinx.fem.petsc
 import numpy as np
 import ufl
@@ -312,15 +313,35 @@ def solve(
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
-    residual_blocked = ufl.extract_blocks(residual)
+    residual_base = ufl.extract_blocks(residual)
+    jacobian_base = dolfinx.fem.forms.derivative_block(residual_base, [u, v, p, z])
+
+    # One block per unknown in [u, v, p, z], since blocked assembly places forms by
+    # position. Not built with ufl.extract_blocks, which drops the zero blocks. The
+    # zero Jacobian rows are built directly, since ufl.derivative does not accept a
+    # ufl.ZeroBaseForm, with only their diagonal blocks as zero forms, since a zero
+    # form cannot couple the parent mesh and the fluid submesh.
+    residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
+    trials = [ufl.TrialFunction(w.function_space) for w in [u, v, p, z]]
+    residual_post_ufl = [residual_post_u, ufl.ZeroBaseForm((dv,)), ufl.ZeroBaseForm((dp,)), ufl.ZeroBaseForm((dz,))]
+    jacobian_post_ufl = [
+        [ufl.derivative(residual_post_u, w, trial) for w, trial in zip([u, v, p, z], trials, strict=True)],
+        *(
+            [ufl.ZeroBaseForm((test, trial)) if i == j else None for j, trial in enumerate(trials)]
+            for i, test in enumerate([dv, dp, dz], start=1)
+        ),
+    ]
+    residual_post = dolfinx.fem.form(residual_post_ufl, entity_maps=entity_maps)
+    jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
 
     max_iter = 20
     atol = 1.0e-7
     rtol = 1.0e-12
 
     problem = dolfinx.fem.petsc.NonlinearProblem(
-        residual_blocked,
+        residual_base,
         [u, v, p, z],
+        J=jacobian_base,
         bcs=bcs,
         petsc_options_prefix="fsi2_biharmonic_diffmesh_restr_split_",
         entity_maps=entity_maps,
@@ -414,19 +435,12 @@ def solve(
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
 
-    problem: dolfinx.fem.petsc.NonlinearProblem
-
     solver = problem.solver
     b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
 
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
-
-    res_miss_ufl = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
-    res_miss = dolfinx.fem.form(res_miss_ufl)
-    jac_uu = dolfinx.fem.form(ufl.derivative(res_miss_ufl, u, ufl.TrialFunction(U)))
-    jac_uv = dolfinx.fem.form(ufl.derivative(res_miss_ufl, v, ufl.TrialFunction(V)))
 
     # Global rows of the interface u-dofs owned by this process. The owned rows
     # of the block matrix are numbered [u, v, p, z] from the start of the
@@ -436,37 +450,16 @@ def solve(
     off_own, _ = problem.b.getAttr("_blocks")
     rows_d = (J_mat.getOwnershipRange()[0] + off_own[0] + dofs_d[:num_owned_d]).astype(PETSc.IntType)
 
-    def zero_block(test_space, trial_space, **kwargs):
-        return dolfinx.fem.form(
-            ufl.ZeroBaseForm((ufl.TestFunction(test_space), ufl.TrialFunction(trial_space))),
-            **kwargs,
-        )
-
-    res_post = [
-        res_miss,  # rho_s[(u-u_old)/dt - θv - (1-θ)v_old]·du_u dx_solid
-        dolfinx.fem.form(ufl.ZeroBaseForm((dv,))),
-        dolfinx.fem.form(ufl.ZeroBaseForm((dp,))),
-        dolfinx.fem.form(ufl.ZeroBaseForm((dz,))),
-    ]
-
-    jac_post = [
-        [jac_uu, jac_uv, None, None],
-        [None, zero_block(V, V), None, None],
-        [None, None, zero_block(P, P), None],
-        [None, None, None, zero_block(Z, Z)],
-    ]
-
     bcs_post = [u_s_bc, *bcs]
-    bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(res_post), bcs_post)
-    bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jac_post, 1), bcs_post)
+    bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(residual_post), bcs_post)
+    bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jacobian_post, 1), bcs_post)
 
     def pre_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         pass
 
     def post_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         J.zeroRows(rows_d, diag=0.0)
-
-        dolfinx.fem.petsc.assemble_matrix(J, jac_post, bcs=[u_s_bc, *bcs])
+        dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
         J.assemble()
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
@@ -487,9 +480,9 @@ def solve(
 
         dolfinx.fem.petsc.assemble_vector(
             b,
-            res_post,
+            residual_post,
         )
-        dolfinx.fem.petsc.apply_lifting(b, jac_post, bcs=bcs_cols, x0=x, alpha=-1.0)
+        dolfinx.fem.petsc.apply_lifting(b, jacobian_post, bcs=bcs_cols, x0=x, alpha=-1.0)
 
         b.ghostUpdate(PETSc.InsertMode.ADD, PETSc.ScatterMode.REVERSE)
 
