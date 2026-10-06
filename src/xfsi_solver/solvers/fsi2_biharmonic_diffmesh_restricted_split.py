@@ -665,9 +665,6 @@ def solve(
         plot_blocks(J_full, [dofs_u, dofs_v, dofs_p, dofs_z], ["u", "v", "p", "z"], "Jacobian", "storage")
         plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian", "eq1")
 
-        # J_0 of eq. (3): drop the fluid ALE derivatives F_I (v, u_I), D_S (p, u_S) and
-        # D_I (p, u_I), and F_S (v, u_S) in the velocity rows not supported on the solid.
-        # In the interface velocity rows, F_S is summed with E_S and cannot be removed here.
         def indicator(dofs):
             mask = np.zeros(n, dtype=bool)
             mask[dofs] = True
@@ -679,6 +676,14 @@ def solve(
             | (in_p[rows] & (in_u_S[cols] | in_u_I[cols]))
             | (in_v_fluid[rows] & in_u_S[cols])
         )
+
+        # J_0 of eq. (3) in docs/restricted-iterative-solver.md (following Failer & Richter):
+        # drop the fluid ALE derivatives F_I (v, u_I), D_S (p, u_S) and D_I (p, u_I), and
+        # F_S (v, u_S) in the velocity rows not supported on the solid. In the interface
+        # velocity rows, F_S is summed with E_S in the same entries and is kept, since
+        # separating them needs E_S assembled on its own. J_0 is still block triangular
+        # as in (8) and condenses as in (6), but with H_c = H + θΔt (E_S + F_S^Γ) R_S,
+        # where F_S^Γ is the interface part of F_S.
         J_0 = scipy.sparse.coo_matrix((vals[~drop], (rows[~drop], cols[~drop])), shape=(n, n))
         plot_blocks(J_0, blocks_eq1, names_eq1, "$J_0$", "eq3")
 
