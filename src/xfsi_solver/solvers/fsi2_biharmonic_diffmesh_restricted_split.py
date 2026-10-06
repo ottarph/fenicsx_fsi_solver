@@ -397,6 +397,7 @@ def solve(
     # lift on the obstacle and on the fluid side of the solid-fluid interface.
     spot_dof = find_point_dof(U, np.array([0.6, 0.2, 0.0], dtype=np.float64))
     drag_forms, lift_forms = drag_lift_forms(
+        mesh,
         u,
         v,
         p,
