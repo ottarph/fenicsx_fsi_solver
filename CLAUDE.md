@@ -16,11 +16,14 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
 
 ## Conventions
 - Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
-- Import `dolfinx.fem.petsc` explicitly right below `import dolfinx as dfx`, and reference it as `dfx.fem.petsc.X` (not a separate alias like `dfpetsc`):
+- Import dolfinx without an alias, and import `dolfinx.fem.petsc` explicitly right below it. Always refer to dolfinx
+  with its full name (`dolfinx.fem.X`, `dolfinx.fem.petsc.X`), never as `dfx` or another alias: editors resolve
+  hover hints for `dolfinx.fem.petsc` only through the full name.
   ```python
-  import dolfinx as dfx
-  import dolfinx.fem.petsc  # noqa: F401
+  import dolfinx
+  import dolfinx.fem.petsc
   ```
+- Format with `ruff format` (line length 120, set in `pyproject.toml`) before committing.
 
 ## Git workflow
 

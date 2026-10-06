@@ -10,6 +10,16 @@ conda run -n xfsi_solver pytest
 # Code
 Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
 
+## Conventions
+- Import dolfinx without an alias, and import `dolfinx.fem.petsc` explicitly right below it. Always refer to dolfinx
+  with its full name (`dolfinx.fem.X`, `dolfinx.fem.petsc.X`), never as `dfx` or another alias: editors resolve
+  hover hints for `dolfinx.fem.petsc` only through the full name.
+  ```python
+  import dolfinx
+  import dolfinx.fem.petsc
+  ```
+- Format with `ruff format` (line length 120, set in `pyproject.toml`) before committing.
+
 ## Git workflow
 
 - Work on the task-provided feature branch. Never commit directly to the default branch.
