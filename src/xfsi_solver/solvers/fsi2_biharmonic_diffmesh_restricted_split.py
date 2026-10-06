@@ -405,7 +405,17 @@ def solve(
         [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
         entity_maps,
     )
-    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+
+    def write_output(t, step):
+        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
+        if step % save_every == 0:
+            writer.write(t)
+            writer_p.write(t)
+
+        u_spot = point_value(u, spot_dof)
+        drag = assemble_force(drag_forms, comm)
+        lift = assemble_force(lift_forms, comm)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
@@ -475,19 +485,10 @@ def solve(
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
-    def write_output(t, step):
-        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
-        if step % save_every == 0:
-            writer.write(t)
-            writer_p.write(t)
-
-        u_spot = point_value(u, spot_dof)
-        drag = assemble_force(drag_forms, comm)
-        lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
-
     if not restart:
         write_output(t, step)
+
+    init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
     if mesh.comm.rank == 0:
         print("", flush=True)
