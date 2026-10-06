@@ -351,8 +351,7 @@ def solve(
     ]
 
     # Neglect the terms depending on u_f in v and p.
-    # First we reset the terms, then insert the correct terms
-    # where appropriate. The neglecting is really in terms of fluid interior
+    # The neglecting is really in terms of fluid interior
     # and fluid interface dofs of u, but we don't have that distinction here,
     # so we do it by hand.
 
@@ -369,6 +368,7 @@ def solve(
     jacobian_approximate_base_ufl[2][0] = None
 
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
+    # Therefore, we make only the one jacobian_post-form.
 
     jacobian_approximate_base = dolfinx.fem.form(jacobian_approximate_base_ufl, entity_maps=entity_maps)
 
@@ -628,12 +628,10 @@ def solve(
         row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
     )
     u_solid = solid_supported(U, len(u_dofs))
-    v_solid = solid_supported(V, len(v_dofs))
     dofs_u_S = gather_dofs(u_dofs[u_solid])
     dofs_u_I = gather_dofs(u_dofs[~u_solid])
     dofs_u = gather_dofs(u_dofs)
     dofs_v = gather_dofs(v_dofs)
-    dofs_v_fluid = gather_dofs(v_dofs[~v_solid])
     dofs_p = gather_dofs(p_dofs)
     dofs_z = gather_dofs(z_dofs)
 
@@ -694,28 +692,6 @@ def solve(
         blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_z, dofs_u_I]
         plot_blocks(J_full, [dofs_u, dofs_v, dofs_p, dofs_z], ["u", "v", "p", "z"], "Jacobian", "storage")
         plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian", "eq1")
-
-        def indicator(dofs):
-            mask = np.zeros(n, dtype=bool)
-            mask[dofs] = True
-            return mask
-
-        in_u_S, in_u_I, in_v, in_v_fluid, in_p = map(indicator, (dofs_u_S, dofs_u_I, dofs_v, dofs_v_fluid, dofs_p))
-        drop = (
-            (in_v[rows] & in_u_I[cols])
-            | (in_p[rows] & (in_u_S[cols] | in_u_I[cols]))
-            | (in_v_fluid[rows] & in_u_S[cols])
-        )
-
-        # J_0 of eq. (3) in docs/restricted-iterative-solver.md (following Failer & Richter):
-        # drop the fluid ALE derivatives F_I (v, u_I), D_S (p, u_S) and D_I (p, u_I), and
-        # F_S (v, u_S) in the velocity rows not supported on the solid. In the interface
-        # velocity rows, F_S is summed with E_S in the same entries and is kept, since
-        # separating them needs E_S assembled on its own. J_0 is still block triangular
-        # as in (8) and condenses as in (6), but with H_c = H + θΔt (E_S + F_S^Γ) R_S,
-        # where F_S^Γ is the interface part of F_S.
-        J_0 = scipy.sparse.coo_matrix((vals[~drop], (rows[~drop], cols[~drop])), shape=(n, n))
-        plot_blocks(J_0, blocks_eq1, names_eq1, "$J_0$", "eq3")
 
         J_approximate = scipy.sparse.coo_matrix((vals_approximate, (rows_approximate, cols_approximate)), shape=(n, n))
         plot_blocks(
