@@ -409,8 +409,12 @@ def solve(
 
         loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
         u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface))
+        drag = comm.reduce(
+            dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface)
+        )
+        lift = comm.reduce(
+            dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface)
+        )
         if comm.rank == 0:
             with open(qoi_path, "ab") as f:
                 np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")

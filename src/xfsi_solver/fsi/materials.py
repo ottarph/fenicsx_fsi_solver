@@ -22,7 +22,9 @@ class Fluid:
         sigma = -p * Id
         return sigma
 
-    def NS_velocity(u: dolfinx.fem.Function, v: dolfinx.fem.Function, nu: dolfinx.fem.Constant, rho: dolfinx.fem.Constant):
+    def NS_velocity(
+        u: dolfinx.fem.Function, v: dolfinx.fem.Function, nu: dolfinx.fem.Constant, rho: dolfinx.fem.Constant
+    ):
         Id = ufl.Identity(u.ufl_shape[0])
         F = Id + ufl.grad(u)
         sigma = rho * nu * (ufl.grad(v) * ufl.inv(F) + ufl.inv(F).T * ufl.grad(v).T)
@@ -32,8 +34,16 @@ class Fluid:
         sigma = rho * nu * (ufl.grad(v) + ufl.grad(v).T)
         return sigma
 
-    def NS(u: dolfinx.fem.Function, v: dolfinx.fem.Function, p: dolfinx.fem.Function, nu: dolfinx.fem.Constant, rho: dolfinx.fem.Constant):
+    def NS(
+        u: dolfinx.fem.Function,
+        v: dolfinx.fem.Function,
+        p: dolfinx.fem.Function,
+        nu: dolfinx.fem.Constant,
+        rho: dolfinx.fem.Constant,
+    ):
         return Fluid.NS_velocity(u, v, nu, rho) + Fluid.NS_pressure(p)
 
-    def NS_eulerian(v: dolfinx.fem.Function, p: dolfinx.fem.Function, nu: dolfinx.fem.Constant, rho: dolfinx.fem.Constant):
+    def NS_eulerian(
+        v: dolfinx.fem.Function, p: dolfinx.fem.Function, nu: dolfinx.fem.Constant, rho: dolfinx.fem.Constant
+    ):
         return Fluid.NS_velocity_eulerian(v, nu, rho) + Fluid.NS_pressure(p)

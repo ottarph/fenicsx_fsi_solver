@@ -34,35 +34,23 @@ values = vec.array
 values[dolfinx.mesh.locate_entities(mesh, mesh.topology.dim, fluid)] = fluid_marker
 vec.scatter_forward()
 
-ct = dolfinx.mesh.meshtags(
-    mesh, mesh.topology.dim, np.arange(len(values), dtype=np.int32), values
-)
+ct = dolfinx.mesh.meshtags(mesh, mesh.topology.dim, np.arange(len(values), dtype=np.int32), values)
 
 V = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
 u = ufl.TrialFunction(V)
 v = ufl.TestFunction(V)
 
-bcF = dolfinx.fem.dirichletbc(
-    dolfinx.fem.Constant(mesh, 1.2), dolfinx.fem.locate_dofs_geometrical(V, right), V
-)
-bcS = dolfinx.fem.dirichletbc(
-    dolfinx.fem.Constant(mesh, 0.3), dolfinx.fem.locate_dofs_geometrical(V, left), V
-)
+bcF = dolfinx.fem.dirichletbc(dolfinx.fem.Constant(mesh, 1.2), dolfinx.fem.locate_dofs_geometrical(V, right), V)
+bcS = dolfinx.fem.dirichletbc(dolfinx.fem.Constant(mesh, 0.3), dolfinx.fem.locate_dofs_geometrical(V, left), V)
 bcs = [bcF, bcS]
 
 interface_facets = scifem.find_interface(ct, solid_marker, fluid_marker)
 
-total_interface_facets_found = MPI.COMM_WORLD.allreduce(
-    interface_facets.size, op=MPI.SUM
-)
+total_interface_facets_found = MPI.COMM_WORLD.allreduce(interface_facets.size, op=MPI.SUM)
 
 assert total_interface_facets_found > 0, "Interface not found."
-dofs_interface = dolfinx.fem.locate_dofs_topological(
-    V, mesh.topology.dim - 1, interface_facets
-)
-bc_deactivate = dolfinx.fem.dirichletbc(
-    dolfinx.fem.Constant(mesh, 0.0), dofs_interface, V
-)
+dofs_interface = dolfinx.fem.locate_dofs_topological(V, mesh.topology.dim - 1, interface_facets)
+bc_deactivate = dolfinx.fem.dirichletbc(dolfinx.fem.Constant(mesh, 0.0), dofs_interface, V)
 
 
 dx = ufl.Measure("dx", domain=mesh, subdomain_data=ct)
@@ -176,9 +164,7 @@ if MPI.COMM_WORLD.size == 1 and mesh.topology.dim == 1:
     plt.figure()
     plt.plot(tt[dof_sorting], x.x.array[dof_sorting], "k-")
 
-    plt.axvline(
-        x=tt[dofs_interface[0]], color="black", alpha=0.4, lw=0.3, label="interface"
-    )
+    plt.axvline(x=tt[dofs_interface[0]], color="black", alpha=0.4, lw=0.3, label="interface")
 
     plt.legend()
     plt.savefig("output/figures/restr_test_hr_solution.svg", metadata={"Date": None})

@@ -55,7 +55,10 @@ class Checkpointer:
     """
 
     def __init__(
-        self, directory: str | Path, mesh: dolfinx.mesh.Mesh, submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = ()
+        self,
+        directory: str | Path,
+        mesh: dolfinx.mesh.Mesh,
+        submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = (),
     ):
         self.directory = Path(directory)
         self.mesh = mesh

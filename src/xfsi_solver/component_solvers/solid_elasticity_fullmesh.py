@@ -55,7 +55,9 @@ def solve(mesh_path, T, dt_val, output_path):
     solid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submeshes
-    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+    )
 
     # Create measure with  meshtags
 

@@ -55,7 +55,9 @@ def solve(mesh_path, T, dt_val, output_path):
     fluid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submeshes
-    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+    )
 
     if comm.rank == 0:
         print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")

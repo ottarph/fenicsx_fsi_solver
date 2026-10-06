@@ -138,8 +138,12 @@ def solve(
 
     fluid_mesh.topology.create_connectivity(1, 2)
     solid_mesh.topology.create_connectivity(1, 2)
-    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
-    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+    )
+    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+    )
 
     # create problem parameters
 
@@ -508,8 +512,12 @@ def solve(
 
         loc_u_spot[:] = u_s.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
         u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface))
+        drag = comm.reduce(
+            dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface)
+        )
+        lift = comm.reduce(
+            dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface)
+        )
         interface_u_gap = comm.reduce(dolfinx.fem.assemble_scalar(continuity_u_form))
         interface_v_gap = comm.reduce(dolfinx.fem.assemble_scalar(continuity_v_form))
         if comm.rank == 0:

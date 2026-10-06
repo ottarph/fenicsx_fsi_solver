@@ -20,18 +20,26 @@ from xfsi_solver.tools.convergence import check_converged
 PHYSICAL_MARKERS = {
     "solid": 1,
     "ALE_fluid": 2,
-
     "solid_fluid_interface": 11,
-
-    "obstacle": 21,                 # no-slip for fluid
-    "inflow": 22,                   # parabolic inflow for fluid
-    "outflow": 23,                  # do-nothing for fluid
-    "channel_side": 24,             # no-slip for fluid
-    "solid_obstacle_interface": 25, # homogeneous Dirichlet BC for solid
+    "obstacle": 21,  # no-slip for fluid
+    "inflow": 22,  # parabolic inflow for fluid
+    "outflow": 23,  # do-nothing for fluid
+    "channel_side": 24,  # no-slip for fluid
+    "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
 
-def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
-          checkpoint_dir=None, checkpoint_every=None, restart=False):
+
+def solve(
+    mesh_path,
+    T,
+    dt_val,
+    output_path,
+    output_path_p,
+    qoi_path,
+    checkpoint_dir=None,
+    checkpoint_every=None,
+    restart=False,
+):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
 
@@ -49,22 +57,28 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     if checkpoint_every is not None and checkpoint_dir is None:
         raise ValueError("checkpoint_every requires checkpoint_dir")
 
-
     # load mesh and meshtags
 
     with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(mesh, name= "Cell tags")
+        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
-        facet_tags = infile.read_meshtags(mesh, name= "Facet tags")
+        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
 
-    assert len(np.setdiff1d(np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS])) == 0, "Physical markers and cell tags do not match"
-    
+    assert (
+        len(
+            np.setdiff1d(
+                np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS]
+            )
+        )
+        == 0
+    ), "Physical markers and cell tags do not match"
 
     # create submesh for fluid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
-
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(
+        mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
+    )
 
     # create entity maps for mixed mesh integration
 
@@ -84,7 +98,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         print(f"{fluid_volume = }")
         print(f"{solid_volume = }")
 
-
     # Create measure for interface / solid-fluid boundary
 
     import scifem
@@ -98,7 +111,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         fluid_entities = idata[:, 2:]
     new_measure_fluid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_fluid, fluid_entities.flatten())])
     ds_interface_fluid = new_measure_fluid(new_tag_fluid)
-
 
     # create problem parameters
 
@@ -132,24 +144,25 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             stacklevel=2,
         )
 
-    
     # create function spaces
 
-    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2, )))
-    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2, )))
+    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
     P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2, )))
+    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
     W = ufl.MixedFunctionSpace(U, V, P, Z)
-
 
     # create functions
 
-    u, v, p, z = dolfinx.fem.Function(U, name="u"), dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p"), dolfinx.fem.Function(Z, name="z")
+    u, v, p, z = (
+        dolfinx.fem.Function(U, name="u"),
+        dolfinx.fem.Function(V, name="v"),
+        dolfinx.fem.Function(P, name="p"),
+        dolfinx.fem.Function(Z, name="z"),
+    )
     u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
 
-    
     du, dv, dp, dz = ufl.TestFunctions(W)
-
 
     # create Dirichlet boundary condition
 
@@ -157,9 +170,12 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
     inflow_bc_func = dolfinx.fem.Function(V)
     inflow_bc_func.x.array[:] = 0.0
-    inflow_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["inflow"]),
-        ])
+    inflow_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+        ],
+    )
     inflow_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, inflow_bc_facets)
 
     inflow_bc = dolfinx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
@@ -167,71 +183,72 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     class InflowFunc:
         def __init__(self, t: float = 0.0):
             self.t = t
+
         def __call__(self, x: np.ndarray) -> np.ndarray:
             values = np.zeros((2, x.shape[1]), dtype=x.dtype)
             values[0] = 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2
             if self.t < 2.0:
-                values[0] *= 0.5 * (1.0 - np.cos(0.5*np.pi * self.t))
+                values[0] *= 0.5 * (1.0 - np.cos(0.5 * np.pi * self.t))
             return values
 
     noslip_bc_func = dolfinx.fem.Function(V)
     noslip_bc_func.x.array[:] = 0.0
-    noslip_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
-        facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
-        facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
-        ])
+    noslip_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+            facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+        ],
+    )
     noslip_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
-    
+
     noslip_bc = dolfinx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
 
-    
     # Create fluid ALE Dirichlet boundary condition
-    
+
     u_f_bc_func = dolfinx.fem.Function(U)
     u_f_bc_func.x.array[:] = 0.0
-    u_f_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["inflow"]),
-        facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
-        facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
-        facet_tags.find(PHYSICAL_MARKERS["outflow"]),
-    ])
+    u_f_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+            facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+            facet_tags.find(PHYSICAL_MARKERS["outflow"]),
+        ],
+    )
     u_f_bc_dofs = dolfinx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, u_f_bc_facets)
     u_f_bc = dolfinx.fem.dirichletbc(u_f_bc_func, u_f_bc_dofs)
-
 
     # Create solid Dirichlet boundary condition
 
     u_s_bc_func = dolfinx.fem.Function(U)
     u_s_bc_func.x.array[:] = 0.0
-    u_s_bc_facets = reduce(np.union1d, [
-        facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
-    ])
+    u_s_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+        ],
+    )
     u_s_bc_dofs = dolfinx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, u_s_bc_facets)
-    u_s_bc = dolfinx.fem.dirichletbc(u_s_bc_func, u_s_bc_dofs)    
-
+    u_s_bc = dolfinx.fem.dirichletbc(u_s_bc_func, u_s_bc_dofs)
 
     # Create Dirichlet boundary condition for restricting test functions.
 
     total_interface_facets_found = mesh.comm.allreduce(interface_facets.size, op=MPI.SUM)
     assert total_interface_facets_found > 0, "Interface not found."
-    dofs_interface = dolfinx.fem.locate_dofs_topological(
-        U, mesh.topology.dim - 1, interface_facets
-    )
-    bc_deactivate = dolfinx.fem.dirichletbc(
-        dolfinx.fem.Constant(mesh, (0.0, 0.0)), dofs_interface, U
-    )
-
+    dofs_interface = dolfinx.fem.locate_dofs_topological(U, mesh.topology.dim - 1, interface_facets)
+    bc_deactivate = dolfinx.fem.dirichletbc(dolfinx.fem.Constant(mesh, (0.0, 0.0)), dofs_interface, U)
 
     # Collect Dirichlet boundary conditions to pass to NonlinearProblem
 
     bcs = [u_f_bc, inflow_bc, noslip_bc]
 
-
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
-    
+
     from xfsi_solver.fsi.materials import Fluid, Solid
 
     # create residual form
@@ -243,19 +260,19 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         J_old = ufl.det(F_old)
         J_mid = 0.5 * (J + J_old)
 
-        residual  = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
+        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
 
         residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
 
         residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
 
         return residual
-    
+
     def A_I(u, v, z):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual  = ufl.inner(z, dz) * dx_fluid
+        residual = ufl.inner(z, dz) * dx_fluid
         residual -= ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
 
         residual += ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
@@ -269,7 +286,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual  = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
+        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
 
         residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
 
@@ -277,16 +294,16 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
 
         return residual
-    
+
     def A_P(u, p):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual  = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
 
         return residual
 
-    residual  = A_T(u, u_old, v, v_old)
+    residual = A_T(u, u_old, v, v_old)
     residual += A_I(u, v, z)
     residual += A_P(u, p)
     residual += theta * A_E(u, v)
@@ -296,12 +313,10 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
 
-
-    #--------------------------------------------
+    # --------------------------------------------
 
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
-
 
     residual_blocked = ufl.extract_blocks(residual)
 
@@ -310,12 +325,14 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     rtol = 1.0e-12
 
     problem = dolfinx.fem.petsc.NonlinearProblem(
-        residual_blocked, [u, v, p, z], bcs=bcs,
+        residual_blocked,
+        [u, v, p, z],
+        bcs=bcs,
         petsc_options_prefix="fsi2_biharmonic_diffmesh_restr_scaled_",
         entity_maps=entity_maps,
         petsc_options={
             "ksp_type": "preonly",
-            "pc_type": "none", # Replaced by the ScaledLU shell preconditioner below.
+            "pc_type": "none",  # Replaced by the ScaledLU shell preconditioner below.
             "snes_linesearch_type": "none",
             "snes_max_it": max_iter,
             "snes_atol": atol,
@@ -326,7 +343,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             "snes_monitor": None,
         },
     )
-
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
 
@@ -344,17 +360,21 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
         if comm.rank == 0:
-            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
-                  f"writing VTX output to {output_path} and {output_path_p}")
+            print(
+                f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
+                f"writing VTX output to {output_path} and {output_path_p}"
+            )
     elif checkpoint_every is not None:
         checkpointer.clear()
 
-    writer = dolfinx.io.VTXWriter(comm, output_path, [u,v])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [u, v])
     writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p])
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
-    spot_dof_cand = np.flatnonzero(np.all(np.isclose(U.tabulate_dof_coordinates()[:dm_loc_size,:], spot, atol=1e-6), axis=1))
+    spot_dof_cand = np.flatnonzero(
+        np.all(np.isclose(U.tabulate_dof_coordinates()[:dm_loc_size, :], spot, atol=1e-6), axis=1)
+    )
     spot_dof = spot_dof_cand[0] if len(spot_dof_cand) > 0 else None
     assert comm.allreduce(len(spot_dof_cand), op=MPI.SUM) == 1, "None or multiple dofs found for measurement point"
 
@@ -366,17 +386,28 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     F = ufl.Identity(2) + ufl.grad(u)
     transformed_normal = ufl.dot(ufl.inv(F.T), normal)
 
-    drag_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
-    lift_form_obstacle = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds(PHYSICAL_MARKERS["obstacle"])
+    drag_form_obstacle = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x)
+        * ufl.det(F)
+        * ds(PHYSICAL_MARKERS["obstacle"])
+    )
+    lift_form_obstacle = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y)
+        * ufl.det(F)
+        * ds(PHYSICAL_MARKERS["obstacle"])
+    )
 
-    drag_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
-    lift_form_interface = ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
+    drag_form_interface = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
+    )
+    lift_form_interface = (
+        ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
+    )
 
     drag_form_obstacle = dolfinx.fem.form(drag_form_obstacle, entity_maps=entity_maps)
     drag_form_interface = dolfinx.fem.form(drag_form_interface, entity_maps=entity_maps)
     lift_form_obstacle = dolfinx.fem.form(lift_form_obstacle, entity_maps=entity_maps)
     lift_form_interface = dolfinx.fem.form(lift_form_interface, entity_maps=entity_maps)
-
 
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
@@ -386,28 +417,22 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             with open(qoi_path, "wb") as f:
                 np.savetxt(f, [], fmt="%.6e", delimiter="\t", header="t\tdrag\tlift\tA_x\tA_y")
 
-    
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
-    
+
     problem: dolfinx.fem.petsc.NonlinearProblem
 
     solver = problem.solver
     b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
-    
+
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
-
-
-    res_miss_ufl = rho_s * ufl.inner(
-        (u - u_old) / dt - theta * v - (1 - theta) * v_old, du
-        ) * dx_solid
+    res_miss_ufl = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
     res_miss = dolfinx.fem.form(res_miss_ufl)
     jac_uu = dolfinx.fem.form(ufl.derivative(res_miss_ufl, u, ufl.TrialFunction(U)))
     jac_uv = dolfinx.fem.form(ufl.derivative(res_miss_ufl, v, ufl.TrialFunction(V)))
-
 
     # Global rows of the interface u-dofs owned by this process. The owned rows
     # of the block matrix are numbered [u, v, p, z] from the start of the
@@ -424,17 +449,17 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         )
 
     res_post = [
-        res_miss,    # rho_s[(u-u_old)/dt - θv - (1-θ)v_old]·du_u dx_solid
+        res_miss,  # rho_s[(u-u_old)/dt - θv - (1-θ)v_old]·du_u dx_solid
         dolfinx.fem.form(ufl.ZeroBaseForm((dv,))),
         dolfinx.fem.form(ufl.ZeroBaseForm((dp,))),
         dolfinx.fem.form(ufl.ZeroBaseForm((dz,))),
     ]
 
     jac_post = [
-        [jac_uu,           jac_uv,             None,             None],
-        [  None, zero_block(V, V),             None,             None],
-        [  None,             None, zero_block(P, P),             None],
-        [  None,             None,             None, zero_block(Z, Z)],
+        [jac_uu, jac_uv, None, None],
+        [None, zero_block(V, V), None, None],
+        [None, None, zero_block(P, P), None],
+        [None, None, None, zero_block(Z, Z)],
     ]
 
     bcs_post = [u_s_bc, *bcs]
@@ -455,18 +480,18 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     def unroll(dofs, bs=U.dofmap.index_map_bs):
         return (bs * dofs[:, None] + np.arange(bs)).ravel()
 
-    u_fluid_rows = unroll(dolfinx.fem.locate_dofs_topological(
-        U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
-    ))
-    u_fluid_rows = np.setdiff1d(u_fluid_rows, dofs_d)    # interface rows hold the solid equation
-    for bc in (u_f_bc, u_s_bc):                           # Dirichlet rows hold x - g
+    u_fluid_rows = unroll(
+        dolfinx.fem.locate_dofs_topological(U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
+    )
+    u_fluid_rows = np.setdiff1d(u_fluid_rows, dofs_d)  # interface rows hold the solid equation
+    for bc in (u_f_bc, u_s_bc):  # Dirichlet rows hold x - g
         u_fluid_rows = np.setdiff1d(u_fluid_rows, bc.dof_indices()[0])
-    u_fluid_rows = u_fluid_rows[u_fluid_rows < n_u_own]   # owned rows only
+    u_fluid_rows = u_fluid_rows[u_fluid_rows < n_u_own]  # owned rows only
 
     d_vec = problem.b.duplicate()
     d_vec.set(1.0)
     d_vec.array_w[off_own[0] + u_fluid_rows] = mesh_motion_scaling
-    d_vec.array_w[off_own[3]:off_own[4]] = mesh_motion_scaling
+    d_vec.array_w[off_own[3] : off_own[4]] = mesh_motion_scaling
 
     class ScaledLU:
         """Shell preconditioner applying (D*J)^-1 D = J^-1 with LU of D*J."""
@@ -506,31 +531,26 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     def post_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         J.zeroRows(rows_d, diag=0.0)
 
-        dolfinx.fem.petsc.assemble_matrix(
-            J, jac_post, bcs=[u_s_bc, *bcs]
-        )
+        dolfinx.fem.petsc.assemble_matrix(J, jac_post, bcs=[u_s_bc, *bcs])
         J.assemble()
 
-    def wrapped_jacobian(
-            snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat
-        ) -> None:
+    def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
         J.copy(P, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
         P.diagonalScale(L=d_vec)
 
-
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
 
     def post_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
 
-        dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], [], []], alpha=0.0)   # zero restricted rows
+        dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], [], []], alpha=0.0)  # zero restricted rows
 
         with b.localForm() as bl:
             # Remove ghost-entries.
-            bl.array[b.getLocalSize():] = 0.0
+            bl.array[b.getLocalSize() :] = 0.0
 
         dolfinx.fem.petsc.assemble_vector(
             b,
@@ -538,7 +558,7 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         )
         dolfinx.fem.petsc.apply_lifting(b, jac_post, bcs=bcs_cols, x0=x, alpha=-1.0)
 
-        b.ghostUpdate(PETSc.InsertMode.ADD, PETSc.ScatterMode.REVERSE) 
+        b.ghostUpdate(PETSc.InsertMode.ADD, PETSc.ScatterMode.REVERSE)
 
         dolfinx.fem.petsc.set_bc(b, bcs_rows, x0=x, alpha=-1.0)
 
@@ -546,13 +566,11 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
 
         pass
 
-
     def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
-        pre_residual(x, b) # x is not yet assigned to u here
+        pre_residual(x, b)  # x is not yet assigned to u here
         fem_residual(snes, x, b, *res_args, **res_kargs)
-        post_residual(x, b) # u is now updated and b assembled (BCs applied)
-        
-    
+        post_residual(x, b)  # u is now updated and b assembled (BCs applied)
+
     # Preconditioner matrix D*J, factorized by MUMPS instead of J. J is
     # assembled once first, so that P gets J's final parallel layout and can
     # be refilled with a same-nonzero-pattern copy in every Newton iteration.
@@ -570,10 +588,14 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
             writer.write(t)
             writer_p.write(t)
 
-        loc_u_spot[:] = u.x.array[2*spot_dof:2*(spot_dof+1)] if spot_dof is not None else 0.0
+        loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
         u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface))
+        drag = comm.reduce(
+            dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface)
+        )
+        lift = comm.reduce(
+            dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface)
+        )
         if comm.rank == 0:
             with open(qoi_path, "ab") as f:
                 np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")
@@ -584,7 +606,6 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
     first_step = step
     start = timer()
     while step < num_steps:
-
         t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
@@ -598,16 +619,14 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         problem.solve()
         check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
 
-
         if comm.rank == 0:
             sys.stdout.flush()
-        
+
         step += 1
         write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p, z], t, step, dt_val)
-        
 
     end = timer()
     if comm.rank == 0:
@@ -615,10 +634,8 @@ def solve(mesh_path, T, dt_val, output_path, output_path_p, qoi_path,
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
-
     writer.close()
     writer_p.close()
-
 
     return
 
