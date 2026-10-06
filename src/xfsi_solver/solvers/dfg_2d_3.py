@@ -87,7 +87,8 @@ def solve(
         warnings.warn(
             f"save_every ({save_every}) is larger than the total number of time "
             f"steps ({total_steps}); no VTX output will ever be written to "
-            f"{output_path!r} or {output_path_p!r}."
+            f"{output_path!r} or {output_path_p!r}.",
+            stacklevel=2,
         )
 
     # create function spaces

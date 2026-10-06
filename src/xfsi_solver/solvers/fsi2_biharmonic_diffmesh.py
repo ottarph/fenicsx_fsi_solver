@@ -139,7 +139,8 @@ def solve(
             f"save_every ({save_every}) is larger than the total number of time "
             f"steps ({num_steps}); at most one VTX snapshot will be written to "
             f"{output_path!r} or {output_path_p!r}, which is not a usable time "
-            f"series in ParaView."
+            f"series in ParaView.",
+            stacklevel=2,
         )
 
     # create function spaces
