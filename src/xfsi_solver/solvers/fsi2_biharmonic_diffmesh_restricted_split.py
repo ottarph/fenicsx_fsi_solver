@@ -324,13 +324,14 @@ def solve(
     residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
     trials = [ufl.TrialFunction(w.function_space) for w in [u, v, p, z]]
     residual_post_ufl = [residual_post_u, ufl.ZeroBaseForm((dv,)), ufl.ZeroBaseForm((dp,)), ufl.ZeroBaseForm((dz,))]
-    jacobian_post_ufl = [
-        [ufl.derivative(residual_post_u, w, trial) for w, trial in zip([u, v, p, z], trials, strict=True)],
-        *(
-            [ufl.ZeroBaseForm((test, trial)) if i == j else None for j, trial in enumerate(trials)]
-            for i, test in enumerate([dv, dp, dz], start=1)
-        ),
-    ]
+    jacobian_post_ufl = [[None for _ in range(len([u, v, p, z]))] for __ in range(len([u, v, p, z]))]
+    for j in range(len([u, v, p, z])):
+        # Derivatives w.r.t. missing residual ufl expression.
+        jacobian_post_ufl[0][j] = ufl.derivative(residual_post_u, [u, v, p, z][j], trials[j])
+    for i in range(1, len([u, v, p, z])):
+        # Zero blocks on the diagonal elsewhere
+        jacobian_post_ufl[i][i] = ufl.ZeroBaseForm(([du, dv, dp, dz][i], trials[i]))
+
     residual_post = dolfinx.fem.form(residual_post_ufl, entity_maps=entity_maps)
     jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
 
@@ -700,7 +701,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=15.5 + 2 * 0.0025,
+        T=15.5 + 10 * 0.0025,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr_split.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr_split.bp",
