@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 from timeit import default_timer as timer
 
 import basix.ufl
@@ -7,10 +6,20 @@ import dolfinx
 import dolfinx.fem.petsc
 import numpy as np
 import ufl
-from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.qoi import (
+    LAGRANGE_QOI_HEADER,
+    append_qoi_row,
+    assemble_force,
+    assemble_gap_norm,
+    drag_lift_forms,
+    find_point_dof,
+    init_qoi_file,
+    interface_gap_forms,
+    point_value,
+)
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -380,7 +389,7 @@ def solve(
     # drag, lift and tip displacement QoIs are unchanged
     # (notes/checkpointing/implementation-log.md).
 
-    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path, truncate_qoi_file
+    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path
 
     checkpointed = [u_f, v_f, u_s, v_s, p]
     output_path_solid = output_path.replace(".bp", "_solid.bp")
@@ -413,67 +422,37 @@ def solve(
     writer_solid = dolfinx.io.VTXWriter(comm, output_path_solid, [u_s, v_s], mesh_policy=policy, engine="BP4")
     writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=policy, engine="BP4")
 
-    dm_loc_size = U_s.dofmap.index_map.size_local
-    spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
-    spot_dof_cand = np.flatnonzero(
-        np.all(np.isclose(U_s.tabulate_dof_coordinates()[:dm_loc_size, :], spot, atol=1e-6), axis=1)
+    # Quantities of interest: the displacement at the tip of the structure, the drag and lift on
+    # the obstacle and on the fluid side of the solid-fluid interface, and the violation of the
+    # interface continuity, which the Lagrange multipliers should keep close to zero.
+    spot_dof = find_point_dof(U_s, np.array([0.6, 0.2, 0.0], dtype=np.float64))
+    drag_forms, lift_forms = drag_lift_forms(
+        mesh,
+        u_f,
+        v_f,
+        p,
+        nu_f,
+        rho_f,
+        [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
+        entity_maps,
     )
-    spot_dof = spot_dof_cand[0] if len(spot_dof_cand) > 0 else None
-    assert comm.allreduce(len(spot_dof_cand), op=MPI.SUM) == 1, "None or multiple dofs found for measurement point"
-
-    loc_u_spot = np.zeros(2, dtype=np.float64)
-
-    normal = ufl.FacetNormal(mesh)
-    e_x = dolfinx.fem.Constant(mesh, (-1.0, 0.0))
-    e_y = dolfinx.fem.Constant(mesh, (0.0, 1.0))
-    F = ufl.Identity(2) + ufl.grad(u_f)
-    transformed_normal = ufl.dot(ufl.inv(F.T), normal)
-
-    drag_form_obstacle = (
-        ufl.dot(ufl.dot(Fluid.NS(u_f, v_f, p, nu_f, rho_f), transformed_normal), e_x)
-        * ufl.det(F)
-        * ds(PHYSICAL_MARKERS["obstacle"])
-    )
-    lift_form_obstacle = (
-        ufl.dot(ufl.dot(Fluid.NS(u_f, v_f, p, nu_f, rho_f), transformed_normal), e_y)
-        * ufl.det(F)
-        * ds(PHYSICAL_MARKERS["obstacle"])
+    continuity_u_form, continuity_v_form = interface_gap_forms(
+        u_f, u_s, v_f, v_s, fluid_side, solid_side, dS_interface, entity_maps
     )
 
-    drag_form_interface = (
-        ufl.dot(ufl.dot(Fluid.NS(u_f, v_f, p, nu_f, rho_f), transformed_normal), e_x) * ufl.det(F) * ds_interface_fluid
-    )
-    lift_form_interface = (
-        ufl.dot(ufl.dot(Fluid.NS(u_f, v_f, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
-    )
+    def write_output(t, step):
+        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
+        if step % save_every == 0:
+            writer.write(t)
+            writer_solid.write(t)
+            writer_p.write(t)
 
-    drag_form_obstacle = dolfinx.fem.form(drag_form_obstacle, entity_maps=entity_maps)
-    drag_form_interface = dolfinx.fem.form(drag_form_interface, entity_maps=entity_maps)
-    lift_form_obstacle = dolfinx.fem.form(lift_form_obstacle, entity_maps=entity_maps)
-    lift_form_interface = dolfinx.fem.form(lift_form_interface, entity_maps=entity_maps)
-
-    # QOI: L2 norm of the interface continuity violation u_f - u_s / v_f - v_s.
-    # Should stay close to zero (up to solver tolerance) if the Lagrange
-    # multiplier coupling is enforcing continuity correctly.
-
-    u_gap = u_f(fluid_side) - u_s(solid_side)
-    v_gap = v_f(fluid_side) - v_s(solid_side)
-    continuity_u_form = dolfinx.fem.form(ufl.inner(u_gap, u_gap) * dS_interface, entity_maps=entity_maps)
-    continuity_v_form = dolfinx.fem.form(ufl.inner(v_gap, v_gap) * dS_interface, entity_maps=entity_maps)
-
-    if comm.rank == 0:
-        Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
-        if restart and Path(qoi_path).exists():
-            truncate_qoi_file(qoi_path, t, dt_val)
-        else:
-            with open(qoi_path, "wb") as f:
-                np.savetxt(
-                    f,
-                    [],
-                    fmt="%.6e",
-                    delimiter="\t",
-                    header="t\tdrag\tlift\tA_x\tA_y\tinterface_u_gap\tinterface_v_gap",
-                )
+        u_spot = point_value(u_s, spot_dof)
+        drag = assemble_force(drag_forms, comm)
+        lift = assemble_force(lift_forms, comm)
+        interface_u_gap = assemble_gap_norm(continuity_u_form, comm)
+        interface_v_gap = assemble_gap_norm(continuity_v_form, comm)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, interface_u_gap, interface_v_gap)
 
     # Set up solver
 
@@ -503,28 +482,7 @@ def solve(
 
     b_vec, *_ = problem.solver.getFunction()
 
-    def write_output(t, step):
-        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
-        if step % save_every == 0:
-            writer.write(t)
-            writer_solid.write(t)
-            writer_p.write(t)
-
-        loc_u_spot[:] = u_s.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
-        u_spot = comm.reduce(loc_u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(
-            dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface)
-        )
-        lift = comm.reduce(
-            dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface)
-        )
-        interface_u_gap = comm.reduce(dolfinx.fem.assemble_scalar(continuity_u_form))
-        interface_v_gap = comm.reduce(dolfinx.fem.assemble_scalar(continuity_v_form))
-        if comm.rank == 0:
-            interface_u_gap = np.sqrt(max(interface_u_gap, 0.0))
-            interface_v_gap = np.sqrt(max(interface_v_gap, 0.0))
-            with open(qoi_path, "ab") as f:
-                np.savetxt(f, [[t, drag, lift, *u_spot, interface_u_gap, interface_v_gap]], fmt="%.6e", delimiter="\t")
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=LAGRANGE_QOI_HEADER)
 
     if not restart:
         write_output(t, step)
