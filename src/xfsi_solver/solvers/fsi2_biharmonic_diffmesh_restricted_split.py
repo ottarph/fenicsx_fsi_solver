@@ -584,10 +584,18 @@ def solve(
     row_start = J_mat.getOwnershipRange()[0]
 
     def gather_jacobian(assemble_jacobian):
-        """Assemble a Jacobian into J_mat with assemble_jacobian, and return its nonzero
-        global rows, columns and values on rank 0."""
-        assemble_jacobian(solver, problem.x, J_mat, P_mat)
-        indptr, cols, vals = J_mat.getValuesCSR()
+        """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
+        columns and values on rank 0.
+
+        Assembles into a new matrix with the full Jacobian sparsity pattern instead of
+        J_mat: PETSc drops the preallocated entries that the first assembly does not set,
+        so after a run with the approximate Jacobian, J_mat has no room for the full one.
+        """
+        J = dolfinx.fem.petsc.create_matrix(problem.J)
+        J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
+        assemble_jacobian(solver, problem.x, J, P_mat)
+        indptr, cols, vals = J.getValuesCSR()
+        J.destroy()
         rows = row_start + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
         nonzero = vals != 0.0
         gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
