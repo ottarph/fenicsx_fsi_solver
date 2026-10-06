@@ -529,7 +529,7 @@ def solve(
         fem_residual(snes, x, b, *res_args, **res_kargs)
         post_residual(x, b)  # u is now updated and b assembled (BCs applied)
 
-    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
+    solver.setJacobian(wrapped_jacobian_approximate, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
@@ -738,11 +738,11 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=15.5 + 10 * 0.0025,
+        T=16.0,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharm_dm_restr_split.bp",
-        output_path_p="output/pv/fsi2_biharm_p_dm_restr_split.bp",
-        qoi_path="output/qoi/fsi2_biharm_qoi_restr_split.txt",
+        output_path="output/pv/fsi2_biharm_dm_restr_split_approx.bp",
+        output_path_p="output/pv/fsi2_biharm_p_dm_restr_split_approx.bp",
+        qoi_path="output/qoi/fsi2_biharm_qoi_restr_split_approx.txt",
         checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr",
         checkpoint_every=None,
         restart=args.restart,
