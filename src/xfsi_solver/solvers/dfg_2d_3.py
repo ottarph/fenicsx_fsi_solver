@@ -7,8 +7,8 @@ import warnings
 from os import PathLike
 from pathlib import Path
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from matplotlib import pyplot as plt
@@ -52,7 +52,7 @@ def solve(
     #   "data/meshes/dfg2d/mesh.xdmf"
     #   "data/meshes/dfg2d_alt/mesh_tri.xdmf"
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         fluid_mesh = infile.read_mesh()
         fluid_mesh.topology.create_connectivity(1, 2)
         fluid_facet_tags = infile.read_meshtags(fluid_mesh, name="Facet tags")
@@ -68,17 +68,17 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dfx.fem.Constant(fluid_mesh, 1.0)
+    rho_f = dolfinx.fem.Constant(fluid_mesh, 1.0)
     mu_val = 1e-3
-    nu_f = dfx.fem.Constant(fluid_mesh, mu_val / rho_f.value)
+    nu_f = dolfinx.fem.Constant(fluid_mesh, mu_val / rho_f.value)
 
     U_bar = 1.0
     H = 0.41
 
     t0 = 0.0
-    dt = dfx.fem.Constant(fluid_mesh, dt_val)
+    dt = dolfinx.fem.Constant(fluid_mesh, dt_val)
 
-    theta = dfx.fem.Constant(fluid_mesh, 0.5)
+    theta = dolfinx.fem.Constant(fluid_mesh, 0.5)
 
     save_every = 10
 
@@ -93,14 +93,14 @@ def solve(
 
     # create function spaces
 
-    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
+    V = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(V, P)
 
     # create functions
 
-    v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
-    v_old = dfx.fem.Function(V)
+    v, p = dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p")
+    v_old = dolfinx.fem.Function(V)
 
     # Crank-Nicolson discretization of Navier-Stokes, with pressure treated fully implicitly
     # Parabolic inflow on left side, no-slip on top, bottom, obstacle, and flag, do-nothing on right side
@@ -122,7 +122,7 @@ def solve(
 
     from functools import reduce
 
-    bc_func = dfx.fem.Function(V)
+    bc_func = dolfinx.fem.Function(V)
     bc_func.x.array[:] = 0.0
     bc_facets = reduce(
         np.union1d,
@@ -132,7 +132,7 @@ def solve(
             fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ],
     )
-    bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
+    bc_dofs = dolfinx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
 
     class BCFunc:
         def __init__(self, t: float = 0.0):
@@ -146,7 +146,7 @@ def solve(
 
     bc_func.interpolate(BCFunc(t0))
 
-    bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
+    bc = dolfinx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
@@ -175,7 +175,7 @@ def solve(
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [v, p],
         bcs=bcs,
@@ -193,15 +193,15 @@ def solve(
         },
     )
 
-    writer = dfx.io.VTXWriter(comm, output_path, [v])
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [v])
+    writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p])
 
     from timeit import default_timer as timer
 
     # Set up computing drag and lift
 
     class Drag:
-        def __init__(self, save_to: PathLike | list, mesh: dfx.mesh.Mesh, tags: int | tuple[int]):
+        def __init__(self, save_to: PathLike | list, mesh: dolfinx.mesh.Mesh, tags: int | tuple[int]):
 
             self.save_to = save_to
             self.comm = mesh.comm
@@ -210,7 +210,7 @@ def solve(
             n = -ufl.FacetNormal(mesh)
 
             form = ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f) * n, ufl.as_vector([-1.0, 0.0])) * self.ds
-            self.form = dfx.fem.form(form)
+            self.form = dolfinx.fem.form(form)
 
             if not isinstance(self.save_to, list):
                 Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
@@ -221,7 +221,7 @@ def solve(
 
         def __call__(self, t: float):
 
-            drag = self.comm.reduce(dfx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
+            drag = self.comm.reduce(dolfinx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
             if comm.rank == 0:
                 if isinstance(self.save_to, list):
                     self.save_to.append([t, drag])
@@ -232,7 +232,7 @@ def solve(
             return
 
     class Lift:
-        def __init__(self, save_to: PathLike | list, mesh: dfx.mesh.Mesh, tags: int | tuple[int]):
+        def __init__(self, save_to: PathLike | list, mesh: dolfinx.mesh.Mesh, tags: int | tuple[int]):
 
             self.save_to = save_to
             self.comm = mesh.comm
@@ -241,7 +241,7 @@ def solve(
             n = -ufl.FacetNormal(mesh)
 
             form = ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f) * n, ufl.as_vector([0.0, 1.0])) * self.ds
-            self.form = dfx.fem.form(form)
+            self.form = dolfinx.fem.form(form)
 
             if comm.rank == 0 and not isinstance(self.save_to, list):
                 Path(self.save_to).parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +252,7 @@ def solve(
 
         def __call__(self, t: float):
 
-            lift = self.comm.reduce(dfx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
+            lift = self.comm.reduce(dolfinx.fem.assemble_scalar(self.form), op=MPI.SUM, root=0)
             if comm.rank == 0:
                 if isinstance(self.save_to, list):
                     self.save_to.append([t, lift])
@@ -306,7 +306,7 @@ def solve(
     writer.close()
     writer_p.close()
 
-    # dfx.common.list_timings(comm, [dfx.common.TimingType.wall])
+    # dolfinx.common.list_timings(comm, [dolfinx.common.TimingType.wall])
     # log.view()
 
     if comm.rank == 0:

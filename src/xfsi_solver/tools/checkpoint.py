@@ -28,7 +28,7 @@ file still restarts from the complete checkpoint in the other.
 import shutil
 from pathlib import Path
 
-import dolfinx as dfx
+import dolfinx
 import io4dolfinx
 import numpy as np
 
@@ -37,11 +37,11 @@ _ATTRIBUTE_KEYS = {"t", "step", "dt", "num_cells"}
 _NUM_FILES = 2
 
 
-def _num_global_cells(mesh: dfx.mesh.Mesh) -> int:
+def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
 
 
-def _all_cells(mesh: dfx.mesh.Mesh) -> np.ndarray:
+def _all_cells(mesh: dolfinx.mesh.Mesh) -> np.ndarray:
     index_map = mesh.topology.index_map(mesh.topology.dim)
     return np.arange(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
 
@@ -55,7 +55,7 @@ class Checkpointer:
     """
 
     def __init__(
-        self, directory: str | Path, mesh: dfx.mesh.Mesh, submeshes: list[tuple[dfx.mesh.Mesh, dfx.mesh.EntityMap]] = ()
+        self, directory: str | Path, mesh: dolfinx.mesh.Mesh, submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = ()
     ):
         self.directory = Path(directory)
         self.mesh = mesh
@@ -69,7 +69,7 @@ class Checkpointer:
             self._submesh_cells.append((submesh, (sub_cells, parent_cells)))
         self._parent_functions = {}
 
-    def _on_parent(self, f: dfx.fem.Function):
+    def _on_parent(self, f: dolfinx.fem.Function):
         """The function stored for ``f``, and the submesh and parent cells to copy between (None on ``mesh``)."""
         f_mesh = f.function_space.mesh
         if f_mesh is self.mesh:
@@ -78,8 +78,8 @@ class Checkpointer:
         if cells is None:
             raise ValueError(f"Function {f.name!r} is neither on the checkpoint mesh nor on one of its submeshes")
         if f.name not in self._parent_functions:
-            V = dfx.fem.functionspace(self.mesh, f.function_space.ufl_element())
-            self._parent_functions[f.name] = dfx.fem.Function(V, name=f.name)
+            V = dolfinx.fem.functionspace(self.mesh, f.function_space.ufl_element())
+            self._parent_functions[f.name] = dolfinx.fem.Function(V, name=f.name)
         return self._parent_functions[f.name], cells
 
     def _file(self, i: int) -> Path:
@@ -93,7 +93,7 @@ class Checkpointer:
         self.mesh.comm.Barrier()
         self._next_file = 0
 
-    def write(self, functions: list[dfx.fem.Function], t: float, step: int, dt: float) -> None:
+    def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float) -> None:
         """Save ``functions`` at time ``t``, after completing time step ``step``."""
         path = self._file(self._next_file)
         if self.mesh.comm.rank == 0:
@@ -127,7 +127,7 @@ class Checkpointer:
             return None
         return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
 
-    def read(self, functions: list[dfx.fem.Function], dt: float) -> tuple[float, int]:
+    def read(self, functions: list[dolfinx.fem.Function], dt: float) -> tuple[float, int]:
         """Read ``functions`` from the latest complete checkpoint.
 
         The functions are matched by name, so they must have the names they

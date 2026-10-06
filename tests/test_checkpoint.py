@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import dolfinx as dfx
+import dolfinx
 import io4dolfinx
 import numpy as np
 import pytest
@@ -30,23 +30,23 @@ def _setup(mesh_kind, comm=MPI.COMM_WORLD):
     v_s on the solid submesh.
     """
     if mesh_kind == "unit_square":
-        mesh = dfx.mesh.create_unit_square(comm, 6, 5, dfx.mesh.CellType.triangle)
-        submesh, entity_map, _, _ = dfx.mesh.create_submesh(
-            mesh, 2, dfx.mesh.locate_entities(mesh, 2, lambda x: x[0] <= 0.5 + 1e-12)
+        mesh = dolfinx.mesh.create_unit_square(comm, 6, 5, dolfinx.mesh.CellType.triangle)
+        submesh, entity_map, _, _ = dolfinx.mesh.create_submesh(
+            mesh, 2, dolfinx.mesh.locate_entities(mesh, 2, lambda x: x[0] <= 0.5 + 1e-12)
         )
-        u = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 2, (2,))), name="u")
-        p = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 1)), name="p")
-        q = dfx.fem.Function(dfx.fem.functionspace(submesh, ("Lagrange", 2)), name="q")
+        u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))), name="u")
+        p = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 1)), name="p")
+        q = dolfinx.fem.Function(dolfinx.fem.functionspace(submesh, ("Lagrange", 2)), name="q")
         return mesh, [(submesh, entity_map)], [u, p, q]
 
-    with dfx.io.XDMFFile(comm, FSI_MESHES[mesh_kind], "r") as infile:
+    with dolfinx.io.XDMFFile(comm, FSI_MESHES[mesh_kind], "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
-    fluid_mesh, fluid_map, _, _ = dfx.mesh.create_submesh(mesh, 2, cell_tags.find(FLUID))
-    solid_mesh, solid_map, _, _ = dfx.mesh.create_submesh(mesh, 2, cell_tags.find(SOLID))
-    u = dfx.fem.Function(dfx.fem.functionspace(mesh, ("Lagrange", 2, (2,))), name="u")
-    p = dfx.fem.Function(dfx.fem.functionspace(fluid_mesh, ("Lagrange", 1)), name="p")
-    v_s = dfx.fem.Function(dfx.fem.functionspace(solid_mesh, ("Lagrange", 2, (2,))), name="v_s")
+    fluid_mesh, fluid_map, _, _ = dolfinx.mesh.create_submesh(mesh, 2, cell_tags.find(FLUID))
+    solid_mesh, solid_map, _, _ = dolfinx.mesh.create_submesh(mesh, 2, cell_tags.find(SOLID))
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))), name="u")
+    p = dolfinx.fem.Function(dolfinx.fem.functionspace(fluid_mesh, ("Lagrange", 1)), name="p")
+    v_s = dolfinx.fem.Function(dolfinx.fem.functionspace(solid_mesh, ("Lagrange", 2, (2,))), name="v_s")
     return mesh, [(fluid_mesh, fluid_map), (solid_mesh, solid_map)], [u, p, v_s]
 
 
@@ -60,7 +60,7 @@ def _fill(functions, t):
 
 
 def _assert_state(functions, t):
-    expected = [dfx.fem.Function(f.function_space) for f in functions]
+    expected = [dolfinx.fem.Function(f.function_space) for f in functions]
     _fill(expected, t)
     for f, f_ex in zip(functions, expected, strict=True):
         np.testing.assert_allclose(f.x.array, f_ex.x.array, atol=1e-14)
@@ -144,7 +144,7 @@ def test_rejects_function_on_unlisted_submesh(mesh_kind, tmp_path):
 def test_rejects_facet_submesh(mesh_kind, tmp_path):
     mesh, _, _ = _setup(mesh_kind)
     mesh.topology.create_entities(1)
-    facet_submesh, entity_map, _, _ = dfx.mesh.create_submesh(mesh, 1, np.arange(3, dtype=np.int32))
+    facet_submesh, entity_map, _, _ = dolfinx.mesh.create_submesh(mesh, 1, np.arange(3, dtype=np.int32))
     with pytest.raises(NotImplementedError):
         Checkpointer(tmp_path, mesh, [(facet_submesh, entity_map)])
 

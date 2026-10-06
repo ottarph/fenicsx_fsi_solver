@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
@@ -26,7 +26,7 @@ def solve(mesh_path, output_path):
 
     # load mesh and meshtags
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
@@ -43,13 +43,13 @@ def solve(mesh_path, output_path):
 
     # Create submesh for solid
 
-    solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(
+    solid_mesh, solid_cell_map, solid_vertex_map, _ = dolfinx.mesh.create_submesh(
         mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
     )
     solid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submesh
-    solid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
 
     # Create measure with  meshtags
 
@@ -76,20 +76,20 @@ def solve(mesh_path, output_path):
 
     # create problem parameters
 
-    rho_s = dfx.fem.Constant(mesh, 0.8e3)
-    lambda_s = dfx.fem.Constant(mesh, 1e5)
-    mu_s = dfx.fem.Constant(mesh, 2e7)
+    rho_s = dolfinx.fem.Constant(mesh, 0.8e3)
+    lambda_s = dolfinx.fem.Constant(mesh, 1e5)
+    mu_s = dolfinx.fem.Constant(mesh, 2e7)
 
-    g = dfx.fem.Constant(mesh, (0.0, -9.81 * 4))
-    traction = dfx.fem.Constant(mesh, (0.0, 0.0))
+    g = dolfinx.fem.Constant(mesh, (0.0, -9.81 * 4))
+    traction = dolfinx.fem.Constant(mesh, (0.0, 0.0))
 
     # create function space
 
-    U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
+    U = dolfinx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
 
     # create functions
 
-    u = dfx.fem.Function(U)
+    u = dolfinx.fem.Function(U)
     du = ufl.TestFunction(U)
 
     from xfsi_solver.fsi.materials import Solid
@@ -100,11 +100,11 @@ def solve(mesh_path, output_path):
 
     # create Dirichlet boundary condition
 
-    bc_func = dfx.fem.Function(U)
+    bc_func = dolfinx.fem.Function(U)
     bc_func.x.array[:] = 0.0
     bc_facets = solid_facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"])
-    bc_dofs = dfx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, bc_facets)
-    bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
+    bc_dofs = dolfinx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, bc_facets)
+    bc = dolfinx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
@@ -118,7 +118,7 @@ def solve(mesh_path, output_path):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual,
         u,
         bcs=bcs,
@@ -138,7 +138,7 @@ def solve(mesh_path, output_path):
     )
 
     # vtx writer for output
-    writer = dfx.io.VTXWriter(comm, output_path, [u])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [u])
 
     problem.solve()
     check_converged(problem, f"g = {g.value}", writers=[writer])

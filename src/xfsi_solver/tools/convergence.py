@@ -15,8 +15,8 @@ on all ranks together.
 
 from collections.abc import Iterable
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 from petsc4py import PETSc
 
 
@@ -26,9 +26,9 @@ def _reason_name(reasons: type, value: int) -> str:
 
 
 def check_converged(
-    problem: dfx.fem.petsc.NonlinearProblem,
+    problem: dolfinx.fem.petsc.NonlinearProblem,
     where: str,
-    writers: Iterable[dfx.io.VTXWriter] = (),
+    writers: Iterable[dolfinx.io.VTXWriter] = (),
 ) -> None:
     """Raise ``RuntimeError`` if the last ``problem.solve()`` did not converge.
 

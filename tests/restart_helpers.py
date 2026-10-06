@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import dolfinx as dfx
+import dolfinx
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -60,10 +60,10 @@ def read_checkpoint_state(mesh_path, checkpoint_dir, dt_val, elements):
     ``("Lagrange", 1)``. Functions on submeshes are stored on the full mesh,
     so they are read as full-mesh functions too.
     """
-    with dfx.io.XDMFFile(MPI.COMM_WORLD, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(MPI.COMM_WORLD, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
     functions = {
-        name: dfx.fem.Function(dfx.fem.functionspace(mesh, element), name=name) for name, element in elements.items()
+        name: dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, element), name=name) for name, element in elements.items()
     }
     t, step = Checkpointer(checkpoint_dir, mesh).read(list(functions.values()), dt_val)
     return t, step, functions

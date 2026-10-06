@@ -1,5 +1,5 @@
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import pytest
 import ufl
 from mpi4py import MPI
@@ -11,11 +11,11 @@ from xfsi_solver.tools.convergence import check_converged
 def _make_problem(zero_jacobian=False, **petsc_options):
     """Newton for u^3 = 1 (in the L2 sense) from u = 0.5, or with ``zero_jacobian`` a residual with
     a zero Jacobian, which MUMPS fails to factorize."""
-    mesh = dfx.mesh.create_unit_square(MPI.COMM_WORLD, 8, 8)
-    V = dfx.fem.functionspace(mesh, ("Lagrange", 1))
-    u, v = dfx.fem.Function(V), ufl.TestFunction(V)
+    mesh = dolfinx.mesh.create_unit_square(MPI.COMM_WORLD, 8, 8)
+    V = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
+    u, v = dolfinx.fem.Function(V), ufl.TestFunction(V)
     u.x.array[:] = 0.5
-    nonlinearity = dfx.fem.Constant(mesh, 0.0) * u if zero_jacobian else u**3
+    nonlinearity = dolfinx.fem.Constant(mesh, 0.0) * u if zero_jacobian else u**3
     F = nonlinearity * v * ufl.dx - v * ufl.dx
     options = {
         "ksp_type": "preonly",
@@ -25,7 +25,7 @@ def _make_problem(zero_jacobian=False, **petsc_options):
         "ksp_error_if_not_converged": False,
         **petsc_options,
     }
-    return dfx.fem.petsc.NonlinearProblem(F, u, petsc_options_prefix="convergence_test_", petsc_options=options)
+    return dolfinx.fem.petsc.NonlinearProblem(F, u, petsc_options_prefix="convergence_test_", petsc_options=options)
 
 
 class _Writer:

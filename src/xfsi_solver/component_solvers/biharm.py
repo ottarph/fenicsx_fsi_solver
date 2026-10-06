@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
@@ -11,35 +11,35 @@ from mpi4py.MPI import COMM_WORLD as comm
 from xfsi_solver.tools.custom_linear_problem import MyLinearProblem
 
 
-def biharmonic(u_bc: dfx.fem.Function):
+def biharmonic(u_bc: dolfinx.fem.Function):
 
     mesh = u_bc.function_space.mesh
     U = u_bc.function_space
-    V = dfx.fem.functionspace(mesh, U.ufl_element())
+    V = dolfinx.fem.functionspace(mesh, U.ufl_element())
 
     W = ufl.MixedFunctionSpace(U, V)
 
     u, v = ufl.TrialFunctions(W)
     phi_u, phi_v = ufl.TestFunctions(W)
 
-    bc_facets = dfx.mesh.exterior_facet_indices(mesh.topology)
-    bc_dofs = dfx.fem.locate_dofs_topological(U, 1, bc_facets)
-    bc = dfx.fem.dirichletbc(u_bc, bc_dofs)
+    bc_facets = dolfinx.mesh.exterior_facet_indices(mesh.topology)
+    bc_dofs = dolfinx.fem.locate_dofs_topological(U, 1, bc_facets)
+    bc = dolfinx.fem.dirichletbc(u_bc, bc_dofs)
 
     dx = ufl.Measure("dx", domain=mesh)
-    f = dfx.fem.Constant(mesh, (0.0, 0.0))
+    f = dolfinx.fem.Constant(mesh, (0.0, 0.0))
 
     a = ufl.inner(ufl.grad(u), ufl.grad(phi_v)) * dx - ufl.inner(v, phi_v) * dx
     a += ufl.inner(ufl.grad(v), ufl.grad(phi_u)) * dx
-    a += ufl.inner(dfx.fem.Constant(mesh, 0.0) * u, phi_u) * dx
+    a += ufl.inner(dolfinx.fem.Constant(mesh, 0.0) * u, phi_u) * dx
 
     L = ufl.inner(f, phi_u) * dx + ufl.inner(f, phi_v) * dx
 
     a_block = ufl.extract_blocks(a)
     L_block = ufl.extract_blocks(L)
 
-    uh = dfx.fem.Function(U, name="uh")
-    vh = dfx.fem.Function(V, name="vh")
+    uh = dolfinx.fem.Function(U, name="uh")
+    vh = dolfinx.fem.Function(V, name="vh")
 
     prob = MyLinearProblem(
         a_block,
@@ -63,10 +63,10 @@ def biharmonic(u_bc: dfx.fem.Function):
 
 def solve(N, output_path):
 
-    mesh = dfx.mesh.create_unit_square(comm, N, N, cell_type=dfx.mesh.CellType.triangle)
+    mesh = dolfinx.mesh.create_unit_square(comm, N, N, cell_type=dolfinx.mesh.CellType.triangle)
     mesh.topology.create_connectivity(1, 2)
 
-    V = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
 
     def bc_func(x):
         H = 0.2
@@ -75,12 +75,12 @@ def solve(N, output_path):
         values[1] = np.where(np.isclose(x[1], 1.0), 1.0, 0.0) * 4 * x[0] * (1 - x[0]) * H
         return values
 
-    u_bc = dfx.fem.Function(V)
+    u_bc = dolfinx.fem.Function(V)
     u_bc.interpolate(bc_func)
 
     uh, vh, prob = biharmonic(u_bc)
 
-    with dfx.io.VTXWriter(comm, output_path, [uh]) as writer:
+    with dolfinx.io.VTXWriter(comm, output_path, [uh]) as writer:
         writer.write(0.0)
 
     return

@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
@@ -26,7 +26,7 @@ def solve(mesh_path, output_path, t):
 
     # load mesh and meshtags
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
@@ -43,7 +43,7 @@ def solve(mesh_path, output_path, t):
 
     # create submeshes for fluid and solid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(
         mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
     )
 
@@ -53,7 +53,7 @@ def solve(mesh_path, output_path, t):
     fluid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submeshes
-    fluid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
 
     if comm.rank == 0:
         print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
@@ -65,26 +65,26 @@ def solve(mesh_path, output_path, t):
 
     # create problem parameters
 
-    rho_f = dfx.fem.Constant(fluid_mesh, 1.0e3)
-    nu_f = dfx.fem.Constant(mesh, 4e-3)
+    rho_f = dolfinx.fem.Constant(fluid_mesh, 1.0e3)
+    nu_f = dolfinx.fem.Constant(mesh, 4e-3)
 
     U_bar = 1.0
     H = 0.41
 
     # create function spaces
 
-    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
+    V = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(V, P)
 
     # create functions
 
-    v, p = dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
+    v, p = dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p")
 
     dv, dp = ufl.TestFunctions(W)
 
     # Assume static mesh for now
-    u = dfx.fem.Function(V, name="u")
+    u = dolfinx.fem.Function(V, name="u")
 
     def u_func(x):
         values = np.zeros_like(x[:2, :])
@@ -107,7 +107,7 @@ def solve(mesh_path, output_path, t):
 
     from functools import reduce
 
-    bc_func = dfx.fem.Function(V)
+    bc_func = dolfinx.fem.Function(V)
     bc_func.x.array[:] = 0.0
     bc_facets = reduce(
         np.union1d,
@@ -118,7 +118,7 @@ def solve(mesh_path, output_path, t):
             fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ],
     )
-    bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
+    bc_dofs = dolfinx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, bc_facets)
 
     class BCFunc:
         def __init__(self, t: float = 0.0):
@@ -132,7 +132,7 @@ def solve(mesh_path, output_path, t):
 
     bc_func.interpolate(BCFunc(t))
 
-    bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
+    bc = dolfinx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
@@ -157,7 +157,7 @@ def solve(mesh_path, output_path, t):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [v, p],
         bcs=bcs,
@@ -175,7 +175,7 @@ def solve(mesh_path, output_path, t):
         },
     )
 
-    writer = dfx.io.VTXWriter(comm, output_path, [v, u])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [v, u])
 
     if comm.rank == 0:
         print(f"\n{t = :.3f}", end="\t")

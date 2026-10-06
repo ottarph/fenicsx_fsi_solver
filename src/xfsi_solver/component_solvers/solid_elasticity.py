@@ -4,8 +4,8 @@
 
 import sys
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
@@ -28,7 +28,7 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # load mesh and meshtags
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
@@ -45,10 +45,10 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # create submeshes for fluid and solid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(
         mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
     )
-    solid_mesh, solid_cell_map, solid_vertex_map, _ = dfx.mesh.create_submesh(
+    solid_mesh, solid_cell_map, solid_vertex_map, _ = dolfinx.mesh.create_submesh(
         mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
     )
 
@@ -58,8 +58,8 @@ def solve(mesh_path, T, dt_val, output_path):
     solid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submeshes
-    fluid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
-    solid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
+    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, solid_mesh, solid_vertex_map, solid_cell_map)
 
     if comm.rank == 0:
         print(f"{solid_facet_tags.indices.shape = }, {np.unique(solid_facet_tags.values) = }")
@@ -75,26 +75,26 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # create problem parameters
 
-    rho_s = dfx.fem.Constant(solid_mesh, 0.8e3)
-    lambda_s = dfx.fem.Constant(solid_mesh, 1e5)
-    mu_s = dfx.fem.Constant(solid_mesh, 2e7)
+    rho_s = dolfinx.fem.Constant(solid_mesh, 0.8e3)
+    lambda_s = dolfinx.fem.Constant(solid_mesh, 1e5)
+    mu_s = dolfinx.fem.Constant(solid_mesh, 2e7)
 
-    dt = dfx.fem.Constant(solid_mesh, dt_val)
+    dt = dolfinx.fem.Constant(solid_mesh, dt_val)
     t0 = 0.0
 
-    g = dfx.fem.Constant(solid_mesh, (0.0, -9.81 * 4))
-    traction = dfx.fem.Constant(solid_mesh, (0.0, 0.0))
+    g = dolfinx.fem.Constant(solid_mesh, (0.0, -9.81 * 4))
+    traction = dolfinx.fem.Constant(solid_mesh, (0.0, 0.0))
 
     # create function spaces
 
-    U = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
-    V = dfx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
+    U = dolfinx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
+    V = dolfinx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
     W = ufl.MixedFunctionSpace(U, V)
 
     # create functions
 
-    u, v = dfx.fem.Function(U), dfx.fem.Function(V)
-    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+    u, v = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
+    u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
 
     du, dv = ufl.TestFunctions(W)
 
@@ -112,11 +112,11 @@ def solve(mesh_path, T, dt_val, output_path):
 
     # create Dirichlet boundary condition
 
-    bc_func = dfx.fem.Function(U)
+    bc_func = dolfinx.fem.Function(U)
     bc_func.x.array[:] = 0.0
     bc_facets = solid_facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"])
-    bc_dofs = dfx.fem.locate_dofs_topological(U, solid_mesh.geometry.dim - 1, bc_facets)
-    bc = dfx.fem.dirichletbc(bc_func, bc_dofs)
+    bc_dofs = dolfinx.fem.locate_dofs_topological(U, solid_mesh.geometry.dim - 1, bc_facets)
+    bc = dolfinx.fem.dirichletbc(bc_func, bc_dofs)
 
     bcs = [bc]
 
@@ -135,7 +135,7 @@ def solve(mesh_path, T, dt_val, output_path):
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [u, v],
         bcs=bcs,
@@ -153,7 +153,7 @@ def solve(mesh_path, T, dt_val, output_path):
         },
     )
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [u])
 
     t = t0
 

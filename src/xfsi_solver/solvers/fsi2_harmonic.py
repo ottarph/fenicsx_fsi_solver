@@ -7,8 +7,8 @@ import warnings
 from pathlib import Path
 from timeit import default_timer as timer
 
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py import MPI
@@ -58,7 +58,7 @@ def solve(
 
     # load mesh and meshtags
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
@@ -81,8 +81,8 @@ def solve(
     dx_fluid = dx(PHYSICAL_MARKERS["ALE_fluid"])
     dx_solid = dx(PHYSICAL_MARKERS["solid"])
 
-    fluid_volume = comm.reduce(dfx.fem.assemble_scalar(dfx.fem.form(ufl.as_ufl(1.0) * dx_fluid)))
-    solid_volume = comm.reduce(dfx.fem.assemble_scalar(dfx.fem.form(ufl.as_ufl(1.0) * dx_solid)))
+    fluid_volume = comm.reduce(dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx_fluid)))
+    solid_volume = comm.reduce(dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx_solid)))
     if comm.rank == 0:
         print(f"{fluid_volume = }")
         print(f"{solid_volume = }")
@@ -106,22 +106,22 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dfx.fem.Constant(mesh, 1.0e3)
-    nu_f = dfx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
+    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
 
-    rho_s = dfx.fem.Constant(mesh, 1.0e4)
-    mu_s = dfx.fem.Constant(mesh, 5.0e5)
-    nu_s = dfx.fem.Constant(mesh, 0.4)
-    lambda_s = dfx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
-    # lambda_s = dfx.fem.Constant(mesh, 2e6)
+    rho_s = dolfinx.fem.Constant(mesh, 1.0e4)
+    mu_s = dolfinx.fem.Constant(mesh, 5.0e5)
+    nu_s = dolfinx.fem.Constant(mesh, 0.4)
+    lambda_s = dolfinx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
+    # lambda_s = dolfinx.fem.Constant(mesh, 2e6)
 
     U_bar = 1.0
     H = 0.41
 
     t0 = 0.0
-    dt = dfx.fem.Constant(mesh, dt_val)
+    dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dfx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
 
     save_every = 4
 
@@ -137,15 +137,15 @@ def solve(
 
     # create function spaces
 
-    U = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    V = dfx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    P = dfx.fem.functionspace(mesh, ("CG", 1))
+    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
+    P = dolfinx.fem.functionspace(mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(U, V, P)
 
     # create functions
 
-    u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
-    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+    u, v, p = dolfinx.fem.Function(U, name="u"), dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p")
+    u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
 
     du, dv, dp = ufl.TestFunctions(W)
 
@@ -153,7 +153,7 @@ def solve(
 
     from functools import reduce
 
-    inflow_bc_func = dfx.fem.Function(V)
+    inflow_bc_func = dolfinx.fem.Function(V)
     inflow_bc_func.x.array[:] = 0.0
     inflow_bc_facets = reduce(
         np.union1d,
@@ -161,9 +161,9 @@ def solve(
             facet_tags.find(PHYSICAL_MARKERS["inflow"]),
         ],
     )
-    inflow_bc_dofs = dfx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, inflow_bc_facets)
+    inflow_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, inflow_bc_facets)
 
-    inflow_bc = dfx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
+    inflow_bc = dolfinx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
 
     class InflowFunc:
         def __init__(self, t: float = 0.0):
@@ -176,7 +176,7 @@ def solve(
                 values[0] *= 0.5 * (1.0 - np.cos(0.5 * np.pi * self.t))
             return values
 
-    noslip_bc_func = dfx.fem.Function(V)
+    noslip_bc_func = dolfinx.fem.Function(V)
     noslip_bc_func.x.array[:] = 0.0
     noslip_bc_facets = reduce(
         np.union1d,
@@ -186,13 +186,13 @@ def solve(
             facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ],
     )
-    noslip_bc_dofs = dfx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
+    noslip_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
 
-    noslip_bc = dfx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
+    noslip_bc = dolfinx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
 
     # Create ALE Dirichlet boundary condition
 
-    u_bc_func = dfx.fem.Function(U)
+    u_bc_func = dolfinx.fem.Function(U)
     u_bc_func.x.array[:] = 0.0
     u_bc_facets = reduce(
         np.union1d,
@@ -204,8 +204,8 @@ def solve(
             facet_tags.find(PHYSICAL_MARKERS["outflow"]),
         ],
     )
-    u_bc_dofs = dfx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, u_bc_facets)
-    u_bc = dfx.fem.dirichletbc(u_bc_func, u_bc_dofs)
+    u_bc_dofs = dolfinx.fem.locate_dofs_topological(U, mesh.geometry.dim - 1, u_bc_facets)
+    u_bc = dolfinx.fem.dirichletbc(u_bc_func, u_bc_dofs)
 
     # Collect Dirichlet boundary conditions
 
@@ -241,9 +241,9 @@ def solve(
         J = ufl.det(F)
         normal = ufl.FacetNormal(mesh)
 
-        alpha_u = dfx.fem.Constant(mesh, 1e-9)
+        alpha_u = dolfinx.fem.Constant(mesh, 1e-9)
 
-        alpha_p = dfx.fem.Constant(mesh, 1e-9)
+        alpha_p = dolfinx.fem.Constant(mesh, 1e-9)
 
         residual = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
         residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
@@ -292,7 +292,7 @@ def solve(
     atol = 1.0e-8
     rtol = 1.0e-8
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [u, v, p],
         bcs=bcs,
@@ -331,8 +331,8 @@ def solve(
     elif checkpoint_every is not None:
         checkpointer.clear()
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u, v])
-    writer_p = dfx.io.VTXWriter(comm, output_path_p, [p])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [u, v])
+    writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p])
 
     dm_loc_size = U.dofmap.index_map.size_local
     spot = np.array([0.6, 0.2, 0.0], dtype=np.float64)
@@ -346,8 +346,8 @@ def solve(
     u_spot = np.zeros(2, dtype=np.float64)
 
     normal = ufl.FacetNormal(mesh)
-    e_x = dfx.fem.Constant(mesh, (-1.0, 0.0))
-    e_y = dfx.fem.Constant(mesh, (0.0, 1.0))
+    e_x = dolfinx.fem.Constant(mesh, (-1.0, 0.0))
+    e_y = dolfinx.fem.Constant(mesh, (0.0, 1.0))
     F = ufl.Identity(2) + ufl.grad(u)
     transformed_normal = ufl.dot(ufl.inv(F.T), normal)
 
@@ -369,10 +369,10 @@ def solve(
         ufl.dot(ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal), e_y) * ufl.det(F) * ds_interface_fluid
     )
 
-    drag_form_obstacle = dfx.fem.form(drag_form_obstacle)
-    drag_form_interface = dfx.fem.form(drag_form_interface)
-    lift_form_obstacle = dfx.fem.form(lift_form_obstacle)
-    lift_form_interface = dfx.fem.form(lift_form_interface)
+    drag_form_obstacle = dolfinx.fem.form(drag_form_obstacle)
+    drag_form_interface = dolfinx.fem.form(drag_form_interface)
+    lift_form_obstacle = dolfinx.fem.form(lift_form_obstacle)
+    lift_form_interface = dolfinx.fem.form(lift_form_interface)
 
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
@@ -390,8 +390,8 @@ def solve(
 
         loc_u_spot[:] = u.x.array[2 * spot_dof : 2 * (spot_dof + 1)] if spot_dof is not None else 0.0
         comm.Reduce(loc_u_spot, u_spot, op=MPI.SUM, root=0)
-        drag = comm.reduce(dfx.fem.assemble_scalar(drag_form_obstacle) + dfx.fem.assemble_scalar(drag_form_interface))
-        lift = comm.reduce(dfx.fem.assemble_scalar(lift_form_obstacle) + dfx.fem.assemble_scalar(lift_form_interface))
+        drag = comm.reduce(dolfinx.fem.assemble_scalar(drag_form_obstacle) + dolfinx.fem.assemble_scalar(drag_form_interface))
+        lift = comm.reduce(dolfinx.fem.assemble_scalar(lift_form_obstacle) + dolfinx.fem.assemble_scalar(lift_form_interface))
         if comm.rank == 0:
             with open(qoi_path, "ab") as f:
                 np.savetxt(f, [[t, drag, lift, *u_spot]], fmt="%.6e", delimiter="\t")

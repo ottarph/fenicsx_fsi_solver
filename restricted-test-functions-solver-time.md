@@ -74,7 +74,7 @@ The test used the restricted solver with `alpha_u = 1e-9` put back on the three
 mesh-motion terms of `A_I`:
 
 ```python
-alpha_u = dfx.fem.Constant(mesh, 1.0e-9)
+alpha_u = dolfinx.fem.Constant(mesh, 1.0e-9)
 residual  = alpha_u * ufl.inner(z, dz) * dx_fluid
 residual -= alpha_u * ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
 residual += alpha_u * ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid

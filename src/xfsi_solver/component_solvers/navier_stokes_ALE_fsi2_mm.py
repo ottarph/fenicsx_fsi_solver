@@ -5,8 +5,8 @@
 import sys
 
 import basix.ufl
-import dolfinx as dfx
-import dolfinx.fem.petsc  # noqa: F401
+import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
@@ -31,7 +31,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
 
     # load mesh and meshtags
 
-    with dfx.io.XDMFFile(comm, mesh_path, "r") as infile:
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
         mesh = infile.read_mesh()
         cell_tags = infile.read_meshtags(mesh, name="Cell tags")
         mesh.topology.create_connectivity(1, 2)
@@ -48,7 +48,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
 
     # create submeshes for fluid and solid
 
-    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dfx.mesh.create_submesh(
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(
         mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
     )
 
@@ -58,7 +58,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     fluid_mesh.topology.create_connectivity(1, 2)
 
     # transfer meshtags to submeshes
-    fluid_facet_tags = dfx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map)
 
     if comm.rank == 0:
         print(f"{fluid_facet_tags.indices.shape = }, {np.unique(fluid_facet_tags.values) = }")
@@ -70,28 +70,28 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
 
     # create problem parameters
 
-    rho_f = dfx.fem.Constant(fluid_mesh, 1.0e3)
-    nu_f = dfx.fem.Constant(mesh, 4e-3)
+    rho_f = dolfinx.fem.Constant(fluid_mesh, 1.0e3)
+    nu_f = dolfinx.fem.Constant(mesh, 4e-3)
 
     U_bar = 1.0
     H = 0.41
 
     t0 = t0_val
-    dt = dfx.fem.Constant(mesh, dt_val)
+    dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dfx.fem.Constant(mesh, 0.5)
+    theta = dolfinx.fem.Constant(mesh, 0.5)
 
     # create function spaces
 
-    U = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    V = dfx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    P = dfx.fem.functionspace(fluid_mesh, ("CG", 1))
+    U = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    V = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
     W = ufl.MixedFunctionSpace(U, V, P)
 
     # create functions
 
-    u, v, p = dfx.fem.Function(U, name="u"), dfx.fem.Function(V, name="v"), dfx.fem.Function(P, name="p")
-    u_old, v_old = dfx.fem.Function(U), dfx.fem.Function(V)
+    u, v, p = dolfinx.fem.Function(U, name="u"), dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p")
+    u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
 
     # Prepare boundary deformations for ale fields for all time steps
 
@@ -102,29 +102,29 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     uh_bd_fsi2 *= 0.4
 
     c_el = ufl.Mesh(basix.ufl.element("Lagrange", "interval", 1, shape=(msh_x.shape[1],)))
-    bd_from_mesh = dfx.mesh.create_mesh(comm, msh_conn, c_el, msh_x)
+    bd_from_mesh = dolfinx.mesh.create_mesh(comm, msh_conn, c_el, msh_x)
 
-    bd_to_mesh, *_ = dfx.mesh.create_submesh(
-        fluid_mesh, 1, dfx.mesh.locate_entities_boundary(fluid_mesh, 1, lambda x: np.full(x.shape[1], True))
+    bd_to_mesh, *_ = dolfinx.mesh.create_submesh(
+        fluid_mesh, 1, dolfinx.mesh.locate_entities_boundary(fluid_mesh, 1, lambda x: np.full(x.shape[1], True))
     )
     bd_to_cells = bd_to_mesh.topology.index_map(1)
     bd_cells_on_proc = bd_to_cells.size_local + bd_to_cells.num_ghosts
     bd_interp_cells = np.arange(bd_cells_on_proc, dtype=np.int32)
 
-    V_from = dfx.fem.functionspace(bd_from_mesh, ("CG", 2, (2,)))
-    V_to = dfx.fem.functionspace(bd_to_mesh, ("CG", 2, (2,)))
+    V_from = dolfinx.fem.functionspace(bd_from_mesh, ("CG", 2, (2,)))
+    V_to = dolfinx.fem.functionspace(bd_to_mesh, ("CG", 2, (2,)))
 
-    bd_interp_data = dfx.fem.create_interpolation_data(V_to, V_from, cells=bd_interp_cells, padding=1e-6)
+    bd_interp_data = dolfinx.fem.create_interpolation_data(V_to, V_from, cells=bd_interp_cells, padding=1e-6)
 
-    u_from = dfx.fem.Function(V_from, name="u_from")
-    u_to = dfx.fem.Function(V_to, name="u_to")
+    u_from = dolfinx.fem.Function(V_from, name="u_from")
+    u_to = dolfinx.fem.Function(V_to, name="u_to")
 
     whole_cells = fluid_mesh.topology.index_map(2)
     whole_cells_on_proc = whole_cells.size_local + whole_cells.num_ghosts
     whole_interp_cells = np.arange(whole_cells_on_proc, dtype=np.int32)
-    whole_interp_data = dfx.fem.create_interpolation_data(V, V_to, whole_interp_cells, padding=1e-8)
+    whole_interp_data = dolfinx.fem.create_interpolation_data(V, V_to, whole_interp_cells, padding=1e-8)
 
-    u_bc = dfx.fem.Function(V, name="u_whole")
+    u_bc = dolfinx.fem.Function(V, name="u_whole")
 
     from tqdm import tqdm
 
@@ -150,9 +150,9 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     # entry, since v0 is 1 on its own cell and 0 elsewhere. This is
     # equivalent to ufl.CellVolume for simplices too, and works for any
     # cell type.
-    V0 = dfx.fem.functionspace(fluid_mesh, ("DG", 0))
-    cell_volume = dfx.fem.Function(V0, name="cell_volume")
-    cell_volume_vec = dfx.fem.assemble_vector(dfx.fem.form(ufl.TestFunction(V0) * dx))
+    V0 = dolfinx.fem.functionspace(fluid_mesh, ("DG", 0))
+    cell_volume = dolfinx.fem.Function(V0, name="cell_volume")
+    cell_volume_vec = dolfinx.fem.assemble_vector(dolfinx.fem.form(ufl.TestFunction(V0) * dx))
     cell_volume.x.array[:] = cell_volume_vec.array
     cell_volume.x.scatter_forward()
 
@@ -162,20 +162,20 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     # update u_old and u with correct ale fields
 
     a_u = ufl.inner(alpha * ufl.grad(ufl.TrialFunction(U)), ufl.grad(ufl.TestFunction(U))) * dx
-    L_u = ufl.inner(dfx.fem.Constant(fluid_mesh, (0.0, 0.0)), ufl.TestFunction(U)) * dx
+    L_u = ufl.inner(dolfinx.fem.Constant(fluid_mesh, (0.0, 0.0)), ufl.TestFunction(U)) * dx
 
-    u_old_bc_func = dfx.fem.Function(U)
+    u_old_bc_func = dolfinx.fem.Function(U)
     u_old_bc_func.x.array[:] = u_bc.x.array[:]
-    u_old_bc_facets = dfx.mesh.exterior_facet_indices(fluid_mesh.topology)
-    u_old_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_old_bc_facets)
-    u_old_bc = dfx.fem.dirichletbc(u_old_bc_func, u_old_bc_dofs)
+    u_old_bc_facets = dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
+    u_old_bc_dofs = dolfinx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_old_bc_facets)
+    u_old_bc = dolfinx.fem.dirichletbc(u_old_bc_func, u_old_bc_dofs)
 
-    u_lp = dfx.fem.petsc.LinearProblem(
+    u_lp = dolfinx.fem.petsc.LinearProblem(
         a_u, L_u, bcs=[u_old_bc], u=u_old, petsc_options_prefix="navier_stokes_ale_fsi2_mm_harmonic_old_"
     )
     u_lp.solve()
     u_old_bc_func.x.array[:] = u_bc_arr[0, :]
-    u_lp = dfx.fem.petsc.LinearProblem(
+    u_lp = dolfinx.fem.petsc.LinearProblem(
         a_u, L_u, bcs=[u_old_bc], u=u, petsc_options_prefix="navier_stokes_ale_fsi2_mm_harmonic_"
     )
     u_lp.solve()
@@ -208,7 +208,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
 
     from functools import reduce
 
-    v_bc_func = dfx.fem.Function(V)
+    v_bc_func = dolfinx.fem.Function(V)
     v_bc_func.x.array[:] = 0.0
     v_bc_facets = reduce(
         np.union1d,
@@ -219,7 +219,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
             fluid_facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
         ],
     )
-    v_bc_dofs = dfx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, v_bc_facets)
+    v_bc_dofs = dolfinx.fem.locate_dofs_topological(V, fluid_mesh.geometry.dim - 1, v_bc_facets)
 
     class BCFunc:
         def __init__(self, t: float = 0.0):
@@ -233,15 +233,15 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
 
     v_bc_func.interpolate(BCFunc(t0))
 
-    v_bc = dfx.fem.dirichletbc(v_bc_func, v_bc_dofs)
+    v_bc = dolfinx.fem.dirichletbc(v_bc_func, v_bc_dofs)
 
     # Create ALE Dirichlet boundary condition
 
-    u_bc_func = dfx.fem.Function(U)
+    u_bc_func = dolfinx.fem.Function(U)
     u_bc_func.x.array[:] = 0.0
-    u_bc_facets = dfx.mesh.exterior_facet_indices(fluid_mesh.topology)
-    u_bc_dofs = dfx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_bc_facets)
-    u_bc = dfx.fem.dirichletbc(u_bc_func, u_bc_dofs)
+    u_bc_facets = dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
+    u_bc_dofs = dolfinx.fem.locate_dofs_topological(U, fluid_mesh.geometry.dim - 1, u_bc_facets)
+    u_bc = dolfinx.fem.dirichletbc(u_bc_func, u_bc_dofs)
 
     # Collect Dirichlet boundary conditions
 
@@ -299,7 +299,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
     atol = 1.0e-7
     rtol = 1.0e-16
 
-    problem = dfx.fem.petsc.NonlinearProblem(
+    problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [u, v, p],
         bcs=bcs,
@@ -317,7 +317,7 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, t0_val, max_
         },
     )
 
-    writer = dfx.io.VTXWriter(comm, output_path, [u, v])
+    writer = dolfinx.io.VTXWriter(comm, output_path, [u, v])
 
     total_steps = num_cycles * num_steps
     if max_steps is not None:
