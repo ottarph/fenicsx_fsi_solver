@@ -321,7 +321,9 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     residual_base_ufl = ufl.extract_blocks(residual)
-    jacobian_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, [u, v, p, z])
+    jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, [u, v, p, z])
+
+    jacobian_full_base = dolfinx.fem.form(jacobian_full_base_ufl, entity_maps=entity_maps)
 
     # One block per unknown in [u, v, p, z], since blocked assembly places forms by
     # position. Not built with ufl.extract_blocks, which drops the zero blocks. The
@@ -345,7 +347,7 @@ def solve(
     jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
 
     jacobian_approximate_base_ufl = [
-        [jacobian_base_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
+        [jacobian_full_base_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
     ]
 
     # Neglect the terms depending on u_f in v and p.
@@ -367,12 +369,8 @@ def solve(
     jacobian_approximate_base_ufl[2][0] = None
 
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
-    jacobian_approximate_post_ufl = [
-        [jacobian_post_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
-    ]
 
     jacobian_approximate_base = dolfinx.fem.form(jacobian_approximate_base_ufl, entity_maps=entity_maps)
-    jacobian_approximate_post = dolfinx.fem.form(jacobian_approximate_post_ufl, entity_maps=entity_maps)
 
     max_iter = 20
     atol = 1.0e-7
@@ -381,7 +379,7 @@ def solve(
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_base_ufl,
         [u, v, p, z],
-        J=jacobian_base_ufl,
+        J=jacobian_approximate_base_ufl,
         bcs=bcs,
         petsc_options_prefix="fsi2_biharmonic_diffmesh_restr_split_",
         entity_maps=entity_maps,
@@ -461,6 +459,10 @@ def solve(
     jac_kargs_approximate = {key: jac_kargs[key] for key in jac_kargs}
     jac_kargs_approximate["jacobian"] = jacobian_approximate_base
 
+    # Use this to assemble the full jacobian using fem_jacobian.
+    jac_kargs_full = {key: jac_kargs[key] for key in jac_kargs}
+    jac_kargs_full["jacobian"] = jacobian_full_base
+
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
@@ -485,11 +487,6 @@ def solve(
     def post_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         J.zeroRows(rows_d, diag=0.0)
         dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
-        J.assemble()
-
-    def post_jacobian_approximate(x: PETSc.Vec, J: PETSc.Mat) -> None:
-        J.zeroRows(rows_d, diag=0.0)
-        dolfinx.fem.petsc.assemble_matrix(J, jacobian_approximate_post, bcs=[u_s_bc, *bcs])
         J.assemble()
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
@@ -517,15 +514,15 @@ def solve(
 
         pass
 
-    def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
+    def wrapped_jacobian_full(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         pre_jacobian(x, J)
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_full)
         post_jacobian(x, J)
 
     def wrapped_jacobian_approximate(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_approximate)
-        post_jacobian_approximate(x, J)
+        post_jacobian(x, J)
 
     def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
         pre_residual(x, b)  # x is not yet assigned to u here
@@ -590,11 +587,12 @@ def solve(
         """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
         columns and values on rank 0.
 
-        Assembles into a new matrix with the full Jacobian sparsity pattern instead of
-        J_mat: PETSc drops the preallocated entries that the first assembly does not set,
-        so after a run with the approximate Jacobian, J_mat has no room for the full one.
+        Assembles into a new matrix with the full Jacobian sparsity pattern, which contains
+        the approximate one. J_mat cannot be used: it is created from the approximate
+        Jacobian forms, and PETSc also drops the preallocated entries that its first
+        assembly does not set, so it has no room for the full Jacobian.
         """
-        J = dolfinx.fem.petsc.create_matrix(problem.J)
+        J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
         J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
         assemble_jacobian(solver, problem.x, J, P_mat)
         indptr, cols, vals = J.getValuesCSR()
@@ -604,7 +602,7 @@ def solve(
         gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
         return [np.concatenate(a) for a in gathered] if comm.rank == 0 else (None, None, None)
 
-    rows, cols, vals = gather_jacobian(wrapped_jacobian)
+    rows, cols, vals = gather_jacobian(wrapped_jacobian_full)
     rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
 
     def solid_supported(space, num_dofs):
@@ -741,7 +739,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=16.0,
+        T=15.5 + 5 * 0.0025,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr_split_approx.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr_split_approx.bp",
