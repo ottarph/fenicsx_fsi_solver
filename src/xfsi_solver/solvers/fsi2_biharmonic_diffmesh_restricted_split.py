@@ -485,10 +485,10 @@ def solve(
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
+    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+
     if not restart:
         write_output(t, step)
-
-    init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
     if mesh.comm.rank == 0:
         print("", flush=True)
