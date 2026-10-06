@@ -464,13 +464,16 @@ def solve(
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
-    # Global rows of the interface u-dofs owned by this process. The owned rows
-    # of the block matrix are numbered [u, v, p, z] from the start of the
-    # ownership range, and every interface row is owned by a process that
-    # located it, so zeroing owned rows covers all of them.
-    dofs_d, num_owned_d = bc_deactivate.dof_indices()
-    off_own, _ = problem.b.getAttr("_blocks")
-    rows_d = (J_mat.getOwnershipRange()[0] + off_own[0] + dofs_d[:num_owned_d]).astype(PETSc.IntType)
+    # Global rows of the interface u-dofs owned by this rank, for zeroing with zeroRows.
+    # Each rank stores its owned dofs as [u | v | p | z], starting at its first global row.
+    # offsets_owned[k] is where field k starts within that local part (so offsets_owned[0] = 0
+    # for u). Every interface dof is owned by a rank that also locates it, so zeroing the owned
+    # rows on each rank covers all of them.
+    interface_dofs, num_owned = bc_deactivate.dof_indices()  # unrolled local indices, owned first
+    offsets_owned, _ = problem.b.getAttr("_blocks")
+    first_row = J_mat.getOwnershipRange()[0]
+    u_block = 0
+    rows_d = (first_row + offsets_owned[u_block] + interface_dofs[:num_owned]).astype(PETSc.IntType)
 
     bcs_post = [u_s_bc, *bcs]
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(residual_post), bcs_post)
@@ -619,7 +622,7 @@ def solve(
     # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
     # u_S (including the interface) and the remaining fluid-interior dofs u_I.
     u_dofs, v_dofs, p_dofs, z_dofs = (
-        row_start + np.arange(off_own[k], off_own[k + 1]) for k in range(len(off_own) - 1)
+        row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
     )
     u_solid = solid_supported(U, len(u_dofs))
     v_solid = solid_supported(V, len(v_dofs))
