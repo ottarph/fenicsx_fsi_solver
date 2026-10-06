@@ -81,12 +81,6 @@ def solve(
     dx_fluid = dx(PHYSICAL_MARKERS["ALE_fluid"])
     dx_solid = dx(PHYSICAL_MARKERS["solid"])
 
-    fluid_volume = comm.reduce(dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx_fluid)))
-    solid_volume = comm.reduce(dolfinx.fem.assemble_scalar(dolfinx.fem.form(ufl.as_ufl(1.0) * dx_solid)))
-    if comm.rank == 0:
-        print(f"{fluid_volume = }")
-        print(f"{solid_volume = }")
-
     # Create measure for interface / solid-fluid boundary
 
     import scifem
@@ -402,6 +396,10 @@ def solve(
 
     if not restart:
         write_output(t, step)
+
+    if mesh.comm.rank == 0:
+        print("", flush=True)
+    mesh.comm.barrier()
 
     first_step = step
     start = timer()

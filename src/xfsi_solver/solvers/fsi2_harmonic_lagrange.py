@@ -529,6 +529,10 @@ def solve(
     if not restart:
         write_output(t, step)
 
+    if mesh.comm.rank == 0:
+        print("", flush=True)
+    mesh.comm.barrier()
+
     first_step = step
     start = timer()
     while step < num_steps:

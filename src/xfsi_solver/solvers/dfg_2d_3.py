@@ -269,6 +269,10 @@ def solve(
 
     hooks = [drag_hook, lift_hook]
 
+    if fluid_mesh.comm.rank == 0:
+        print("", flush=True)
+    fluid_mesh.comm.barrier()
+
     start = timer()
 
     i = 0
