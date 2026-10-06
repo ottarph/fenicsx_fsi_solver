@@ -578,37 +578,43 @@ def solve(
     rows = comm.gather(rows, root=0)
     cols = comm.gather(cols, root=0)
     vals = comm.gather(vals, root=0)
-    if comm.rank == 0:
-        rows, cols, vals = np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)
 
-    # Owned global dofs of the storage blocks [u, v, p, z]
+    def solid_supported(space, num_dofs):
+        """Mask of the owned unrolled dofs of space that are supported on solid cells."""
+        bs = space.dofmap.index_map_bs
+        dofs = dfx.fem.locate_dofs_topological(space, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
+        return np.isin(np.arange(num_dofs), (bs * dofs[:, None] + np.arange(bs)).ravel())
+
+    def gather_dofs(dofs):
+        """Global dofs of all ranks on rank 0, in rank order."""
+        dofs = comm.gather(dofs, root=0)
+        return np.concatenate(dofs) if comm.rank == 0 else None
+
+    # Owned global dofs of the storage blocks [u, v, p, z]. As in eq. (1) of
+    # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
+    # u_S (including the interface) and the remaining fluid-interior dofs u_I.
     u_dofs, v_dofs, p_dofs, z_dofs = (
         row_start + np.arange(off_own[k], off_own[k + 1]) for k in range(len(off_own) - 1)
     )
-    # Split u into the solid-supported dofs u_S (including the interface) and the
-    # remaining fluid-interior dofs u_I, as in eq. (1) of docs/restricted-iterative-solver.md
-    solid_cells = cell_tags.find(PHYSICAL_MARKERS["solid"])
-    u_bs = U.dofmap.index_map_bs
-    u_solid = dfx.fem.locate_dofs_topological(U, mesh.topology.dim, solid_cells)
-    u_solid = (u_bs * u_solid[:, None] + np.arange(u_bs)).ravel()
-    u_solid = np.isin(np.arange(len(u_dofs)), u_solid)
+    u_solid = solid_supported(U, len(u_dofs))
+    v_solid = solid_supported(V, len(v_dofs))
+    dofs_u_S = gather_dofs(u_dofs[u_solid])
+    dofs_u_I = gather_dofs(u_dofs[~u_solid])
+    dofs_u = gather_dofs(u_dofs)
+    dofs_v = gather_dofs(v_dofs)
+    dofs_v_fluid = gather_dofs(v_dofs[~v_solid])
+    dofs_p = gather_dofs(p_dofs)
+    dofs_z = gather_dofs(z_dofs)
 
-    def plot_blocks(block_dofs, names, label):
-        """Save spy_{label}.png and block_norms_{label}.png with the owned global dofs block_dofs per block."""
-        block_dofs = comm.gather(block_dofs, root=0)
-        if comm.rank != 0:
-            return
+    def plot_blocks(J, blocks, names, title, label):
+        """Save spy_{label}.png and block_norms_{label}.png of the scipy sparse matrix J,
+        reordered by the global dofs in blocks."""
         import matplotlib.colors
-        import scipy.sparse
 
-        num_blocks = len(names)
-        blocks = [np.concatenate([bd[k] for bd in block_dofs]) for k in range(num_blocks)]
         perm = np.concatenate(blocks)
-        new_index = np.empty_like(perm)
-        new_index[perm] = np.arange(len(perm))
-        new_rows, new_cols = new_index[rows], new_index[cols]
-        n = len(perm)
-        J_spy = scipy.sparse.coo_matrix((np.ones(len(new_rows)), (new_rows, new_cols)), shape=(n, n))
+        J_spy = J.tocsr()[perm][:, perm].tocoo()
+        J_spy.eliminate_zeros()
+        n = J_spy.shape[0]
 
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.spy(J_spy, markersize=0.05, color="black")
@@ -620,16 +626,16 @@ def solve(
         ax.set_xticks(centers, names)
         ax.set_yticks(centers, names)
         ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-        ax.set_xlabel(f"Jacobian nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
+        ax.set_xlabel(f"{title} nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
         fig.savefig(f"spy_{label}.png", dpi=200, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved spy plot to spy_{label}.png ({J_spy.nnz} nonzeros, {n} dofs)")
 
         # Frobenius norms of the blocks, with blocks without nonzeros left blank
-        row_blocks = np.searchsorted(bounds, new_rows, side="right") - 1
-        col_blocks = np.searchsorted(bounds, new_cols, side="right") - 1
-        sq_norms = np.zeros((num_blocks, num_blocks))
-        np.add.at(sq_norms, (row_blocks, col_blocks), vals**2)
+        row_blocks = np.searchsorted(bounds, J_spy.row, side="right") - 1
+        col_blocks = np.searchsorted(bounds, J_spy.col, side="right") - 1
+        sq_norms = np.zeros((len(blocks), len(blocks)))
+        np.add.at(sq_norms, (row_blocks, col_blocks), J_spy.data**2)
         block_norms = np.ma.masked_equal(np.sqrt(sq_norms), 0.0)
 
         cmap = plt.get_cmap("viridis").copy()
@@ -640,19 +646,41 @@ def solve(
         for (i, j), norm in np.ndenumerate(block_norms):
             if norm is not np.ma.masked:
                 ax.text(j, i, f"{norm:.2e}", ha="center", va="center", color="white", fontsize="small")
-        ax.set_xticks(range(num_blocks), names)
-        ax.set_yticks(range(num_blocks), names)
-        ax.set_xlabel(f"Jacobian block norms at t = {t:.4f}", fontsize="large")
+        ax.set_xticks(range(len(blocks)), names)
+        ax.set_yticks(range(len(blocks)), names)
+        ax.set_xlabel(f"{title} block norms at t = {t:.4f}", fontsize="large")
         fig.savefig(f"block_norms_{label}.png", dpi=200, bbox_inches="tight")
         plt.close(fig)
         print(f"Saved block norm plot to block_norms_{label}.png")
 
-    plot_blocks([u_dofs, v_dofs, p_dofs, z_dofs], ["u", "v", "p", "z"], "storage")
-    plot_blocks(
-        [u_dofs[u_solid], v_dofs, p_dofs, z_dofs, u_dofs[~u_solid]],
-        ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"],
-        "eq1",
-    )
+    if comm.rank == 0:
+        import scipy.sparse
+
+        rows, cols, vals = np.concatenate(rows), np.concatenate(cols), np.concatenate(vals)
+        n = J_mat.getSize()[0]
+        J_full = scipy.sparse.coo_matrix((vals, (rows, cols)), shape=(n, n))
+
+        names_eq1 = ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"]
+        blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_z, dofs_u_I]
+        plot_blocks(J_full, [dofs_u, dofs_v, dofs_p, dofs_z], ["u", "v", "p", "z"], "Jacobian", "storage")
+        plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian", "eq1")
+
+        # J_0 of eq. (3): drop the fluid ALE derivatives F_I (v, u_I), D_S (p, u_S) and
+        # D_I (p, u_I), and F_S (v, u_S) in the velocity rows not supported on the solid.
+        # In the interface velocity rows, F_S is summed with E_S and cannot be removed here.
+        def indicator(dofs):
+            mask = np.zeros(n, dtype=bool)
+            mask[dofs] = True
+            return mask
+
+        in_u_S, in_u_I, in_v, in_v_fluid, in_p = map(indicator, (dofs_u_S, dofs_u_I, dofs_v, dofs_v_fluid, dofs_p))
+        drop = (
+            (in_v[rows] & in_u_I[cols])
+            | (in_p[rows] & (in_u_S[cols] | in_u_I[cols]))
+            | (in_v_fluid[rows] & in_u_S[cols])
+        )
+        J_0 = scipy.sparse.coo_matrix((vals[~drop], (rows[~drop], cols[~drop])), shape=(n, n))
+        plot_blocks(J_0, blocks_eq1, names_eq1, "$J_0$", "eq3")
 
     # Destroying the MUMPS factorization is collective, so destroy the solver on all
     # ranks here instead of leaving it to garbage collection, which can run at
