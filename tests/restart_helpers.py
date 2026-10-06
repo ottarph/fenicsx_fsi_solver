@@ -141,3 +141,18 @@ def check_restart_rejects_different_dt(solve, mesh_path, output_dirs, tmp_path, 
     solve(T=dt_val, dt_val=dt_val, checkpoint_every=1, **kwargs)
     with pytest.raises(ValueError, match="dt"):
         solve(T=4 * dt_val, dt_val=2 * dt_val, restart=True, **kwargs)
+
+
+def check_restart_rejects_T_not_after_checkpoint(solve, mesh_path, output_dirs, tmp_path, dt_val=0.0025):
+    kwargs = dict(
+        mesh_path=mesh_path,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "T.bp"),
+        output_path_p=str(output_dirs["pv"] / "T_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "T_qoi.txt"),
+        checkpoint_dir=tmp_path / "T",
+    )
+    solve(T=2 * dt_val, checkpoint_every=1, **kwargs)
+    for T in (dt_val, 2 * dt_val):
+        with pytest.raises(ValueError, match="no time step is left"):
+            solve(T=T, restart=True, **kwargs)

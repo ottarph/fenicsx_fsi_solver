@@ -1,5 +1,9 @@
 import pytest
-from restart_helpers import check_restart_rejects_different_dt, check_restart_reproduces_continuous_run
+from restart_helpers import (
+    check_restart_rejects_different_dt,
+    check_restart_rejects_T_not_after_checkpoint,
+    check_restart_reproduces_continuous_run,
+)
 
 from xfsi_solver.solvers.fsi2_biharmonic_diffmesh_restricted_scaled import solve
 
@@ -47,3 +51,7 @@ def test_fsi2_biharmonic_diffmesh_restricted_scaled_restart_on_different_number_
 
 def test_fsi2_biharmonic_diffmesh_restricted_scaled_restart_rejects_different_dt(output_dirs, tmp_path):
     check_restart_rejects_different_dt(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", output_dirs, tmp_path)
+
+
+def test_fsi2_biharmonic_diffmesh_restricted_scaled_restart_rejects_T_not_after_checkpoint(output_dirs, tmp_path):
+    check_restart_rejects_T_not_after_checkpoint(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", output_dirs, tmp_path)

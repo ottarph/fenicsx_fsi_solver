@@ -410,6 +410,11 @@ def solve(
         checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)])
     if restart:
         t, step = checkpointer.read([u, v, p, z], dt_val)
+        if step >= num_steps:
+            raise ValueError(
+                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
+                f"up to {T = } ({num_steps = })"
+            )
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
         if comm.rank == 0:
