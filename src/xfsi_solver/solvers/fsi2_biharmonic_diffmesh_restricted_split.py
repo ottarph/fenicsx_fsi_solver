@@ -584,6 +584,11 @@ def solve(
         opts.prefixPop()
         sub_ksp.setFromOptions()
 
+    # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet rows,
+    # so it is the same matrix in every Newton iteration and time step: factorize it only once.
+    _, ksp_m = pc.getFieldSplitSubKSP()
+    ksp_m.getPC().setReusePreconditioner(True)
+
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
