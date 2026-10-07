@@ -47,9 +47,17 @@ def solve(
     checkpoint_dir=None,
     checkpoint_every=None,
     restart=False,
+    gamma_reassemble=0.2,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
+
+    The approximate Jacobian is only reassembled, and the physical block K_q only
+    refactorized, when the Newton residual norm decreased by less than a factor
+    ``gamma_reassemble`` in the last iteration (Failer & Richter, J. Sci. Comput. 82:28,
+    2020, Sec. 5.3), and is otherwise reused, also across time steps. With
+    ``gamma_reassemble=0``, it is reassembled in every Newton iteration except the
+    first of each time step.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -524,10 +532,24 @@ def solve(
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_full)
         post_jacobian(x, J)
 
+    # State of the Jacobian reuse in wrapped_jacobian_approximate. previous_norm is the
+    # residual norm at the previous Newton iterate of the current time step.
+    jacobian_state = {"assembled": False, "previous_norm": None, "num_assemblies": 0}
+
     def wrapped_jacobian_approximate(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
+        norm = snes.getFunctionNorm()  # residual norm at the current iterate x
+        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
+        jacobian_state["previous_norm"] = norm
+        # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
+        # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
+        # PCSetUp, so the fieldsplit submatrices and the factorization of K_q are reused too.
+        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+            return
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_approximate)
         post_jacobian(x, J)
+        jacobian_state["assembled"] = True
+        jacobian_state["num_assemblies"] += 1
 
     def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
         pre_residual(x, b)  # x is not yet assigned to u here
@@ -600,6 +622,7 @@ def solve(
     mesh.comm.barrier()
 
     first_step = step
+    num_newton_iterations = 0
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
@@ -613,6 +636,7 @@ def solve(
             print(f"\n{t = :.3f}")
 
         problem.solve()
+        num_newton_iterations += solver.getIterationNumber()
         check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
 
         if comm.rank == 0:
@@ -629,6 +653,18 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        print(
+            "\nSolver setup:\n"
+            "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
+            "    docs/restricted-iterative-solver.md)\n"
+            "  Linear solve: multiplicative fieldsplit over q = (u_S, v, p) and m = (z, u_I),\n"
+            "    MUMPS LU on K_q and K_m, with the factorization of K_m reused for the whole run\n"
+            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
+            f"with {gamma_reassemble = }\n"
+            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
+            f"over {step - first_step} time steps"
+            "\n"
+        )
 
     writer.close()
     writer_p.close()
@@ -639,6 +675,10 @@ def solve(
     # current state, with the dofs reordered block by block (the global numbering is
     # [u, v, p, z] per rank).
     dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
+
+    # gather_jacobian assembles into new matrices, so make wrapped_jacobian_approximate
+    # assemble instead of reusing J_mat.
+    jacobian_state["assembled"] = False
 
     def gather_dofs(dofs):
         """Global dofs of all ranks on rank 0, in rank order."""
