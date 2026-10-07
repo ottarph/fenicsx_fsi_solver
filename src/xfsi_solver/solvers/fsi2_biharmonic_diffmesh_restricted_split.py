@@ -721,7 +721,7 @@ def solve(
         gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
         return [np.concatenate(a) for a in gathered] if comm.rank == 0 else (None, None, None)
 
-    rows, cols, vals = gather_jacobian(wrapped_jacobian_full)
+    rows_full, cols_full, vals_full = gather_jacobian(wrapped_jacobian_full)
     rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
 
     def plot_blocks(J, blocks, names, title, label):
@@ -775,7 +775,7 @@ def solve(
         import scipy.sparse
 
         n = J_mat.getSize()[0]
-        J_full = scipy.sparse.coo_matrix((vals, (rows, cols)), shape=(n, n))
+        J_full = scipy.sparse.coo_matrix((vals_full, (rows_full, cols_full)), shape=(n, n))
 
         names_eq1 = ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"]
         blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_z, dofs_u_I]
@@ -809,13 +809,14 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=16.0,
+        T=16.5,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr_split_approx.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr_split_approx.bp",
         qoi_path="output/qoi/fsi2_biharm_qoi_restr_split_approx.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr",
+        checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr_split_approx",
         checkpoint_every=None,
+        gamma_reassemble=0.2,  # Default 0.2.
         restart=args.restart,
     )
 
