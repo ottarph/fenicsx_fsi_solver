@@ -372,33 +372,7 @@ def solve(
 
     jacobian_approximate_base = dolfinx.fem.form(jacobian_approximate_base_ufl, entity_maps=entity_maps)
 
-    max_iter = 20
-    atol = 1.0e-7
-    rtol = 1.0e-12
-
-    problem = dolfinx.fem.petsc.NonlinearProblem(
-        residual_base_ufl,
-        [u, v, p, z],
-        J=jacobian_approximate_base_ufl,
-        bcs=bcs,
-        petsc_options_prefix="fsi2_biharmonic_diffmesh_restr_split_",
-        entity_maps=entity_maps,
-        petsc_options={
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 80,
-            "mat_mumps_cntl_1": 1e-4,
-            "snes_linesearch_type": "none",
-            "snes_max_it": max_iter,
-            "snes_atol": atol,
-            "snes_rtol": rtol,
-            "snes_error_if_not_converged": False,
-            "ksp_error_if_not_converged": False,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharm_restr_split_snes_log.txt",
-            "snes_monitor": None,
-        },
-    )
+    # Set up output, checkpointing, and qoi tracking.
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path
 
@@ -452,6 +426,32 @@ def solve(
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
         append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
+
+    problem = dolfinx.fem.petsc.NonlinearProblem(
+        residual_base_ufl,
+        [u, v, p, z],
+        J=jacobian_approximate_base_ufl,
+        bcs=bcs,
+        petsc_options_prefix="solver_",
+        entity_maps=entity_maps,
+        petsc_options={
+            # SNES options
+            "snes_linesearch_type": "none",
+            "snes_max_it": 20,
+            "snes_atol": 1.0e-7,
+            "snes_rtol": 1.0e-12,
+            # KSP options
+            "ksp_type": "preonly",
+            "pc_type": "fieldsplit",
+            "pc_fieldsplit_type": "multiplicative",
+            # Turn off errors, catch manually instead.
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
+            # Print to console.
+            "snes_monitor": None,
+            # "snes_monitor": "ascii:output/logs/fsi2_biharm_restr_split_snes_log.txt",
+        },
+    )
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
@@ -537,6 +537,54 @@ def solve(
     solver.setJacobian(wrapped_jacobian_approximate, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
+    # Helper function to retrieve the dofs that are supported on solid cells. Don't know
+    # what is the most appropriate location of this function for legibility.
+    def solid_supported(space, num_dofs):
+        """Mask of the owned unrolled dofs of space that are supported on solid cells."""
+        bs = space.dofmap.index_map_bs
+        dofs = dolfinx.fem.locate_dofs_topological(space, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
+        return np.isin(np.arange(num_dofs), (bs * dofs[:, None] + np.arange(bs)).ravel())
+
+    first_row = J_mat.getOwnershipRange()[0]
+    offsets_owned, _ = problem.b.getAttr("_blocks")
+
+    def owned_rows(k):
+        """Global rows of the owned dofs of block k in [u, v, p, z]."""
+        return first_row + np.arange(offsets_owned[k], offsets_owned[k + 1])
+
+    rows_u, rows_v, rows_p, rows_z = (owned_rows(k) for k in range(4))
+    u_solid = solid_supported(U, len(rows_u))  # mask over owned unrolled u dofs
+    rows_q = np.concatenate([rows_u[u_solid], rows_v, rows_p])
+    rows_m = np.concatenate([rows_z, rows_u[~u_solid]])
+
+    if not len(rows_q) + len(rows_m) == J_mat.getLocalSize()[0]:
+        raise RuntimeError()
+
+    def make_is(rows):
+        return PETSc.IS().createGeneral(np.sort(rows).astype(PETSc.IntType), comm=comm)
+
+    is_q, is_m = make_is(rows_q), make_is(rows_m)
+
+    pc = solver.getKSP().getPC()
+    pc.setFieldSplitIS(("q", is_q), ("m", is_m))
+
+    direct_solve_options = {
+        "ksp_type": "preonly",
+        "pc_type": "lu",
+        "pc_factor_mat_solver_type": "mumps",
+        "mat_mumps_icntl_14": 80,
+        "mat_mumps_cntl_1": 1e-4,
+    }
+
+    opts = PETSc.Options()
+    for sub_ksp in pc.getFieldSplitSubKSP():
+        opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_ / <prefix>fieldsplit_m_
+        for key, value in direct_solve_options.items():
+            opts[key] = value
+        opts.prefixPop()
+        sub_ksp.setFromOptions()
+
+    # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
     if not restart:
@@ -586,7 +634,28 @@ def solve(
     # current state, with the dofs reordered block by block (the global numbering is
     # [u, v, p, z] per rank).
     dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
+
+    def gather_dofs(dofs):
+        """Global dofs of all ranks on rank 0, in rank order."""
+        dofs = comm.gather(dofs, root=0)
+        return np.concatenate(dofs) if comm.rank == 0 else None
+
+    # Owned global dofs of the storage blocks [u, v, p, z]. As in eq. (1) of
+    # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
+    # u_S (including the interface) and the remaining fluid-interior dofs u_I.
     row_start = J_mat.getOwnershipRange()[0]
+    u_dofs, v_dofs, p_dofs, z_dofs = (
+        row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
+    )
+    u_solid = solid_supported(U, len(u_dofs))
+    dofs_u_S = gather_dofs(u_dofs[u_solid])
+    dofs_u_I = gather_dofs(u_dofs[~u_solid])
+    dofs_u = gather_dofs(u_dofs)
+    dofs_v = gather_dofs(v_dofs)
+    dofs_p = gather_dofs(p_dofs)
+    dofs_z = gather_dofs(z_dofs)
+
+    # Make spy plots and block norm plots with the different partitionings.
 
     def gather_jacobian(assemble_jacobian):
         """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
@@ -609,31 +678,6 @@ def solve(
 
     rows, cols, vals = gather_jacobian(wrapped_jacobian_full)
     rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
-
-    def solid_supported(space, num_dofs):
-        """Mask of the owned unrolled dofs of space that are supported on solid cells."""
-        bs = space.dofmap.index_map_bs
-        dofs = dolfinx.fem.locate_dofs_topological(space, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
-        return np.isin(np.arange(num_dofs), (bs * dofs[:, None] + np.arange(bs)).ravel())
-
-    def gather_dofs(dofs):
-        """Global dofs of all ranks on rank 0, in rank order."""
-        dofs = comm.gather(dofs, root=0)
-        return np.concatenate(dofs) if comm.rank == 0 else None
-
-    # Owned global dofs of the storage blocks [u, v, p, z]. As in eq. (1) of
-    # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
-    # u_S (including the interface) and the remaining fluid-interior dofs u_I.
-    u_dofs, v_dofs, p_dofs, z_dofs = (
-        row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
-    )
-    u_solid = solid_supported(U, len(u_dofs))
-    dofs_u_S = gather_dofs(u_dofs[u_solid])
-    dofs_u_I = gather_dofs(u_dofs[~u_solid])
-    dofs_u = gather_dofs(u_dofs)
-    dofs_v = gather_dofs(v_dofs)
-    dofs_p = gather_dofs(p_dofs)
-    dofs_z = gather_dofs(z_dofs)
 
     def plot_blocks(J, blocks, names, title, label):
         """Save spy_{label}.png and block_norms_{label}.png of the scipy sparse matrix J,
@@ -720,7 +764,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=15.5 + 5 * 0.0025,
+        T=16.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_dm_restr_split_approx.bp",
         output_path_p="output/pv/fsi2_biharm_p_dm_restr_split_approx.bp",
