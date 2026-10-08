@@ -49,6 +49,7 @@ def solve(
     restart=False,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
+    block_preconditioned_k_c_solve=False,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
@@ -70,7 +71,10 @@ def solve(
     GMRES with GAMG on the velocity block A, with the rigid body modes as near-nullspace
     and SOR smoothing, and GMRES on the pressure Schur complement S = -B A^{-1} G,
     preconditioned by BoomerAMG on its approximation -B diag(A)^{-1} G. A is solved to a
-    tighter tolerance than S, since every application of S solves with A.
+    tighter tolerance than S, since every application of S solves with A. With
+    ``block_preconditioned_k_c_solve=True``, K_c is instead solved by FGMRES, preconditioned
+    by the block upper triangular factor of the Schur factorization, with one GAMG V-cycle
+    for A^{-1} and one BoomerAMG V-cycle on -B diag(A)^{-1} G for S^{-1}.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -650,39 +654,57 @@ def solve(
 
     else:
         velocity_pressure_solve_options = {
-            "ksp_type": "preonly",
             "pc_type": "fieldsplit",
             "pc_fieldsplit_type": "schur",
-            "pc_fieldsplit_schur_fact_type": "full",
-            # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so solve
-            # it with gmres, preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure
-            # term gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is
-            # a divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since
-            # the inertia term rho_f / dt dominates diag(A) at small time steps.
+            # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it is
+            # preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term gives
+            # G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a divergence
+            # of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the inertia term
+            # rho_f / dt dominates diag(A) at small time steps.
             "pc_fieldsplit_schur_precondition": "selfp",
-            "fieldsplit_v_ksp_type": "gmres",
-            "fieldsplit_v_ksp_rtol": 1e-7,
-            "fieldsplit_v_ksp_max_it": 100,
-            "fieldsplit_v_ksp_error_if_not_converged": True,
-            # Use gmres with GAMG on v. Need to attach near-null space and set vector structure.
+            # GAMG on v, with the near-nullspace and block size attached to is_v.
             "fieldsplit_v_pc_type": "gamg",
             "fieldsplit_v_pc_gamg_threshold": 0.01,
             "fieldsplit_v_pc_gamg_reuse_interpolation": True,
-            # "fieldsplit_v_mg_levels_ksp_type": "chebyshev",
-            # "fieldsplit_v_mg_levels_pc_type": "jacobi",
+            # Chebyshev smoothing stalls on the nonsymmetric A.
             "fieldsplit_v_mg_levels_ksp_type": "richardson",
             "fieldsplit_v_mg_levels_pc_type": "sor",
-            "fieldsplit_v_ksp_converged_reason": None,
-            # Use gmres on p with \hat S. Each gmres iteration also applies A^{-1} using the solver for v.
-            "fieldsplit_p_ksp_type": "gmres",
-            "fieldsplit_p_ksp_rtol": 1e-5,
-            "fieldsplit_p_ksp_max_it": 100,
-            "fieldsplit_p_ksp_error_if_not_converged": True,
-            # Use a gmres with hypre on p.
+            # BoomerAMG on \hat S.
             "fieldsplit_p_pc_type": "hypre",
             "fieldsplit_p_pc_hypre_type": "boomeramg",
-            "fieldsplit_p_ksp_converged_reason": None,
         }
+        if block_preconditioned_k_c_solve:
+            # FGMRES on K_c, preconditioned by the block upper triangular [[A, G], [0, S]], with one GAMG
+            # V-cycle for A^{-1} and one BoomerAMG V-cycle on \hat S for S^{-1}. Each iteration costs two
+            # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
+            # FGMRES matters. A sub-KSP that does not converge does not fail the fieldsplit, so it fails here.
+            velocity_pressure_solve_options |= {
+                "ksp_type": "fgmres",
+                "ksp_rtol": 1e-5,
+                "ksp_max_it": 200,
+                "ksp_error_if_not_converged": True,
+                # "ksp_converged_reason": None,
+                "pc_fieldsplit_schur_fact_type": "upper",
+                "fieldsplit_v_ksp_type": "preonly",
+                "fieldsplit_p_ksp_type": "preonly",
+            }
+        else:
+            # Full Schur complement factorization, applied once: A is solved by GMRES in each application of
+            # S, so it is solved to a tighter tolerance than S, which is solved by GMRES.
+            velocity_pressure_solve_options |= {
+                "ksp_type": "preonly",
+                "pc_fieldsplit_schur_fact_type": "full",
+                "fieldsplit_v_ksp_type": "gmres",
+                "fieldsplit_v_ksp_rtol": 1e-7,
+                "fieldsplit_v_ksp_max_it": 100,
+                "fieldsplit_v_ksp_error_if_not_converged": True,
+                # "fieldsplit_v_ksp_converged_reason": None,
+                "fieldsplit_p_ksp_type": "gmres",
+                "fieldsplit_p_ksp_rtol": 1e-5,
+                "fieldsplit_p_ksp_max_it": 100,
+                "fieldsplit_p_ksp_error_if_not_converged": True,
+                # "fieldsplit_p_ksp_converged_reason": None,
+            }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
     # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
@@ -771,6 +793,13 @@ def solve(
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
+        elif block_preconditioned_k_c_solve:
+            k_c_rtol = velocity_pressure_solve_options["ksp_rtol"]
+            k_c_solve_description = (
+                f"FGMRES (rtol {k_c_rtol:g}), preconditioned by the block upper triangular Schur factor,\n"
+                "    one GAMG V-cycle on A (rigid body modes as near-nullspace), one BoomerAMG V-cycle\n"
+                "    on -B diag(A)^{-1} G (selfp)\n"
+            )
         else:
             v_rtol = velocity_pressure_solve_options["fieldsplit_v_ksp_rtol"]
             p_rtol = velocity_pressure_solve_options["fieldsplit_p_ksp_rtol"]
@@ -953,6 +982,7 @@ def main():
         checkpoint_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=False,
+        block_preconditioned_k_c_solve=True,
         restart=args.restart,
     )
 
