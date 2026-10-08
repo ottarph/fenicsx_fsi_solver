@@ -601,6 +601,10 @@ def solve(
     def make_is(rows):
         return PETSc.IS().createGeneral(np.sort(rows).astype(PETSc.IntType), comm=comm)
 
+    start = comm.exscan(len(rows_q_c)) or 0  # first row of this rank in the q_c submatrix
+    is_v = make_is(start + np.arange(len(rows_v)))
+    is_p = make_is(start + len(rows_v) + np.arange(len(rows_p)))
+
     # The multiplicative fieldsplit solves the splits in the order they are set here,
     # independent of the storage order [u | v | p | z]: first K_c for (v, p), then A_S for
     # u_S with the right-hand side updated by C delta v, then K_m for (z, u_I) with the
@@ -608,12 +612,37 @@ def solve(
     pc = solver.getKSP().getPC()
     pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
 
-    velocity_pressure_solve_options = {
-        "ksp_type": "preonly",
-        "pc_type": "lu",
-        "pc_factor_mat_solver_type": "mumps",
-        "mat_mumps_cntl_1": 1e-4,
-    }
+    DIRECT_K_C = False
+
+    if DIRECT_K_C:
+        velocity_pressure_solve_options = {
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_cntl_1": 1e-4,
+        }
+
+    else:
+        velocity_pressure_solve_options = {
+            "ksp_type": "preonly",
+            "pc_type": "fieldsplit",
+            "pc_fieldsplit_type": "schur",
+            "pc_fieldsplit_schur_fact_type": "full",
+            # Since the pressure schur complement, S = -B A^{-1} G, is dense, use gmres with the sparse matrix
+            # \hat S = - B diag(A)^{-1} G. B is a divergence and G is close to B^T, a gradient, so this is close
+            # to a laplacian.
+            "pc_fieldsplit_schur_precondition": "selfp",
+            # Use a direct solver on v.
+            "fieldsplit_v_ksp_type": "preonly",
+            "fieldsplit_v_pc_type": "lu",
+            "fieldsplit_v_pc_factor_mat_solver_type": "mumps",
+            # Use gmres on p.
+            "fieldsplit_p_ksp_type": "gmres",
+            "fieldsplit_p_ksp_rtol": 1e-10,
+            # Use a mumps LU-factorization on the preconditioner.
+            "fieldsplit_p_pc_type": "lu",
+            "fieldsplit_p_pc_factor_mat_solver_type": "mumps",
+        }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
     # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
@@ -649,6 +678,10 @@ def solve(
             opts[key] = value
         opts.prefixPop()
         sub_ksp.setFromOptions()
+
+    if not DIRECT_K_C:
+        ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
+        ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
