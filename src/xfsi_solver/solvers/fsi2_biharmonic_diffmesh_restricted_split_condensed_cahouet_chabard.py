@@ -49,6 +49,7 @@ def solve(
     restart=False,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
+    iterative_cahouet_chabard=False,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
@@ -69,10 +70,14 @@ def solve(
     LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
     MUMPS LU on the velocity block A, and GMRES on the pressure Schur complement
     S = -B A^{-1} G, preconditioned by a Cahouet-Chabard PCSHELL,
-    S^{-1} ~ rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1}, with MUMPS LU on the
-    pressure Laplacian L_p (p = 0 on the outflow) and the pressure mass matrix M_p, both on
-    the reference fluid mesh. This is a reference implementation: on the FSI2 benchmark it
-    needs more GMRES iterations than the selfp approximation -B diag(A)^{-1} G.
+    S^{-1} ~ rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1}, with the pressure
+    Laplacian L_p (p = 0 on the outflow) and the pressure mass matrix M_p, both on the
+    reference fluid mesh. With ``iterative_cahouet_chabard=False``, L_p and M_p are solved
+    with MUMPS LU. Otherwise, L_p^{-1} is approximated by one BoomerAMG V-cycle and M_p^{-1}
+    by Jacobi, diag(M_p)^{-1}, which are much cheaper than MUMPS solves on blocks this small.
+    Both keep the preconditioner a fixed linear operator, so GMRES on S stays valid. This is
+    a reference implementation: on the FSI2 benchmark, Cahouet-Chabard needs more GMRES
+    iterations than the selfp approximation -B diag(A)^{-1} G.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -693,7 +698,7 @@ def solve(
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
     class Pressure_Mass:
-        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps):
+        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps, petsc_options):
             trial_p = ufl.TrialFunction(P_space)
             test_p = ufl.TestFunction(P_space)
 
@@ -705,25 +710,21 @@ def solve(
                 lin,
                 bcs=[],
                 petsc_options_prefix="pressure_mass_",
-                petsc_options={
-                    "ksp_type": "preonly",
-                    "pc_type": "lu",
-                    "pc_factor_mat_solver_type": "mumps",
-                    "mat_mumps_cntl_1": 1e-4,
-                },
+                petsc_options=petsc_options,
                 entity_maps=entity_maps,
             )
+            # Assembles the matrix and sets up the preconditioner, once for the whole run.
             self._solver.solve()
             self.ksp = self._solver.solver
 
         def destroy(self):
-            """Destroy the PETSc objects of the LinearProblem. Destroying the MUMPS factorization is
-            collective, so call this on all ranks at the same point."""
+            """Destroy the PETSc objects of the LinearProblem. Destroying a MUMPS factorization or
+            an AMG hierarchy is collective, so call this on all ranks at the same point."""
             for obj in (self._solver.solver, self._solver.A, self._solver.b, self._solver.x):
                 obj.destroy()
 
     class Pressure_Stiffness:
-        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps):
+        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps, petsc_options):
             trial_p = ufl.TrialFunction(P_space)
             test_p = ufl.TestFunction(P_space)
 
@@ -751,20 +752,16 @@ def solve(
                 lin,
                 bcs=[bc],
                 petsc_options_prefix="pressure_stiffness_",
-                petsc_options={
-                    "ksp_type": "preonly",
-                    "pc_type": "lu",
-                    "pc_factor_mat_solver_type": "mumps",
-                    "mat_mumps_cntl_1": 1e-4,
-                },
+                petsc_options=petsc_options,
                 entity_maps=entity_maps,
             )
+            # Assembles the matrix and sets up the preconditioner, once for the whole run.
             self._solver.solve()
             self.ksp = self._solver.solver
 
         def destroy(self):
-            """Destroy the PETSc objects of the LinearProblem. Destroying the MUMPS factorization is
-            collective, so call this on all ranks at the same point."""
+            """Destroy the PETSc objects of the LinearProblem. Destroying a MUMPS factorization or
+            an AMG hierarchy is collective, so call this on all ranks at the same point."""
             for obj in (self._solver.solver, self._solver.A, self._solver.b, self._solver.x):
                 obj.destroy()
 
@@ -795,10 +792,26 @@ def solve(
 
     if not direct_k_c_solve:
         # The pressure operators are assembled on the reference fluid mesh, so they, and their
-        # factorizations, are constant for the whole run.
-        dx_fluid_mesh = ufl.Measure("dx", domain=fluid_mesh)
-        pressure_mass = Pressure_Mass(P, dx_fluid_mesh, entity_maps=None)
-        pressure_stiffness = Pressure_Stiffness(P, dx_fluid_mesh, entity_maps=None)
+        # factorizations or preconditioners, are constant for the whole run.
+        if iterative_cahouet_chabard:
+            # Only spectral equivalence is needed in a preconditioner. Jacobi on the P1 mass matrix
+            # is well conditioned, and one AMG V-cycle approximates the Laplacian. Both with preonly,
+            # so the preconditioner is a fixed linear operator.
+            pressure_mass_options = {"ksp_type": "preonly", "pc_type": "jacobi"}
+            pressure_stiffness_options = {"ksp_type": "preonly", "pc_type": "hypre", "pc_hypre_type": "boomeramg"}
+        else:
+            direct_solve = {
+                "ksp_type": "preonly",
+                "pc_type": "lu",
+                "pc_factor_mat_solver_type": "mumps",
+                "mat_mumps_cntl_1": 1e-4,
+            }
+            pressure_mass_options = direct_solve
+            pressure_stiffness_options = direct_solve
+        pressure_mass = Pressure_Mass(P, dx_fluid, entity_maps=entity_maps, petsc_options=pressure_mass_options)
+        pressure_stiffness = Pressure_Stiffness(
+            P, dx_fluid, entity_maps=entity_maps, petsc_options=pressure_stiffness_options
+        )
         # The velocity block is A ~ rho_f / dt * M + theta * rho_f * nu_f * K: the inertia term,
         # and the viscous term, which enters the residual with the factor theta.
         cahouet_chabard = Cahouet_Chabard(
@@ -871,10 +884,15 @@ def solve(
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
         else:
+            if iterative_cahouet_chabard:
+                pressure_solves = "one BoomerAMG V-cycle on L_p, Jacobi on M_p"
+            else:
+                pressure_solves = "MUMPS LU on L_p and M_p"
             k_c_solve_description = (
                 "full Schur complement factorization over v and p, MUMPS LU on A,\n"
                 "    GMRES on S preconditioned by Cahouet-Chabard,\n"
-                "    rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1}\n"
+                "    rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1},\n"
+                f"    with {pressure_solves}\n"
             )
         print(
             "\nSolver setup:\n"
@@ -1060,6 +1078,7 @@ def main():
         checkpoint_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=False,
+        iterative_cahouet_chabard=False,
         restart=args.restart,
     )
 
