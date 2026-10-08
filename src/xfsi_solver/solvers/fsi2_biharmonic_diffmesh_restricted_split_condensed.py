@@ -67,8 +67,10 @@ def solve(
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
-    MUMPS LU on the velocity block A, and GMRES on the pressure Schur complement
-    S = -B A^{-1} G, preconditioned by MUMPS LU of its approximation -B diag(A)^{-1} G.
+    GMRES with GAMG on the velocity block A, with the rigid body modes as near-nullspace
+    and SOR smoothing, and GMRES on the pressure Schur complement S = -B A^{-1} G,
+    preconditioned by BoomerAMG on its approximation -B diag(A)^{-1} G. A is solved to a
+    tighter tolerance than S, since every application of S solves with A.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -611,6 +613,26 @@ def solve(
     is_v = make_is(start + np.arange(len(rows_v)))
     is_p = make_is(start + len(rows_v) + np.arange(len(rows_p)))
 
+    # The owned v dofs are stored interleaved per node, (x, y), so A has block size 2, which
+    # BoomerAMG uses for its systems coarsening and GAMG for its aggregates.
+    is_v.setBlockSize(V.dofmap.index_map_bs)
+
+    def rigid_body_modes(space):
+        """Orthonormal rigid body modes of a 2D vector space: two translations and a rotation."""
+        index_map, bs = space.dofmap.index_map, space.dofmap.index_map_bs
+        num_dofs = index_map.size_local + index_map.num_ghosts
+        x = space.tabulate_dof_coordinates()[:num_dofs]
+        basis = [dolfinx.la.vector(index_map, bs=bs, dtype=PETSc.ScalarType) for _ in range(3)]
+        b = [w.array.reshape(-1, bs) for w in basis]
+        b[0][:, 0] = 1.0
+        b[1][:, 1] = 1.0
+        b[2][:, 0], b[2][:, 1] = -x[:, 1], x[:, 0]
+        dolfinx.la.orthonormalize(basis)
+        return PETSc.NullSpace().create(vectors=[dolfinx.la.petsc.create_vector_wrap(w) for w in basis])
+
+    # PCFIELDSPLIT attaches this to the velocity block A when it extracts it.
+    is_v.compose("nearnullspace", rigid_body_modes(V))
+
     # The multiplicative fieldsplit solves the splits in the order they are set here,
     # independent of the storage order [u | v | p | z]: first K_c for (v, p), then A_S for
     # u_S with the right-hand side updated by C delta v, then K_m for (z, u_I) with the
@@ -638,18 +660,28 @@ def solve(
             # a divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since
             # the inertia term rho_f / dt dominates diag(A) at small time steps.
             "pc_fieldsplit_schur_precondition": "selfp",
-            # Use a direct solver on v.
-            "fieldsplit_v_ksp_type": "preonly",
-            "fieldsplit_v_pc_type": "lu",
-            "fieldsplit_v_pc_factor_mat_solver_type": "mumps",
-            "fieldsplit_v_ksp_monitor": None,
-            # Use gmres on p.
+            "fieldsplit_v_ksp_type": "gmres",
+            "fieldsplit_v_ksp_rtol": 1e-7,
+            "fieldsplit_v_ksp_max_it": 100,
+            "fieldsplit_v_ksp_error_if_not_converged": True,
+            # Use gmres with GAMG on v. Need to attach near-null space and set vector structure.
+            "fieldsplit_v_pc_type": "gamg",
+            "fieldsplit_v_pc_gamg_threshold": 0.01,
+            "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+            # "fieldsplit_v_mg_levels_ksp_type": "chebyshev",
+            # "fieldsplit_v_mg_levels_pc_type": "jacobi",
+            "fieldsplit_v_mg_levels_ksp_type": "richardson",
+            "fieldsplit_v_mg_levels_pc_type": "sor",
+            "fieldsplit_v_ksp_converged_reason": None,
+            # Use gmres on p with \hat S. Each gmres iteration also applies A^{-1} using the solver for v.
             "fieldsplit_p_ksp_type": "gmres",
-            "fieldsplit_p_ksp_rtol": 1e-10,
-            # Use a mumps LU-factorization on the preconditioner.
-            "fieldsplit_p_pc_type": "lu",
-            "fieldsplit_p_pc_factor_mat_solver_type": "mumps",
-            # "fieldsplit_p_ksp_monitor": None,
+            "fieldsplit_p_ksp_rtol": 1e-5,
+            "fieldsplit_p_ksp_max_it": 100,
+            "fieldsplit_p_ksp_error_if_not_converged": True,
+            # Use a gmres with hypre on p.
+            "fieldsplit_p_pc_type": "hypre",
+            "fieldsplit_p_pc_hypre_type": "boomeramg",
+            "fieldsplit_p_ksp_converged_reason": None,
         }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
@@ -680,6 +712,10 @@ def solve(
     # sub-KSPs in PCSetUp, which would override types set directly on them.
     split_options = {"q_c": velocity_pressure_solve_options, "u_S": mass_solve_options, "m": mesh_motion_solve_options}
     opts = PETSc.Options()
+    # List the options that were set but never used when PETSc finalizes, which catches misspelled
+    # option names. A global option without a prefix, so not in a petsc_options dict, whose options
+    # dolfinx prefixes and deletes after setting up the solver.
+    opts["options_left"] = None
     for options, sub_ksp in zip(split_options.values(), pc.getFieldSplitSubKSP(), strict=True):
         opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_c_ / _u_S_ / _m_
         for key, value in options.items():
@@ -736,9 +772,12 @@ def solve(
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
         else:
+            v_rtol = velocity_pressure_solve_options["fieldsplit_v_ksp_rtol"]
+            p_rtol = velocity_pressure_solve_options["fieldsplit_p_ksp_rtol"]
             k_c_solve_description = (
-                "full Schur complement factorization over v and p, MUMPS LU on A,\n"
-                "    GMRES on S preconditioned by MUMPS LU of -B diag(A)^{-1} G (selfp)\n"
+                "full Schur complement factorization over v and p,\n"
+                f"    GMRES with GAMG on A (rigid body modes as near-nullspace, rtol {v_rtol:g}),\n"
+                f"    GMRES on S preconditioned by BoomerAMG on -B diag(A)^{{-1}} G (selfp, rtol {p_rtol:g})\n"
             )
         print(
             "\nSolver setup:\n"
