@@ -48,6 +48,7 @@ def solve(
     checkpoint_every=None,
     restart=False,
     gamma_reassemble=0.2,
+    direct_k_c_solve=False,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
@@ -60,9 +61,14 @@ def solve(
     J_0 drops the remaining derivatives of the momentum and continuity equations with
     respect to u, which are the fluid ALE derivatives, and is block lower triangular in
     (v, p), u_S, (z, u_I). Each Newton step is solved by a multiplicative fieldsplit in
-    that order, with MUMPS LU on K_c and K_m, and CG with Jacobi on A_S. A_S (the solid
-    mass) and K_m (the mesh motion) are constant, so their preconditioners are set up
-    once for the whole run.
+    that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
+    K_m (the mesh motion) are constant, so their preconditioners are set up once for the
+    whole run.
+
+    With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
+    LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
+    MUMPS LU on the velocity block A, and GMRES on the pressure Schur complement
+    S = -B A^{-1} G, preconditioned by MUMPS LU of its approximation -B diag(A)^{-1} G.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -612,9 +618,7 @@ def solve(
     pc = solver.getKSP().getPC()
     pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
 
-    DIRECT_K_C = False
-
-    if DIRECT_K_C:
+    if direct_k_c_solve:
         velocity_pressure_solve_options = {
             "ksp_type": "preonly",
             "pc_type": "lu",
@@ -628,20 +632,24 @@ def solve(
             "pc_type": "fieldsplit",
             "pc_fieldsplit_type": "schur",
             "pc_fieldsplit_schur_fact_type": "full",
-            # Since the pressure schur complement, S = -B A^{-1} G, is dense, use gmres with the sparse matrix
-            # \hat S = - B diag(A)^{-1} G. B is a divergence and G is close to B^T, a gradient, so this is close
-            # to a laplacian.
+            # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so solve
+            # it with gmres, preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure
+            # term gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is
+            # a divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since
+            # the inertia term rho_f / dt dominates diag(A) at small time steps.
             "pc_fieldsplit_schur_precondition": "selfp",
             # Use a direct solver on v.
             "fieldsplit_v_ksp_type": "preonly",
             "fieldsplit_v_pc_type": "lu",
             "fieldsplit_v_pc_factor_mat_solver_type": "mumps",
+            "fieldsplit_v_ksp_monitor": None,
             # Use gmres on p.
             "fieldsplit_p_ksp_type": "gmres",
             "fieldsplit_p_ksp_rtol": 1e-10,
             # Use a mumps LU-factorization on the preconditioner.
             "fieldsplit_p_pc_type": "lu",
             "fieldsplit_p_pc_factor_mat_solver_type": "mumps",
+            # "fieldsplit_p_ksp_monitor": None,
         }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
@@ -679,7 +687,7 @@ def solve(
         opts.prefixPop()
         sub_ksp.setFromOptions()
 
-    if not DIRECT_K_C:
+    if not direct_k_c_solve:
         ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
@@ -725,14 +733,22 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if direct_k_c_solve:
+            k_c_solve_description = "MUMPS LU\n"
+        else:
+            k_c_solve_description = (
+                "full Schur complement factorization over v and p, MUMPS LU on A,\n"
+                "    GMRES on S preconditioned by MUMPS LU of -B diag(A)^{-1} G (selfp)\n"
+            )
         print(
             "\nSolver setup:\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
-            "    MUMPS LU on K_c and K_m, CG with Jacobi on A_S, with the factorization of K_m\n"
-            "    reused for the whole run\n"
+            "    MUMPS LU on K_m, CG with Jacobi on A_S, with the factorization of K_m reused\n"
+            "    for the whole run\n"
+            f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
@@ -897,6 +913,7 @@ def main():
         checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr_split_approx",
         checkpoint_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
+        direct_k_c_solve=False,
         restart=args.restart,
     )
 
