@@ -260,13 +260,64 @@ For pressure, an initial unsteady Stokes approximation is
 \[
 \widehat S_p^{-1}\simeq
 \frac{\rho_f}{\Delta t}K_p^{-1}
-+\theta\mu_f M_p^{-1},\qquad \mu_f=\rho_f\nu_f.
++2\theta\mu_f M_p^{-1},\qquad \mu_f=\rho_f\nu_f.
 \tag{14}
 \]
 
-Here \(M_p\) and \(K_p\) are auxiliary pressure mass and Laplace operators on the fluid geometry. Equation (14) is a sum of inverse actions, not the inverse of a sum. Their boundary conditions, nullspaces and geometric weights must match the intended pressure approximation. This starting choice omits some convection and structural-response effects; establish its effectiveness by comparison with an accurate pressure Schur solve. A pressure convection-diffusion approximation is a possible later refinement.
+Here \(M_p\) and \(K_p\) are auxiliary pressure mass and Laplace operators on the fluid geometry. Equation (14) is a Cahouet–Chabard-type approximation: a sum of inverse actions, not the inverse of a sum. The factor two corresponds to the implemented symmetric-gradient viscous stress; a vector-Laplacian viscous operator gives the coefficient \(\theta\mu_f\) instead. Their boundary conditions, nullspaces and geometric weights must match the intended pressure approximation. This starting choice omits some convection and structural-response effects; establish its effectiveness by comparison with an accurate pressure Schur solve. A pressure convection-diffusion approximation is a possible later refinement.
 
 FGMRES accommodates varying accuracy in preconditioner applications. Keep inverse approximations used inside a Schur matrix-vector product fixed and linear: flexibility of the outer preconditioner does not justify changing the linear operator being solved.
+
+**An auxiliary velocity operator for AMG.**
+
+Write \(A=H_c\) for the actual condensed velocity Jacobian in (6). It contains fluid transport and the current nonlinear solid tangent. Transport makes it nonsymmetric, and the solid tangent need not be positive definite. Building AMG directly from \(A\) is possible, but these properties complicate both smoothing and coarse-grid correction.
+
+Introduce a second matrix \(A_0\), used only to construct the velocity preconditioner. It retains inertia in both materials, fluid viscosity on the current ALE geometry, and a reference linear-elastic solid stiffness. It drops fluid transport and replaces the deformed solid tangent by its undeformed, stress-free approximation. This is an additional preconditioning approximation, separate from omitting fluid ALE derivatives in \(J_0\).
+
+For velocity trial \(w\) and test \(\phi\), assemble \(A_0\) from
+
+\[
+\begin{aligned}
+a_0(w,\phi)={}&
+\frac{\rho_f}{\Delta t}(J_{\mathrm{mid}}w,\phi)_f
++\frac{\rho_s}{\Delta t}(w,\phi)_s\\
+&+2\theta\mu_f
+  (J_f\varepsilon_F(w),\varepsilon_F(\phi))_f\\
+&+\theta^2\Delta t\left[
+  2\mu_s(\varepsilon(w),\varepsilon(\phi))_s
+  +\lambda_s(\operatorname{div}w,\operatorname{div}\phi)_s
+\right],
+\end{aligned}
+\]
+
+where \(F_f=I+\nabla u\), \(J_f=\det F_f\), \(J_{\mathrm{mid}}=(J_f+J_f^{old})/2\), \(\varepsilon_F(w)=\operatorname{sym}(\nabla w F_f^{-1})\), and \(\varepsilon(w)=\operatorname{sym}(\nabla w)\). Inner products are over the reference fluid or solid region. The factor \(\theta^2\Delta t\) comes from the same displacement condensation as (7); it must remain in the auxiliary stiffness.
+
+With valid fluid geometry, positive material coefficients and symmetric treatment of essential conditions, \(A_0\) is symmetric positive definite. It uses the same global velocity space as \(A\), including shared interface coefficients. Thus it preserves the fluid-solid coupling and the contrast in material stiffness. There is no separate fluid velocity solve and solid velocity solve, and no need to introduce pressure in the solid.
+
+The actual reduced equations remain
+
+\[
+K_c\begin{pmatrix}\delta v\\\delta p\end{pmatrix}
+=\begin{pmatrix}b_v\\r_p\end{pmatrix},
+\qquad K_c=\begin{pmatrix}A&G\\B&0\end{pmatrix}.
+\]
+
+Let \(\mathcal V_0\) denote one AMG cycle built from \(A_0\), and \(\mathcal Q\) an approximate pressure Schur inverse. An upper triangular preconditioner for FGMRES on \(K_c\) acts on a residual \((s_v,s_p)\) as follows:
+
+1. Compute the pressure correction \(y_p=\mathcal Q s_p\).
+2. Update the velocity right-hand side to \(s_v-Gy_p\).
+3. Compute \(y_v=\mathcal V_0(s_v-Gy_p)\).
+4. Return \((y_v,y_p)\) to FGMRES, which evaluates the resulting correction using the actual \(K_c\).
+
+One AMG cycle need not solve either velocity system accurately. Its purpose is to provide a useful correction; FGMRES resolves the difference between the auxiliary operator and the actual one. Keep the existing pressure approximation initially so that a comparison isolates the effect of changing the velocity preconditioner. Cahouet–Chabard approximates the pressure inverse, while \(A_0\) supplies the velocity hierarchy; they serve different roles.
+
+In PETSc terminology, the velocity subsolver should receive \(A\) as its **operator matrix** and \(A_0\) as its **preconditioning matrix**. A separate preconditioning form can carry \(A_0\) through the nested fieldsplits while retaining the other blocks. Both split levels must preserve the actual subproblem operators: the physical solver must still act on \(K_c\), and the velocity solver must still receive \(A\). Apply the interface row restriction and solid kinematic post-assembly to both global matrices. This distinction must survive every matrix rebuild, rather than being assigned once and overwritten during fieldsplit setup. PETSc documents the [operator/preconditioning matrix distinction](https://petsc.org/release/manualpages/KSP/KSPSetOperators/) and [diagonal block extraction](https://petsc.org/release/manualpages/PC/PCFieldSplitSetDiagUseAmat/).
+
+Build the AMG hierarchy from \(A_0\), retaining the vector block structure and supplying translations and rotation as near-nullspace candidates. They describe important local motions, not an exact nullspace of the mass-containing, constrained matrix. A natural first smoother is a fixed small number of Chebyshev steps with Jacobi preconditioning on each level. The SPD auxiliary operator gives this combination its intended mathematical setting. Richardson with SOR is an alternative when using the nonsymmetric \(A\) directly, but it is not the only possible nonsymmetric smoother. See [PETSc's Chebyshev requirements](https://petsc.org/release/manualpages/KSP/KSPCHEBYSHEV/).
+
+The expected gain is a simpler AMG problem, with predictable positive energy and a polynomial smoother suited to parallel execution. The cost is an extra matrix and its assembly, and a potentially weaker approximation when convection or large solid deformation is important. Symmetry alone does not guarantee faster convergence or robustness to the fluid-solid coefficient contrast.
+
+Initially rebuild \(A_0\) whenever \(A\) is rebuilt. Its reference solid terms are constant for a fixed timestep, but its fluid geometry factors change. Reusing interpolation may save work while still updating the coarse operators; permanently freezing the entire hierarchy is a separate approximation. Verify the assembled symmetry and the matrices seen by the nested solvers, then compare true \(K_c\) residuals, iteration counts and total time during developed motion. Only \(A_0\) is SPD: retain FGMRES for the coupled physical system.
 
 **Solving the mesh block.**
 
