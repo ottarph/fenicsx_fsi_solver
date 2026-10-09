@@ -878,13 +878,13 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=5.0,
+        T=16.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_c0ip.bp",
         output_path_p="output/pv/fsi2_biharm_p_c0ip.bp",
         qoi_path="output/qoi/fsi2_biharm_c0ip.txt",
         checkpoint_dir="output/checkpoints/fsi2_biharm_c0ip",
-        checkpoint_every=100,
+        checkpoint_every=400,
         vtx_write_every=None,
         gamma_reassemble=0.5,  # Default 0.2.
         restart=args.restart,

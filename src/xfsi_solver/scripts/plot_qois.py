@@ -81,6 +81,34 @@ def plot_restricted_comparison(
     _plot_series(series, output_dir, filename_prefix)
 
 
+def plot_c0ip_comparison(
+    biharmonic_path: str | os.PathLike | None = None,
+    c0ip_path: str | os.PathLike | None = None,
+    reference_path: str | os.PathLike | None = None,
+    output_dir: str | os.PathLike = "output/figures",
+    filename_prefix: str = "c0ip_compare_",
+):
+    """Plot drag, lift, and tip displacement over time for the standard
+    biharmonic solver and the C0 interior penalty (C0IP) biharmonic solver,
+    optionally together with the FSI2 reference data. Any of the three inputs
+    may be omitted (``None``). Figures are written with ``filename_prefix``
+    prepended so they don't overwrite those from :func:`plot_qois`.
+    """
+
+    series = []
+
+    if biharmonic_path is not None:
+        series.append(("biharmonic", "k-", np.loadtxt(biharmonic_path)))
+
+    if c0ip_path is not None:
+        series.append(("biharmonic, C0IP", "b--", np.loadtxt(c0ip_path)))
+
+    if reference_path is not None:
+        series.append(("reference", "r:", _load_reference(reference_path)))
+
+    _plot_series(series, output_dir, filename_prefix)
+
+
 def _load_reference(reference_path: str | os.PathLike) -> np.ndarray:
     """Load the FSI2 reference data into the same column layout as the
     solver qoi files: time, drag, lift, tip x- and y-displacement.
@@ -132,6 +160,11 @@ def main():
     plot_restricted_comparison(
         biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
         restricted_path="output/qoi/fsi2_biharm_qoi_restr.txt",
+        reference_path="data/fsi2_reference.txt",
+    )
+    plot_c0ip_comparison(
+        biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
+        c0ip_path="output/qoi/fsi2_biharm_c0ip.txt",
         reference_path="data/fsi2_reference.txt",
     )
 
