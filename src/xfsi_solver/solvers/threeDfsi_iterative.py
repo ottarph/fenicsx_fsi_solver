@@ -890,6 +890,7 @@ def solve(
     # option names. A global option without a prefix, so not in a petsc_options dict, whose options
     # dolfinx prefixes and deletes after setting up the solver.
     opts["options_left"] = None
+    opts["log_view"] = None
     for options, sub_ksp in zip(split_options.values(), pc.getFieldSplitSubKSP(), strict=True):
         opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_c_ / _u_S_ / _m_
         for key, value in options.items():
@@ -947,6 +948,8 @@ def solve(
     if mesh.comm.rank == 0:
         print("", flush=True)
     mesh.comm.barrier()
+
+    PETSc.Log.begin()
 
     first_step = step
     num_newton_iterations = 0
@@ -1057,7 +1060,7 @@ def main():
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
-        block_preconditioned_k_c_solve=False,
+        block_preconditioned_k_c_solve=True,
         auxiliary_vv_preconditioner=False,
         cahouet_chabard_schur_preconditioner=False,
         max_quadrature_degree=8,
