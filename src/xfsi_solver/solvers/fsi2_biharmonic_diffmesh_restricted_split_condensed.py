@@ -723,9 +723,6 @@ def solve(
     else:
         velocity_pressure_solve_options = {
             "pc_type": "fieldsplit",
-            # Run the fieldsplit on the approximated Jacobian instead of the supplied preconditioner.
-            "pc_fieldsplit_diag_use_amat": True,
-            "pc_fieldsplit_off_diag_use_amat": True,
             "pc_fieldsplit_type": "schur",
             # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it is
             # preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term gives
@@ -737,10 +734,6 @@ def solve(
             "fieldsplit_v_pc_type": "gamg",
             "fieldsplit_v_pc_gamg_threshold": 0.01,
             "fieldsplit_v_pc_gamg_reuse_interpolation": True,
-            # User-reported remote test: Richardson/SOR works with A_0, while
-            # Chebyshev/Jacobi does not. The cause has not yet been established.
-            "fieldsplit_v_mg_levels_ksp_type": "richardson",
-            "fieldsplit_v_mg_levels_pc_type": "sor",
             # BoomerAMG on \hat S.
             "fieldsplit_p_pc_type": "hypre",
             "fieldsplit_p_pc_hypre_type": "boomeramg",
@@ -751,28 +744,46 @@ def solve(
             # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
             # FGMRES matters.
             velocity_pressure_solve_options |= {
+                "ksp_converged_reason": None,
                 "ksp_type": "fgmres",
                 "ksp_rtol": 1e-5,
                 "ksp_max_it": 200,
-                # "ksp_converged_reason": None,
                 "pc_fieldsplit_schur_fact_type": "upper",
+                # The velocity KSP is preonly, so its operator is only used by the finest GAMG smoother.
+                # Use the SPD auxiliary operator A_0 there too, so that the whole V-cycle approximates
+                # A_0^{-1}, which Chebyshev with Jacobi requires. FGMRES on K_c still uses the Jacobian.
+                "pc_fieldsplit_diag_use_amat": False,
+                "pc_fieldsplit_off_diag_use_amat": True,
                 "fieldsplit_v_ksp_type": "preonly",
+                "fieldsplit_v_mg_levels_ksp_type": "chebyshev",
+                "fieldsplit_v_mg_levels_pc_type": "jacobi",
+                # "fieldsplit_v_ksp_converged_reason": None,
                 "fieldsplit_p_ksp_type": "preonly",
+                # "fieldsplit_p_ksp_converged_reason": None,
             }
         else:
             # Full Schur complement factorization, applied once: A is solved by GMRES in each application of
             # S, so it is solved to a tighter tolerance than S, which is solved by GMRES.
             velocity_pressure_solve_options |= {
+                "ksp_converged_reason": None,
                 "ksp_type": "preonly",
                 "pc_fieldsplit_schur_fact_type": "full",
+                # The velocity GMRES solves with its operator inside every application of S, so the
+                # operator must be the Jacobian block A. A_0 remains the preconditioning matrix, from
+                # which GAMG builds its hierarchy. The finest smoother then iterates with the
+                # nonsymmetric A, which Richardson with SOR tolerates and Chebyshev does not.
+                "pc_fieldsplit_diag_use_amat": True,
+                "pc_fieldsplit_off_diag_use_amat": True,
                 "fieldsplit_v_ksp_type": "gmres",
                 "fieldsplit_v_ksp_rtol": 1e-7,
                 "fieldsplit_v_ksp_max_it": 100,
-                # "fieldsplit_v_ksp_converged_reason": None,
+                "fieldsplit_v_mg_levels_ksp_type": "richardson",
+                "fieldsplit_v_mg_levels_pc_type": "sor",
+                "fieldsplit_v_ksp_converged_reason": None,
                 "fieldsplit_p_ksp_type": "gmres",
                 "fieldsplit_p_ksp_rtol": 1e-5,
                 "fieldsplit_p_ksp_max_it": 100,
-                # "fieldsplit_p_ksp_converged_reason": None,
+                "fieldsplit_p_ksp_converged_reason": None,
             }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
