@@ -80,7 +80,9 @@ def solve(
     (v, p), u_S, (z, u_I). Each Newton step is solved by a multiplicative fieldsplit in
     that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
-    whole run.
+    whole run. K_m does not couple the x, y and z components, so it is solved by an
+    additive fieldsplit over the components, with one MUMPS factorization each, which
+    leaves out the zero couplings between the components that the blocked matrix stores.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
@@ -740,6 +742,17 @@ def solve(
     def make_is(rows):
         return PETSc.IS().createGeneral(np.sort(rows).astype(PETSc.IntType), comm=comm)
 
+    # Rows of each displacement component in the m submatrix, for solving K_m component by
+    # component. The owned z and u dofs are stored interleaved per node, (x, y, z), so the
+    # component of a dof is its position in its block modulo gdim. The m submatrix holds the
+    # rows of rows_m in sorted order.
+    component_names = ["x", "y", "z"]
+    component_z = np.arange(len(rows_z)) % gdim
+    component_u_I = (np.arange(len(rows_u)) % gdim)[~u_solid]
+    components_m = np.concatenate([component_z, component_u_I])[np.argsort(rows_m)]
+    start_m = comm.exscan(len(rows_m)) or 0  # first row of this rank in the m submatrix
+    is_m_components = [make_is(start_m + np.flatnonzero(components_m == c)) for c in range(gdim)]
+
     start = comm.exscan(len(rows_q_c)) or 0  # first row of this rank in the q_c submatrix
     is_v = make_is(start + np.arange(len(rows_v)))
     is_p = make_is(start + len(rows_v) + np.arange(len(rows_p)))
@@ -889,15 +902,24 @@ def solve(
 
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
     # rows, so it is the same matrix in every Newton iteration and time step: factorize it
-    # only once.
+    # only once. K_m does not couple the x, y and z components, so the additive fieldsplit over
+    # the components solves it exactly, with one MUMPS factorization per component. That leaves
+    # out the zero couplings between the components, which the blocked matrix stores: on the
+    # medium mesh, MUMPS needs 42 GB for K_m as a whole and 7 GB for one component.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
-        "pc_type": "lu",
-        "pc_factor_mat_solver_type": "mumps",
-        "mat_mumps_icntl_14": 80,
-        "mat_mumps_cntl_1": 1e-4,
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
     }
+    for name in component_names:
+        mesh_motion_solve_options |= {
+            f"fieldsplit_{name}_ksp_type": "preonly",
+            f"fieldsplit_{name}_pc_type": "lu",
+            f"fieldsplit_{name}_pc_factor_mat_solver_type": "mumps",
+            f"fieldsplit_{name}_mat_mumps_icntl_14": 80,
+            f"fieldsplit_{name}_mat_mumps_cntl_1": 1e-4,
+        }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
@@ -915,9 +937,10 @@ def solve(
         opts.prefixPop()
         sub_ksp.setFromOptions()
 
+    ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
     if not direct_k_c_solve:
-        ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
+    ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
 
     if cahouet_chabard_schur_preconditioner:
         # The pressure operators are assembled on the reference fluid mesh, so they, and their
@@ -1036,7 +1059,7 @@ def solve(
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
-            "    MUMPS LU on K_m, CG with Jacobi on A_S, with the factorization of K_m reused\n"
+            "    MUMPS LU on each component of K_m, CG with Jacobi on A_S, with the factorizations of K_m reused\n"
             "    for the whole run\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
