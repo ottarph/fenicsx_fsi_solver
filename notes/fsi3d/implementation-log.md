@@ -137,3 +137,25 @@ iteration of a step and 100 to 110 in the second (selfp + BoomerAMG: about 45).
 
 The 2d solver uses the same undamped SOR in its iterative K_c solves, so the
 same partition dependence may appear there.
+
+## Rank scaling of the K_c solves (2026-10-09)
+
+Coarse mesh, 8 steps of dt = 0.004 from t = 0, one Jacobian assembly per run.
+Time per step after the first, which also holds the MUMPS factorization of K_m
+(and of K_c in the direct solve) and the AMG setups:
+
+| ranks | MUMPS LU on K_c | A_0 + selfp/BoomerAMG | A_0 + Cahouet-Chabard |
+|---|---|---|---|
+| 4 | 1.84 s | 2.51 s | 3.68 s |
+| 8 | 1.04 s | 1.44 s | 1.99 s |
+| 16 | 0.64 s | 0.93 s | 1.47 s |
+| 24 | 0.50 s | 0.79 s | 1.33 s |
+| 30 | 0.43 s | 0.73 s | 1.28 s |
+
+First step: 24 s on 4 ranks, 8 to 10 s on 16 to 30 ranks, for all three. FGMRES
+iterations on 30 ranks (Newton 1, 2 of a step): about 23, 45 with selfp and about
+25, 100 with Cahouet-Chabard, which also needed a third Newton iteration in one
+step. The direct K_c solve does not use GAMG, so it does not have the smoother
+problem above. These are the first steps only, with small deformations, on the
+coarse mesh. On finer meshes the cost and memory of the MUMPS factorizations grow
+faster than those of the iterative solves.
