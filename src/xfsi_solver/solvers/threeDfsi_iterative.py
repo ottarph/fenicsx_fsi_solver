@@ -102,7 +102,9 @@ def solve(
     is A_0 as well, smoothed by Chebyshev with Jacobi. In the full Schur solve, the
     velocity GMRES must solve with A, so the finest smoother iterates with the
     nonsymmetric A, and SOR smoothing is used. Without the auxiliary operator, GAMG is
-    built from A with SOR smoothing in both solves.
+    built from A with SOR smoothing in both solves. SOR smoothing is damped by 0.5: in
+    parallel, PETSc's SOR is Gauss-Seidel within each rank and Jacobi between ranks, and
+    undamped it made GAMG diverge for some partitions of the 3d mesh.
 
     The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
     19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
@@ -772,6 +774,17 @@ def solve(
     pc = solver.getKSP().getPC()
     pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
 
+    # GAMG smoothing with SOR. In parallel, PETSc's SOR is Gauss-Seidel within each rank and
+    # Jacobi between ranks, which can diverge where the coupling across a rank boundary is strong,
+    # such as in the thin, stiff beam. Undamped, GAMG diverged on 26 to 30 ranks on the coarse mesh
+    # and on 30 ranks on the medium mesh; damped by 0.5, it converged on all ranks tried (1 to 30)
+    # (notes/fsi3d/implementation-log.md).
+    sor_smoothing_options = {
+        "fieldsplit_v_mg_levels_ksp_type": "richardson",
+        "fieldsplit_v_mg_levels_ksp_richardson_scale": 0.5,
+        "fieldsplit_v_mg_levels_pc_type": "sor",
+    }
+
     if direct_k_c_solve:
         velocity_pressure_solve_options = {
             "ksp_type": "preonly",
@@ -826,12 +839,17 @@ def solve(
                 "pc_fieldsplit_diag_use_amat": False,
                 "pc_fieldsplit_off_diag_use_amat": True,
                 "fieldsplit_v_ksp_type": "preonly",
-                "fieldsplit_v_mg_levels_ksp_type": "chebyshev" if auxiliary_vv_preconditioner else "richardson",
-                "fieldsplit_v_mg_levels_pc_type": "jacobi" if auxiliary_vv_preconditioner else "sor",
                 # "fieldsplit_v_ksp_converged_reason": None,
                 "fieldsplit_p_ksp_type": "preonly",
                 # "fieldsplit_p_ksp_converged_reason": None,
             }
+            if auxiliary_vv_preconditioner:
+                velocity_pressure_solve_options |= {
+                    "fieldsplit_v_mg_levels_ksp_type": "chebyshev",
+                    "fieldsplit_v_mg_levels_pc_type": "jacobi",
+                }
+            else:
+                velocity_pressure_solve_options |= sor_smoothing_options
         else:
             # Full Schur complement factorization, applied once: A is solved by GMRES in each application of
             # S, so it is solved to a tighter tolerance than S, which is solved by GMRES.
@@ -849,8 +867,7 @@ def solve(
                 "fieldsplit_v_ksp_type": "gmres",
                 "fieldsplit_v_ksp_rtol": 1e-7,
                 "fieldsplit_v_ksp_max_it": 100,
-                "fieldsplit_v_mg_levels_ksp_type": "richardson",
-                "fieldsplit_v_mg_levels_pc_type": "sor",
+                **sor_smoothing_options,
                 "fieldsplit_v_ksp_converged_reason": None,
                 "fieldsplit_p_ksp_type": "gmres",
                 "fieldsplit_p_ksp_rtol": 1e-5,
@@ -998,6 +1015,8 @@ def solve(
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
                 f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
             )
+            if "fieldsplit_v_mg_levels_ksp_richardson_scale" in options:
+                gamg_description += f", damped by {options['fieldsplit_v_mg_levels_ksp_richardson_scale']}"
             if block_preconditioned_k_c_solve:
                 k_c_solve_description = (
                     f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
