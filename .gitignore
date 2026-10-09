@@ -8,9 +8,11 @@ __pycache__/
 output/
 data/
 figures/
+references/
 
 *.pdf
 *.png
+*_vsc.md
 
 .claude
 offline_docs
