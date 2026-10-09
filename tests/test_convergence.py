@@ -5,7 +5,7 @@ import ufl
 from mpi4py import MPI
 from restart_helpers import run_mpi_python
 
-from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 
 
 def _make_problem(zero_jacobian=False, **petsc_options):
@@ -26,6 +26,34 @@ def _make_problem(zero_jacobian=False, **petsc_options):
         **petsc_options,
     }
     return dolfinx.fem.petsc.NonlinearProblem(F, u, petsc_options_prefix="convergence_test_", petsc_options=options)
+
+
+def _make_split_problem(**petsc_options):
+    """Newton for u^3 = 1 with a vector-valued u, solved by a fieldsplit over the two components."""
+    mesh = dolfinx.mesh.create_unit_square(MPI.COMM_WORLD, 8, 8)
+    V = dolfinx.fem.functionspace(mesh, ("Lagrange", 1, (2,)))
+    u, v = dolfinx.fem.Function(V), ufl.TestFunction(V)
+    u.x.array[:] = 0.5
+    F = ufl.inner(ufl.as_vector((u[0] ** 3, u[1] ** 3)), v) * ufl.dx - ufl.inner(ufl.as_vector((1.0, 1.0)), v) * ufl.dx
+    options = {
+        "ksp_type": "preonly",
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_block_size": 2,
+        "pc_fieldsplit_0_fields": 0,
+        "pc_fieldsplit_1_fields": 1,
+        "fieldsplit_0_ksp_type": "gmres",
+        "fieldsplit_0_pc_type": "none",
+        "fieldsplit_1_ksp_type": "gmres",
+        "fieldsplit_1_pc_type": "none",
+        "snes_error_if_not_converged": False,
+        "ksp_error_if_not_converged": False,
+        **petsc_options,
+    }
+    return dolfinx.fem.petsc.NonlinearProblem(F, u, petsc_options_prefix="split_test_", petsc_options=options)
+
+
+def _component_failures(ksp_check):
+    return {prefix for prefix, _ in ksp_check.failures}
 
 
 class _Writer:
@@ -80,3 +108,40 @@ else:
 MPI.COMM_WORLD.barrier()
 """
     run_mpi_python(script, ranks=3, timeout=120)
+
+
+def test_ksp_check_passes_converged_nested_solves():
+    problem = _make_split_problem()
+    ksp_check = KSPConvCheck(problem.solver.getKSP())
+    problem.solve()
+    assert ksp_check.failures == []
+    check_converged(problem, "the test", ksp_check=ksp_check)
+
+
+def test_ksp_check_raises_on_failed_nested_solve():
+    # The capped sub-KSP fails with DIVERGED_ITS, which PETSc neither raises nor passes on to SNES,
+    # even with error_if_not_converged. The loose SNES tolerance lets Newton converge regardless.
+    problem = _make_split_problem(
+        fieldsplit_1_ksp_max_it=1,
+        fieldsplit_1_ksp_rtol=1e-14,
+        fieldsplit_1_ksp_error_if_not_converged=True,
+        snes_rtol=1e-2,
+    )
+    ksp_check = KSPConvCheck(problem.solver.getKSP())
+    problem.solve()
+    assert problem.solver.getConvergedReason() > 0
+    assert _component_failures(ksp_check) == {"split_test_fieldsplit_1_"}
+    writer = _Writer()
+    match = "at the test converged, but linear solves failed.*split_test_fieldsplit_1_ DIVERGED_(ITS|MAX_IT) x"
+    with pytest.raises(RuntimeError, match=match):
+        check_converged(problem, "the test", writers=[writer], ksp_check=ksp_check)
+    assert writer.closed
+
+
+def test_ksp_check_clear_forgets_failures():
+    problem = _make_split_problem(fieldsplit_1_ksp_max_it=1, fieldsplit_1_ksp_rtol=1e-14)
+    ksp_check = KSPConvCheck(problem.solver.getKSP())
+    problem.solve()
+    assert ksp_check.failures
+    ksp_check.clear()
+    assert ksp_check.failures == []

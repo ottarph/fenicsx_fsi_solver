@@ -15,7 +15,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -749,12 +749,11 @@ def solve(
             # FGMRES on K_c, preconditioned by the block upper triangular [[A, G], [0, S]], with one GAMG
             # V-cycle for A^{-1} and one BoomerAMG V-cycle on \hat S for S^{-1}. Each iteration costs two
             # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
-            # FGMRES matters. A sub-KSP that does not converge does not fail the fieldsplit, so it fails here.
+            # FGMRES matters.
             velocity_pressure_solve_options |= {
                 "ksp_type": "fgmres",
                 "ksp_rtol": 1e-5,
                 "ksp_max_it": 200,
-                "ksp_error_if_not_converged": True,
                 # "ksp_converged_reason": None,
                 "pc_fieldsplit_schur_fact_type": "upper",
                 "fieldsplit_v_ksp_type": "preonly",
@@ -769,12 +768,10 @@ def solve(
                 "fieldsplit_v_ksp_type": "gmres",
                 "fieldsplit_v_ksp_rtol": 1e-7,
                 "fieldsplit_v_ksp_max_it": 100,
-                "fieldsplit_v_ksp_error_if_not_converged": True,
                 # "fieldsplit_v_ksp_converged_reason": None,
                 "fieldsplit_p_ksp_type": "gmres",
                 "fieldsplit_p_ksp_rtol": 1e-5,
                 "fieldsplit_p_ksp_max_it": 100,
-                "fieldsplit_p_ksp_error_if_not_converged": True,
                 # "fieldsplit_p_ksp_converged_reason": None,
             }
 
@@ -821,6 +818,10 @@ def solve(
         ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
+    # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
+    # iteration limit, which neither PETSc nor the SNES converged reason report.
+    ksp_check = KSPConvCheck(solver.getKSP())
+
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
@@ -845,9 +846,10 @@ def solve(
         if comm.rank == 0:
             print(f"\n{t = :.3f}")
 
+        ksp_check.clear()
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
-        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
+        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p], ksp_check=ksp_check)
 
         if comm.rank == 0:
             sys.stdout.flush()
