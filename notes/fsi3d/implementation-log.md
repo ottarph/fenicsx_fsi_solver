@@ -92,3 +92,48 @@ deallocated (in 2d too). Harmless, since the explicit cleanup had run by then.
 Fixed by renaming the explicit cleanup to `destroy_solvers()`, so petsc4py
 finds no hook; `tests/test_cahouet_chabard.py` destroys a python PC with the
 context.
+
+## Non-convergence on 26 or more ranks (2026-10-09)
+
+Block-preconditioned FGMRES on K_c with GAMG on A (built from A, Richardson +
+SOR smoothing) and BoomerAMG on selfp, coarse mesh, first step:
+
+| ranks | 1 | 4 | 8 | 16 | 24 | 26 | 28 | 30 |
+|---|---|---|---|---|---|---|---|---|
+| FGMRES its (Newton 1, 2) | 30, 26 | 28, 25 | 42, 30 | 70, 56 | 54, 43 | > 200 | > 200 | > 200 |
+
+The FGMRES limit (200) is reached in all 20 Newton iterations from 26 ranks
+on. Diagnosis:
+
+- No rank is empty: all ranks have fluid cells and pressure dofs.
+- MUMPS LU on A instead of GAMG: 7 and 10 FGMRES iterations on 26 ranks.
+  MUMPS LU on the pressure part instead of BoomerAMG: still > 200. So GAMG on
+  A is at fault.
+- GMRES on A alone, preconditioned by GAMG (rtol 1e-8): 44 iterations on 24
+  ranks, no convergence in 300 on 26 ranks.
+- `-info :pc`: the GAMG hierarchies on 24 and 26 ranks are similar (6 levels,
+  coarsest 36 and 24 unknowns), and `pc_gamg_coarse_eq_limit 1000` does not
+  help, so the coarse grid is not the cause.
+- Smoothing: PETSc's parallel SOR is Gauss-Seidel within each rank and Jacobi
+  between ranks, which can diverge where the coupling across a rank boundary
+  is strong. The beam is about one cell thick, its rows are dominated by the
+  solid stiffness mu_s theta^2 dt, and on 26 ranks it is split across about
+  12 ranks. With a smoother that does not depend on the partition, or with
+  damped SOR, the problem goes away:
+
+| ranks | 1 | 8 | 16 | 20 | 24 | 26 | 28 | 30 |
+|---|---|---|---|---|---|---|---|---|
+| Chebyshev + Jacobi on A | 47, 40 | 48, 43 | 46, 44 | 46, 41 | 47, 41 | 48, 46 | 43, 37 | 45, 40 |
+| Richardson (scale 0.5) + SOR | 44, 36 | 46, 39 | 46, 40 | 43, 35 | | 49, 41 | 43, 33 | 43, 36 |
+| `auxiliary_vv_preconditioner=True` | 47, 40 | | | | 47, 41 | 48, 46 | | 45, 40 |
+
+`auxiliary_vv_preconditioner=True` builds GAMG from the SPD A_0 with
+Chebyshev + Jacobi smoothing (in the block-preconditioned solve). That smoother
+does not depend on the partition and does not have Chebyshev's problem with
+the nonsymmetric A. Its iteration counts match Chebyshev on A here, since A_0 ≈ A
+while the flow is still slow. With Cahouet-Chabard as well, 5 steps on 26 and
+30 ranks converge, with about 25 FGMRES iterations in the first Newton
+iteration of a step and 100 to 110 in the second (selfp + BoomerAMG: about 45).
+
+The 2d solver uses the same undamped SOR in its iterative K_c solves, so the
+same partition dependence may appear there.
