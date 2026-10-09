@@ -84,9 +84,11 @@ on finer meshes. The QoIs over these 5 steps agree with the uncapped run to all 
 printed digits, but the deformation is still tiny (|u_B| ~ 1e-6), so this
 says little about the effect of the cap at large deformations.
 
-### Known issue
+### Teardown error (fixed)
 
-`CahouetChabard.destroy()` clashes with petsc4py's `destroy(pc)` hook for
-python PC contexts, which raises an ignored `TypeError` when the PC is
-deallocated (in 2d too). Harmless, since the explicit cleanup has run by
-then; left for a separate fix.
+`CahouetChabard.destroy()` clashed with petsc4py's `destroy(pc)` hook for
+python PC contexts, which raised an ignored `TypeError` when the PC was
+deallocated (in 2d too). Harmless, since the explicit cleanup had run by then.
+Fixed by renaming the explicit cleanup to `destroy_solvers()`, so petsc4py
+finds no hook; `tests/test_cahouet_chabard.py` destroys a python PC with the
+context.

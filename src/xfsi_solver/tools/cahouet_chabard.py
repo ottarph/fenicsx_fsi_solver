@@ -149,9 +149,14 @@ class CahouetChabard:
             solves = "MUMPS LU on L_p and M_p"
         return f"Cahouet-Chabard, {self.alpha:g} * L_p^{{-1}} + {self.mu:g} * M_p^{{-1}}, with {solves}"
 
-    def destroy(self) -> None:
+    def destroy_solvers(self) -> None:
         """Destroy the pressure solvers. This is collective, so call it on all ranks at the
-        same point."""
+        same point.
+
+        Not named ``destroy``: petsc4py calls ``destroy(pc)`` on a python PC context when the
+        PC is destroyed, which can happen during garbage collection, at different points on
+        different ranks.
+        """
         self.mass.destroy()
         self.stiffness.destroy()
         self.rhs.destroy()

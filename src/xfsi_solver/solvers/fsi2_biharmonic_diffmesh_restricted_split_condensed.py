@@ -1011,7 +1011,7 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     if cahouet_chabard_schur_preconditioner:
-        cahouet_chabard.destroy()
+        cahouet_chabard.destroy_solvers()
     solver.destroy()
 
     return
