@@ -15,6 +15,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.tools.cahouet_chabard import CahouetChabard, outflow_pressure_dofs
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
@@ -697,129 +698,18 @@ def solve(
         ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
-    class Pressure_Mass:
-        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps, petsc_options):
-            trial_p = ufl.TrialFunction(P_space)
-            test_p = ufl.TestFunction(P_space)
-
-            bilin = trial_p * test_p * dx
-            lin = test_p * dx
-
-            self._solver = dolfinx.fem.petsc.LinearProblem(
-                bilin,
-                lin,
-                bcs=[],
-                petsc_options_prefix="pressure_mass_",
-                petsc_options=petsc_options,
-                entity_maps=entity_maps,
-            )
-            # Assembles the matrix and sets up the preconditioner, once for the whole run.
-            self._solver.solve()
-            self.ksp = self._solver.solver
-
-        def destroy(self):
-            """Destroy the PETSc objects of the LinearProblem. Destroying a MUMPS factorization or
-            an AMG hierarchy is collective, so call this on all ranks at the same point."""
-            for obj in (self._solver.solver, self._solver.A, self._solver.b, self._solver.x):
-                obj.destroy()
-
-    class Pressure_Stiffness:
-        def __init__(self, P_space: dolfinx.fem.FunctionSpace, dx, entity_maps, petsc_options):
-            trial_p = ufl.TrialFunction(P_space)
-            test_p = ufl.TestFunction(P_space)
-
-            bilin = ufl.inner(ufl.grad(trial_p), ufl.grad(test_p)) * dx
-            lin = test_p * dx
-
-            # p = 0 on the do-nothing outflow, which fixes the pressure level as it does in the
-            # Schur complement, and natural (Neumann) conditions elsewhere, where the velocity has
-            # Dirichlet conditions. The outflow facets are tagged on the parent mesh, so locate the
-            # pressure dofs through their vertices, which are the P1 dofs, mapped to the fluid mesh.
-            mesh.topology.create_connectivity(mesh.topology.dim - 1, 0)
-            outflow_vertices = dolfinx.mesh.compute_incident_entities(
-                mesh.topology, facet_tags.find(PHYSICAL_MARKERS["outflow"]), mesh.topology.dim - 1, 0
-            )
-            outflow_vertices_fluid = fluid_vertex_map.sub_topology_to_topology(outflow_vertices, inverse=True)
-            P_space.mesh.topology.create_connectivity(0, P_space.mesh.topology.dim)
-            outflow_dofs = dolfinx.fem.locate_dofs_topological(P_space, 0, outflow_vertices_fluid)
-            bc = dolfinx.fem.dirichletbc(PETSc.ScalarType(0), outflow_dofs, P_space)
-            # Owned local indices of the outflow dofs, where L_p^{-1} applied to a residual is zero.
-            dofs, num_owned = bc.dof_indices()
-            self.bc_dofs = dofs[:num_owned]
-
-            self._solver = dolfinx.fem.petsc.LinearProblem(
-                bilin,
-                lin,
-                bcs=[bc],
-                petsc_options_prefix="pressure_stiffness_",
-                petsc_options=petsc_options,
-                entity_maps=entity_maps,
-            )
-            # Assembles the matrix and sets up the preconditioner, once for the whole run.
-            self._solver.solve()
-            self.ksp = self._solver.solver
-
-        def destroy(self):
-            """Destroy the PETSc objects of the LinearProblem. Destroying a MUMPS factorization or
-            an AMG hierarchy is collective, so call this on all ranks at the same point."""
-            for obj in (self._solver.solver, self._solver.A, self._solver.b, self._solver.x):
-                obj.destroy()
-
-    class Cahouet_Chabard:
-        """PCSHELL context approximating the inverse of the pressure Schur complement S by
-        y = alpha * L_p^{-1} x + mu * M_p^{-1} x (Cahouet & Chabard, 1988), for the velocity
-        block A ~ alpha * M + mu * K, with the pressure Laplacian L_p and pressure mass M_p."""
-
-        def __init__(self, mass_ksp, stiffness_ksp, stiffness_bc_dofs, alpha, mu):
-            self.mass_ksp = mass_ksp
-            self.stiffness_ksp = stiffness_ksp
-            self.stiffness_bc_dofs = stiffness_bc_dofs  # owned local indices of the p = 0 dofs of L_p
-            self.alpha = alpha
-            self.mu = mu
-            self.rhs, self.work = stiffness_ksp.getOperators()[0].createVecs()
-
-        def apply(self, pc: PETSc.PC, x: PETSc.Vec, y: PETSc.Vec) -> None:
-            # The Schur complement vectors hold the owned pressure dofs in the same order and
-            # with the same parallel layout as the vectors of P, so they are passed directly.
-            x.copy(self.rhs)
-            # Zero the outflow entries, so that L_p^{-1} only acts on the interior pressure. The
-            # identity rows of L_p would otherwise return them unchanged, scaled by alpha.
-            self.rhs.array[self.stiffness_bc_dofs] = 0.0
-            self.stiffness_ksp.solve(self.rhs, self.work)
-            self.mass_ksp.solve(x, y)
-            y.scale(self.mu)
-            y.axpy(self.alpha, self.work)
-
-    if not direct_k_c_solve:
         # The pressure operators are assembled on the reference fluid mesh, so they, and their
-        # factorizations or preconditioners, are constant for the whole run.
-        if iterative_cahouet_chabard:
-            # Only spectral equivalence is needed in a preconditioner. Jacobi on the P1 mass matrix
-            # is well conditioned, and one AMG V-cycle approximates the Laplacian. Both with preonly,
-            # so the preconditioner is a fixed linear operator.
-            pressure_mass_options = {"ksp_type": "preonly", "pc_type": "jacobi"}
-            pressure_stiffness_options = {"ksp_type": "preonly", "pc_type": "hypre", "pc_hypre_type": "boomeramg"}
-        else:
-            direct_solve = {
-                "ksp_type": "preonly",
-                "pc_type": "lu",
-                "pc_factor_mat_solver_type": "mumps",
-                "mat_mumps_cntl_1": 1e-4,
-            }
-            pressure_mass_options = direct_solve
-            pressure_stiffness_options = direct_solve
-        pressure_mass = Pressure_Mass(P, dx_fluid, entity_maps=entity_maps, petsc_options=pressure_mass_options)
-        pressure_stiffness = Pressure_Stiffness(
-            P, dx_fluid, entity_maps=entity_maps, petsc_options=pressure_stiffness_options
-        )
-        # The velocity block is A ~ rho_f / dt * M + theta * rho_f * nu_f * K: the inertia term,
-        # and the viscous term, which enters the residual with the factor theta.
-        cahouet_chabard = Cahouet_Chabard(
-            pressure_mass.ksp,
-            pressure_stiffness.ksp,
-            pressure_stiffness.bc_dofs,
+        # factorizations or preconditioners, are constant for the whole run. The velocity block is
+        # A ~ rho_f / dt * M + theta * rho_f * nu_f * K: the inertia term, and the viscous term,
+        # which enters the residual with the factor theta.
+        cahouet_chabard = CahouetChabard(
+            P,
+            dx_fluid,
+            entity_maps,
+            outflow_pressure_dofs(P, mesh, facet_tags.find(PHYSICAL_MARKERS["outflow"]), fluid_vertex_map),
             alpha=rho_f.value / dt_val,
             mu=theta.value * rho_f.value * nu_f.value,
+            iterative=iterative_cahouet_chabard,
         )
 
         # The Schur complement KSP is only created when the q_c fieldsplit is set up, which needs
@@ -884,15 +774,10 @@ def solve(
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
         else:
-            if iterative_cahouet_chabard:
-                pressure_solves = "one BoomerAMG V-cycle on L_p, Jacobi on M_p"
-            else:
-                pressure_solves = "MUMPS LU on L_p and M_p"
             k_c_solve_description = (
                 "full Schur complement factorization over v and p, MUMPS LU on A,\n"
-                "    GMRES on S preconditioned by Cahouet-Chabard,\n"
-                "    rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1},\n"
-                f"    with {pressure_solves}\n"
+                "    GMRES on S preconditioned by\n"
+                f"      {cahouet_chabard.description()}\n"
             )
         print(
             "\nSolver setup:\n"
@@ -917,8 +802,7 @@ def solve(
     # on all ranks, before the plotting below, where garbage collection could otherwise destroy them
     # on rank 0 alone and deadlock. The plotting does not apply the Schur complement solve.
     if not direct_k_c_solve:
-        pressure_mass.destroy()
-        pressure_stiffness.destroy()
+        cahouet_chabard.destroy()
 
     import matplotlib.pyplot as plt
 
