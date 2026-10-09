@@ -227,3 +227,24 @@ the differences; factor entries there: mixed vector LU 0.27e9, C0IP vector LU
   all three components. The blocked sparsity pattern (block size 3) stores
   the zero couplings, which MUMPS factorizes too: the vector matrices have
   three times the nonzeros per row of the scalar ones.
+
+### Medium mesh without the auxiliary preconditioner
+
+30 ranks, 3 steps, iterative K_c without A_0 (GAMG built from A, Richardson +
+SOR smoothing), compared with the A_0 run above (92 GB):
+
+- Undamped SOR (the default): the K_c FGMRES reaches its limit of 200 in every
+  Newton iteration of the first step, as on the coarse mesh from 26 ranks on.
+- SOR damped by `fieldsplit_v_mg_levels_ksp_richardson_scale 0.5` (scratch
+  copy of the solver): converges, FGMRES iterations 50, 47, then about 28,
+  51, with 2 Newton iterations per step; 134 s for the 3 steps, as with A_0.
+  Peak memory summed over the ranks: 83 GB, so dropping the separate A_0
+  matrix saves about 9 GB.
+
+Runtime estimate for medium to T = 10 with dt = 0.004 on 30 ranks (iterative
+K_c, MUMPS K_m): later steps take 5.5 s with 2 Newton iterations. Over the
+full coarse run, a step took 2.2 times as long as the early steps (4.6 Newton
+iterations per step on average, 46 Jacobian assemblies). With the same
+factor: about 12 s per step, 8 to 9 hours for 2500 steps. If the beam
+oscillates on the medium mesh, which it did not on the coarse one, Newton and
+FGMRES iterations may grow further.
