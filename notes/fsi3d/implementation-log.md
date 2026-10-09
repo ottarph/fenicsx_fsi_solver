@@ -193,8 +193,37 @@ Medium mesh, 30 ranks, 3 steps (the machine has 125 GB):
   close to the coarse mesh. Peak memory, summed over the ranks: 92 GB (at most
   4.3 GB on a rank).
 
-So on this machine the medium mesh only fits with the iterative K_c solve, and
-the fine mesh does not fit with MUMPS on K_m. The vector biharmonic K_m does not
-couple the x, y and z components, but the blocked sparsity pattern (block size 3)
-stores the zero couplings, so MUMPS factorizes them too. Solving K_m component by
-component, or with an iterative solver, should cut its memory by a large factor.
+So on this machine the medium mesh only fits with the iterative K_c solve.
+
+### K_m factorization: mixed vs C0IP, vector vs one component
+
+Measured standalone (scratch script, not in the repository): K_m assembled on
+the fluid submesh with u = 0 on its whole boundary, as the mixed biharmonic of
+this solver or as the C0IP biharmonic of `fsi2_biharmonic_c0ip.py` (branch
+`restricted-c0ip-mm`, with a constant penalty 30 / 0.02 instead of the
+triangle penalty parameters, which have no tetrahedron version yet; the
+penalty does not change the sparsity), and factorized by MUMPS on 30 ranks
+with the solver's options. Memory is MUMPS's INFOG(22), summed over the ranks.
+
+| medium mesh | unknowns | nnz/row | MUMPS memory | factorization |
+|---|---|---|---|---|
+| mixed, vector, LU (now) | 769,110 | 160 | 41.7 GB | 97 s |
+| C0IP, vector, LU | 384,555 | 185 | 30.9 GB | 68 s |
+| C0IP, vector, Cholesky | 384,555 | 185 | 20.4 GB | 31 s |
+| mixed, one component, LU | 256,370 | 53 | 7.1 GB | 12.6 s |
+| C0IP, one component, LU | 128,185 | 62 | 5.7 GB | 8.2 s |
+| C0IP, one component, Cholesky | 128,185 | 62 | 4.4 GB | 3.8 s |
+
+On the coarse mesh the overhead of MUMPS on 30 ranks (about 2.5 GB) hides
+the differences; factor entries there: mixed vector LU 0.27e9, C0IP vector LU
+0.17e9, C0IP vector Cholesky 0.09e9.
+
+- K_m is 42 GB of the 92 GB peak of the medium run with the iterative K_c
+  solve; the other 50 GB are the rest of the solver (the Jacobian, the
+  separate A_0 preconditioning matrix, the fieldsplit submatrices, GAMG, and
+  the per-rank overhead), not split up further.
+- The biharmonic does not couple the x, y and z components, and the boundary
+  conditions are the same for all three, so one scalar factorization serves
+  all three components. The blocked sparsity pattern (block size 3) stores
+  the zero couplings, which MUMPS factorizes too: the vector matrices have
+  three times the nonzeros per row of the scalar ones.
