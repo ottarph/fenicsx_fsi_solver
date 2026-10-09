@@ -16,6 +16,8 @@ from xfsi_solver.tools.checkpoint import truncate_qoi_file
 
 QOI_HEADER = "t\tdrag\tlift\tA_x\tA_y"
 LAGRANGE_QOI_HEADER = QOI_HEADER + "\tinterface_u_gap\tinterface_v_gap"
+# The 3d benchmark measures the displacement at the point B on the beam.
+QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 
 
 def find_point_dof(space: dolfinx.fem.FunctionSpace, point: np.ndarray, atol: float = 1e-6) -> int | None:
@@ -58,7 +60,7 @@ def drag_lift_forms(
     The force is the fluid traction pulled back to the reference configuration,
     integrated over each of ``measures``, with one form per measure (the
     obstacle and the fluid side of the interface). The drag is the component
-    along (-1, 0) and the lift the component along (0, 1). ``mesh`` is the
+    along -e_x and the lift the component along e_y, in 2d and in 3d. ``mesh`` is the
     mesh the measures are defined on, which is not the mesh of ``u`` when
     that lives on a submesh.
     """
@@ -67,8 +69,9 @@ def drag_lift_forms(
     transformed_normal = ufl.dot(ufl.inv(F.T), normal)
     traction = ufl.dot(Fluid.NS(u, v, p, nu_f, rho_f), transformed_normal)
 
-    e_x = dolfinx.fem.Constant(mesh, (-1.0, 0.0))
-    e_y = dolfinx.fem.Constant(mesh, (0.0, 1.0))
+    gdim = mesh.geometry.dim
+    e_x = dolfinx.fem.Constant(mesh, -np.eye(gdim)[0])
+    e_y = dolfinx.fem.Constant(mesh, np.eye(gdim)[1])
 
     def forms(direction):
         return [

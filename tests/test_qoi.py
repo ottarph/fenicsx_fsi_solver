@@ -10,6 +10,7 @@ from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
     assemble_gap_norm,
+    drag_lift_forms,
     find_point_dof,
     init_qoi_file,
     point_value,
@@ -88,3 +89,26 @@ def test_qoi_file_with_the_interface_gap_columns(tmp_path):
     lines = path.read_text().splitlines()
     assert lines[0].split()[1:] == ["t", "drag", "lift", "A_x", "A_y", "interface_u_gap", "interface_v_gap"]
     assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+@pytest.mark.parametrize("gdim", [2, 3])
+def test_drag_and_lift_of_a_constant_pressure(gdim):
+    # At rest, the fluid traction on the face x = 1 is -p e_x, so the drag (along -e_x) is p times
+    # the area of the face, and the lift (along e_y) is zero.
+    if gdim == 2:
+        mesh = dolfinx.mesh.create_unit_square(COMM, 3, 3)
+    else:
+        mesh = dolfinx.mesh.create_unit_cube(COMM, 2, 2, 2)
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (gdim,))))
+    v = dolfinx.fem.Function(u.function_space)
+    p = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 1)))
+    p.x.array[:] = 2.0
+    right = dolfinx.mesh.locate_entities_boundary(mesh, gdim - 1, lambda x: np.isclose(x[0], 1.0))
+    facet_tags = dolfinx.mesh.meshtags(mesh, gdim - 1, right, np.full_like(right, 1))
+    ds = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tags)
+    nu_f, rho_f = dolfinx.fem.Constant(mesh, 1.0e-3), dolfinx.fem.Constant(mesh, 1.0e3)
+    drag_forms, lift_forms = drag_lift_forms(mesh, u, v, p, nu_f, rho_f, [ds(1)])
+    drag, lift = assemble_force(drag_forms, COMM), assemble_force(lift_forms, COMM)
+    if COMM.rank == 0:
+        assert drag == pytest.approx(2.0)
+        assert lift == pytest.approx(0.0, abs=1e-12)
