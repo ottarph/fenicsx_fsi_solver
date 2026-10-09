@@ -211,6 +211,7 @@ def main():
         reference_path="data/fsi2_reference.txt",
     )
     plot_3d_qois(qoi_path="output/qoi/fsi3d_iterative_qoi_coarse.txt")
+    plot_3d_qois(qoi_path="output/qoi/fsi3d_iterative_qoi_medium.txt", filename_prefix="fsi3d_medium_")
 
 
 if __name__ == "__main__":

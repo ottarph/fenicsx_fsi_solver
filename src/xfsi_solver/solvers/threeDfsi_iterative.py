@@ -1091,17 +1091,17 @@ def main():
     args = parser.parse_args()
 
     solve(
-        mesh_path="data/meshes/fsi3d/mesh_sec_coarse.xdmf",
+        mesh_path="data/meshes/fsi3d/mesh_sec_medium.xdmf",
         T=10.0,
         dt_val=0.004,
-        output_path="output/pv/fsi3d_iterative_coarse.bp",
-        output_path_p="output/pv/fsi3d_iterative_p_coarse.bp",
-        qoi_path="output/qoi/fsi3d_iterative_qoi_coarse.txt",
-        checkpoint_dir="output/checkpoints/fsi3d_iterative_coarse",
+        output_path="output/pv/fsi3d_iterative_medium.bp",
+        output_path_p="output/pv/fsi3d_iterative_p_medium.bp",
+        qoi_path="output/qoi/fsi3d_iterative_qoi_medium.txt",
+        checkpoint_dir="output/checkpoints/fsi3d_iterative_medium",
         checkpoint_every=250,
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
-        direct_k_c_solve=True,
+        direct_k_c_solve=False,
         block_preconditioned_k_c_solve=True,
         auxiliary_vv_preconditioner=False,
         cahouet_chabard_schur_preconditioner=False,

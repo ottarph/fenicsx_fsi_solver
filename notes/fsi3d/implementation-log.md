@@ -248,3 +248,22 @@ iterations per step on average, 46 Jacobian assemblies). With the same
 factor: about 12 s per step, 8 to 9 hours for 2500 steps. If the beam
 oscillates on the medium mesh, which it did not on the coarse one, Newton and
 FGMRES iterations may grow further.
+
+### Damped SOR and K_m by component (implemented)
+
+- GAMG's SOR smoothing on the velocity block is damped by 0.5 in both K_c
+  solves (`sor_smoothing_options`). Checked: coarse mesh on 26 ranks, which
+  failed undamped, converges in the block-preconditioned solve (FGMRES 49, 41,
+  then about 25, 47) and in the full Schur solve (GMRES on A about 35
+  iterations).
+- K_m is solved by an additive fieldsplit over the x, y and z components, with
+  one MUMPS factorization each. The component of an owned dof is its position
+  in its block modulo 3; the index sets are numbered within the m submatrix.
+  Exact: the first 5 coarse steps with the direct K_c solve reproduce the QoIs
+  of the earlier run to all printed digits. `MatLUFactorNum` count 4 (K_c and
+  the three components).
+- Medium mesh, 30 ranks, iterative K_c without A_0, 3 steps: steps of 45 s,
+  5.8 s and 5.7 s, 2 Newton iterations each, FGMRES 50, 47, 28, 52, 27, 50.
+  Peak memory summed over the ranks 41 GB (at most 1.8 GB on a rank), against
+  92 GB with A_0 and K_m factorized as a whole; at least 71 GB stayed free on
+  the machine.
