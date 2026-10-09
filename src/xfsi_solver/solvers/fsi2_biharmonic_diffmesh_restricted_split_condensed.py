@@ -422,8 +422,6 @@ def solve(
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
     # Therefore, we make only the one jacobian_post-form.
 
-    jacobian_approximate_base = dolfinx.fem.form(jacobian_approximate_base_ufl, entity_maps=entity_maps)
-
     jacobian_preconditioner_base_ufl = [
         [jacobian_full_base_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
     ]
@@ -528,6 +526,7 @@ def solve(
             "snes_max_it": 20,
             "snes_atol": 1.0e-7,
             "snes_rtol": 1.0e-12,
+            "snes_stol": 0.0,
             # KSP options
             "ksp_type": "preonly",
             "pc_type": "fieldsplit",
