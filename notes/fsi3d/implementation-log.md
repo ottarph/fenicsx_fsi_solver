@@ -159,3 +159,42 @@ step. The direct K_c solve does not use GAMG, so it does not have the smoother
 problem above. These are the first steps only, with small deformations, on the
 coarse mesh. On finer meshes the cost and memory of the MUMPS factorizations grow
 faster than those of the iterative solves.
+
+## Coarse run to T = 10, and finer meshes (2026-10-09)
+
+The full coarse run (30 ranks, direct K_c, dt = 0.004) finished in 2331 s
+(0.93 s per step, 11,606 Newton iterations and 46 Jacobian assemblies in 2500
+steps), but does not reproduce the benchmark: the beam settles to a steady
+state by t = 6 (over [9, 10]: drag 154.7, B_y 4.28e-3, both with no
+oscillation; paper, level 3, k = 0.001: drag 185.5 ± 3.5, B_y 2.70e-3 ±
+25.6e-3). Even the paper's level 1 oscillates. Not investigated; the beam has
+about one cell through its thickness, and the channel about 5 cells across.
+
+Finer meshes from `create_mesh_FSI3D.py` (second order, new suffixes):
+
+| mesh | close / far | cells | beam cells | K_c (v, p) | K_m (z, u_f) | total |
+|---|---|---|---|---|---|---|
+| coarse | 0.02 / 0.08 | 15,142 | 1,624 | 73,679 | 132,792 | 210,440 |
+| medium | 0.01 / 0.04 | 91,989 | 7,133 | 421,968 | 769,110 | 1,210,494 |
+| fine | 0.0067 / 0.03 | 233,344 | 17,605 | 1,044,697 | 1,902,378 | 2,997,088 |
+
+Meshing took 28 s and 86 s. The paper's levels have 9.1k, 66k and 504k Q2
+nodes with 7 unknowns each; medium has about 120k and fine about 300k P2
+nodes, with 10 unknowns in the fluid.
+
+Medium mesh, 30 ranks, 3 steps (the machine has 125 GB):
+
+- Direct K_c: stopped by hand in the first step, with 95 GB in the solver
+  ranks and 16 GB left on the machine, during the MUMPS factorizations of K_c
+  and K_m.
+- A_0 + selfp/BoomerAMG K_c: first step 122 s, of which 107 s is the MUMPS
+  factorization of K_m (`MatLUFactorNum`), later steps 5.5 s with 2 Newton
+  iterations. FGMRES iterations (Newton 1, 2): 52, 48, then about 30, 55,
+  close to the coarse mesh. Peak memory, summed over the ranks: 92 GB (at most
+  4.3 GB on a rank).
+
+So on this machine the medium mesh only fits with the iterative K_c solve, and
+the fine mesh does not fit with MUMPS on K_m. The vector biharmonic K_m does not
+couple the x, y and z components, but the blocked sparsity pattern (block size 3)
+stores the zero couplings, so MUMPS factorizes them too. Solving K_m component by
+component, or with an iterative solver, should cut its memory by a large factor.
