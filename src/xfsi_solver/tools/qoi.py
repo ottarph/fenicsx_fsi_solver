@@ -13,6 +13,7 @@ from mpi4py import MPI
 
 from xfsi_solver.fsi.materials import Fluid
 from xfsi_solver.tools.checkpoint import truncate_qoi_file
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 QOI_HEADER = "t\tdrag\tlift\tA_x\tA_y"
 LAGRANGE_QOI_HEADER = QOI_HEADER + "\tinterface_u_gap\tinterface_v_gap"
@@ -54,6 +55,7 @@ def drag_lift_forms(
     rho_f: dolfinx.fem.Constant,
     measures: list[ufl.Measure],
     entity_maps: list[dolfinx.mesh.EntityMap] | None = None,
+    max_quadrature_degree: int | None = None,
 ) -> tuple[list[dolfinx.fem.Form], list[dolfinx.fem.Form]]:
     """Compiled forms of the drag and the lift on the fluid, as ``(drag_forms, lift_forms)``.
 
@@ -62,7 +64,8 @@ def drag_lift_forms(
     obstacle and the fluid side of the interface). The drag is the component
     along -e_x and the lift the component along e_y, in 2d and in 3d. ``mesh`` is the
     mesh the measures are defined on, which is not the mesh of ``u`` when
-    that lives on a submesh.
+    that lives on a submesh. With ``max_quadrature_degree``, the quadrature degree is capped
+    as in :func:`xfsi_solver.tools.quadrature.cap_quadrature_degree`.
     """
     normal = ufl.FacetNormal(mesh)
     F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
@@ -73,10 +76,13 @@ def drag_lift_forms(
     e_x = dolfinx.fem.Constant(mesh, -np.eye(gdim)[0])
     e_y = dolfinx.fem.Constant(mesh, np.eye(gdim)[1])
 
+    def form(functional):
+        if max_quadrature_degree is not None:
+            functional = cap_quadrature_degree(functional, max_quadrature_degree)
+        return dolfinx.fem.form(functional, entity_maps=entity_maps)
+
     def forms(direction):
-        return [
-            dolfinx.fem.form(ufl.dot(traction, direction) * ufl.det(F) * ds, entity_maps=entity_maps) for ds in measures
-        ]
+        return [form(ufl.dot(traction, direction) * ufl.det(F) * ds) for ds in measures]
 
     return forms(e_x), forms(e_y)
 
