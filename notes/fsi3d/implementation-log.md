@@ -388,3 +388,28 @@ MatSOR, MatResidual, MatMultAdd and MatMultTranspose per V-cycle.
   iterations on 28 ranks on the coarse mesh, and more iterations than the
   current damping on 30 ranks on the medium mesh.
 - Only the first steps; the developed oscillation is not tested.
+
+#### With the beam oscillating: restart from t = 9
+
+The same comparison over 10 steps from the medium run's checkpoint at t = 9
+(step 2250, copied to a scratch directory and restarted with
+`checkpoint_every=None`, so neither checkpoint was changed). Time per step
+over steps 2 to 10:
+
+| ranks | smoother | Newton per step | FGMRES per Newton | s/step | s/Newton |
+|---|---|---|---|---|---|
+| 28 | Richardson 0.5 | 8 7 9 7 7 8 8 8 7 7 | 35.1 | 21.0 | 2.78 |
+| 28 | omega 0.5 | same | 27.3 | 17.7 | 2.34 |
+| 28 | omega 0.7 | same | 30.3 | 18.9 | 2.51 |
+| 30 | Richardson 0.5 | same | 39.7 | 22.2 | 2.93 |
+| 30 | omega 0.5 | same | 32.0 | 19.0 | 2.51 |
+| 30 | omega 0.7 | same | 40.8 | 22.1 | 2.92 |
+
+- All runs converged, with the same Newton iterations in every step, and
+  reproduce the QoIs of the full run to the 6 printed digits.
+- 28 ranks restart in 2.78 s per Newton iteration, the average of the full
+  run (2.79 s), so the window is representative.
+- omega 0.5: 22% (28 ranks) and 19% (30 ranks) fewer FGMRES iterations, 16%
+  and 14% less time per step. MatMult per V-cycle 9.9 against 27.5; the
+  V-cycle itself costs the same (57 ms), so the gain is the iterations.
+- omega 0.7: 10% faster on 28 ranks, no faster on 30 ranks.
