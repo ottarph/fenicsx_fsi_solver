@@ -345,3 +345,46 @@ to medium (oscillation, 7.0). Memory is not in the log; the medium mesh used
 41 GB (3 steps, 30 ranks). With the parts that grow linearly (x2.5) and the
 MUMPS factors of K_m (about unknowns^(4/3) in 3d, x3.4), fine needs about
 100 to 115 GB of the 125 GB, to be measured.
+
+### SOR damping by omega instead of Richardson scaling (2026-10-12)
+
+`fieldsplit_v_mg_levels_ksp_richardson_scale 1.0` with
+`fieldsplit_v_mg_levels_pc_sor_omega` 0.5 or 0.7, against the current
+Richardson scale 0.5 (scratch copy of the solver, iterative K_c without A_0).
+First steps only (2 Newton iterations per step); s/Newton is the time per
+Newton iteration after the first step; MG ms/V is the time of MatMult,
+MatSOR, MatResidual, MatMultAdd and MatMultTranspose per V-cycle.
+
+| mesh, ranks | smoother | converged | FGMRES iterations | MatMult / MatSOR per V-cycle | MG ms/V | s/Newton |
+|---|---|---|---|---|---|---|
+| coarse, 24 | Richardson 0.5 | yes | 43 36 26 43 | 23.7 / 20 | 6.29 | 0.43 |
+| coarse, 24 | omega 0.5 | yes | 37 29 22 37 | 9.0 / 10 | 4.60 | 0.36 |
+| coarse, 24 | omega 0.7 | yes | 45 33 26 44 | 8.7 / 10 | 4.67 | 0.39 |
+| coarse, 26 | Richardson 0.5 | yes | 49 41 26 50 | 23.5 / 20 | 6.21 | 0.44 |
+| coarse, 26 | omega 0.5 | yes | 40 33 22 41 | 8.9 / 10 | 4.85 | 0.37 |
+| coarse, 26 | omega 0.7 | yes | 52 42 30 51 | 8.5 / 10 | 4.79 | 0.41 |
+| coarse, 28 | Richardson 0.5 | yes | 43 33 26 39 | 19.7 / 16 | 6.37 | 0.39 |
+| coarse, 28 | omega 0.5 | yes | 32 29 20 35 | 8.1 / 8 | 4.67 | 0.32 |
+| coarse, 28 | omega 0.7 | yes | 90 90 55 106 | 6.7 / 8 | 4.47 | 0.60 |
+| coarse, 30 | Richardson 0.5 | yes | 43 36 26 43 | 23.7 / 20 | 6.02 | 0.39 |
+| coarse, 30 | omega 0.5 | yes | 37 30 22 37 | 9.0 / 10 | 4.49 | 0.33 |
+| coarse, 30 | omega 0.7 | **no** | 200 200 | | | |
+| medium, 28 | Richardson 0.5 | yes | 42 34 27 38 25 36 | 31.8 / 28 | 58.8 | 2.53 |
+| medium, 28 | omega 0.5 | yes | 35 28 22 33 19 32 | 11.2 / 14 | 57.0 | 2.23 |
+| medium, 28 | omega 0.7 | yes | 33 29 24 32 21 31 | 11.2 / 14 | 57.2 | 2.24 |
+| medium, 30 | Richardson 0.5 | yes | 50 47 28 52 27 50 | 27.4 / 24 | 58.9 | 2.87 |
+| medium, 30 | omega 0.5 | yes | 41 36 23 43 21 41 | 9.7 / 12 | 56.7 | 2.46 |
+| medium, 30 | omega 0.7 | yes | 57 43 36 50 32 51 | 9.3 / 12 | 56.9 | 2.95 |
+
+- With the Richardson scale at 1, PETSc applies SOR directly: the MatMult
+  calls per V-cycle drop from 20 to 32 to 7 to 11.
+- On the coarse mesh this makes a V-cycle 25% cheaper. On the medium mesh a
+  V-cycle costs about the same (57 against 59 ms); the remaining work moved
+  into MatSOR, whose calls now hold two sweeps each and their parallel
+  updates. The gain there comes from fewer FGMRES iterations with omega 0.5.
+- omega 0.5: converged everywhere, 12 to 14% less time per Newton iteration
+  on the medium mesh, 16 to 18% on the coarse mesh.
+- omega 0.7: not robust. Diverged on 30 ranks and needed 90 to 106 FGMRES
+  iterations on 28 ranks on the coarse mesh, and more iterations than the
+  current damping on 30 ranks on the medium mesh.
+- Only the first steps; the developed oscillation is not tested.
