@@ -421,3 +421,62 @@ scale at 1 (the default). Checked: the coarse mesh on 30 ranks reproduces the
 FGMRES iterations of the scratch experiment (37 30 22 37); the full Schur
 solve, which uses the same smoother, converges on 26 and 30 ranks (25 to 36
 GMRES iterations on A).
+
+## One K_m factorization for all components (2026-10-12)
+
+K_m does not couple the displacement components. Every component also has the
+same matrix: the forms are component-wise vector Laplacians and every boundary
+condition on the mesh motion (`u_f_bc`, `u_s_bc`, `bc_deactivate`) constrains
+all components. The component index sets keep the dofs of each rank in node
+order, so each component's submatrix also has the same parallel layout. Only the
+x split factorizes now (MUMPS LU). The y split, and in 3d the z split, applies
+that factorization through `tools/petsc_reuse.py:ReusePC`, a PCPYTHON context
+whose `apply` calls the x split's PC. The context only holds a reference, so the
+x split still owns and destroys the factorization. The 2d solver
+(`fsi2_biharmonic_diffmesh_restricted_split_condensed.py`) previously
+factorized K_m as a whole; it now uses the same component split and reuse.
+`ICNTL(14) = 80` is left out (commented in the options), so MUMPS uses its
+default workspace margin.
+
+Measured from checkpoints with `checkpoint_every=None` (scratch copies, so
+neither checkpoint changed), 10 steps per run. The other variants come from a
+scratch copy of the solver with the reuse switched off: "whole" is the
+committed 2d solver (K_m as one MUMPS LU, `ICNTL(14) = 80`), and "split"
+factorizes every component (same MUMPS options as the x split). Peak RSS is
+summed over the ranks. MUMPS memory is INFOG(22), summed over the K_m
+factorizations; on 16 ranks it is mostly a fixed amount per rank (about 86 MB),
+so peak RSS is the better measure there.
+
+| case | ranks | K_m | runs | total (s) | step 1 (s) | steps 2-10 (s/step) | peak RSS (GB) | MUMPS K_m (MB) |
+|---|---|---|---|---|---|---|---|---|
+| 2d `mesh_sec`, t = 16 | 16 | whole | 3 | 1.52 | 0.431 | 0.120 | 3.53 | 1465 |
+| | | split | 3 | 1.57 | 0.469 | 0.122 | 3.50 | 2752 |
+| | | reuse | 3 | 1.45 | 0.382 | 0.118 | 3.44 | 1376 |
+| 2d `mesh_fine_sec`, t = 16 | 16 | whole | 2 | 5.38 | 1.754 | 0.402 | 4.81 | 1875 |
+| | | split | 2 | 5.38 | 1.888 | 0.388 | 4.63 | 2981 |
+| | | reuse | 2 | 4.92 | 1.517 | 0.378 | 4.47 | 1489 |
+| 3d coarse, t = 9 | 28 | split | 2 | 14.23 | 3.40 | 1.203 | 9.37 | 7327 |
+| | | reuse | 2 | 13.16 | 2.29 | 1.206 | 8.32 | 2442 |
+| 3d medium, t = 9 | 28 | split | 1 | 223.7 | 55.3 | 18.71 | 37.05 | 19417 |
+| | | reuse | 1 | 200.1 | 31.8 | 18.69 | 25.20 | 6812 |
+
+- Every variant gives the same Newton iterations in every step and the same
+  QoIs to all printed digits.
+- 2d fine: these runs reproduce the user's own runs on 16 ranks, which took
+  4.90 s with reuse and 5.43 s without.
+- 3d: the savings are the two extra factorizations, as setup time and memory.
+  Reuse saves 1.1 s (coarse) and 23.5 s (medium) in the first step:
+  MatLUFactorSym + MatLUFactorNum take 11.5 s instead of 35.0 s on the medium
+  mesh. Later steps cost the same, since every component still needs its own
+  triangular solves. Peak memory drops by 1.05 GB (11%, coarse) and 11.9 GB
+  (32%, medium).
+- Fine 3d mesh (estimate, not measured): with factor memory growing as about
+  N^(4/3) for 2.48 times the unknowns, one component needs about 23 GB of MUMPS
+  memory there. Reuse would then save about 40 GB of the 100 to 115 GB
+  estimated above, and a few minutes of setup.
+- 2d: the totals are small. On `mesh_sec`, reuse saves 0.05 s in the first
+  step against "whole", 1 to 2% per later step and 0.09 GB. On the fine mesh
+  it saves 0.24 s in the first step, 6% per later step against "whole" (3%
+  against "split") and 0.34 GB (7%). Over a full 2d run, the gain is the per-step
+  part; the per-step gain against "whole" comes mostly from the smaller
+  component solves, without the zero couplings between the components.
