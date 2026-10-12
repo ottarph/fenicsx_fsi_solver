@@ -267,3 +267,81 @@ FGMRES iterations may grow further.
   Peak memory summed over the ranks 41 GB (at most 1.8 GB on a rank), against
   92 GB with A_0 and K_m factorized as a whole; at least 71 GB stayed free on
   the machine.
+
+## Medium run to T = 10 (2026-10-12)
+
+28 ranks, iterative block-preconditioned K_c without A_0 (damped SOR),
+K_m by component, dt = 0.004: 49,003 s (13.6 h, 19.6 s per step), no failed
+solves, 17,558 Newton iterations (7.0 per step; most steps 7 or 8, at most 10)
+and 1762 Jacobian assemblies over 2500 steps. FGMRES: 35.1 iterations per
+Newton iteration on average, at most 45.
+
+The beam oscillates now, at 5.68 Hz in B_y. Over [9, 10]:
+
+| | medium, dt = 0.004 | paper, level 3, k = 0.001 |
+|---|---|---|
+| drag | 171.3 ± 3.34 | 185.5 ± 3.5 |
+| lift | 1.56 ± 40.3 | -0.72 ± 41.3 |
+| B_x | -1.92e-3 ± 2.16e-3 | -2.14e-3 ± 2.38e-3 |
+| B_y | 0.85e-3 ± 26.1e-3 | 2.70e-3 ± 25.6e-3 |
+| B_z | 0.25e-3 ± 0.69e-3 | 0.49e-3 ± 0.88e-3 |
+
+### log_view
+
+2.79 s per Newton iteration over the run, the same as in the first steps
+(5.7 s per step with 2 Newton iterations), so the slowdown from the first
+steps is the number of Newton iterations. Events (max over ranks; they
+overlap, so they do not add up):
+
+| event | time | share |
+|---|---|---|
+| KSPSolve (whole linear solve) | 35,990 s | 73% |
+| MatMult | 16,030 s | 33% |
+| MatSOR | 13,272 s | 27% |
+| VecScatterEnd (waiting for messages, ratio 4.4) | 11,019 s | 22% |
+| SNESFunctionEval (20,058 calls, 0.45 s each) | 9,033 s | 18% |
+| MatResidual + MatMultAdd + MatMultTranspose (multigrid) | 5,626 s | 11% |
+| MatSolve (K_m by MUMPS, and the GAMG coarse grid) | 3,765 s | 8% |
+| SNESJacobianEval (1.15 s per assembly) | 2,032 s | 4% |
+| PCSetUp_GAMG+ + MatCreateSubMat + PCSetUp (1.3 s per assembly) | 2,261 s | 5% |
+| KSPSolve_FS_Schu (BoomerAMG on selfp) | 1,548 s | 3% |
+| MatLUFactorNum (K_m and GAMG coarse grid) | 26 s | 0.05% |
+
+10.7 Gflop/s in total, 0.38 Gflop/s per rank: bound by memory bandwidth,
+as sparse matrix work usually is, which fits the flat rank scaling on the
+coarse mesh. MatMult time ratio 1.2 between ranks.
+
+The damped Richardson smoother needs a separate MatMult for its residual in
+every smoothing step: per V-cycle (one per FGMRES iteration), undamped SOR
+(coarse, 24 ranks) makes about 9 MatMult and 10 MatSOR calls, damped (coarse,
+28 ranks) about 20 and 16. MatMult and MatSOR together are 60% of the medium
+run. Damping SOR itself (`pc_sor_omega`) instead of the Richardson iteration
+might keep PETSc's combined SOR smoothing; not tested, and its robustness
+across partitions would have to be checked again.
+
+### Scaling to the fine mesh
+
+Cost per call of the same events, 3 coarse steps (28 ranks, same settings)
+against the medium run, as cost ~ unknowns^alpha (coarse to medium: 5.75x
+the unknowns; medium to fine: 2.48x):
+
+| event | alpha | fine / medium |
+|---|---|---|
+| MatMult | 0.97 | 2.40 |
+| MatSOR | 1.05 | 2.58 |
+| MatResidual | 1.11 | 2.74 |
+| MatSolve | 1.00 | 2.47 |
+| SNESFunctionEval | 0.91 | 2.28 |
+| Jacobian assembly (per assembly) | 1.00 | 2.48 |
+| KSPSolve_FS_Schu | 0.44 | 1.48 |
+
+FGMRES iterations per Newton iteration in the first steps: coarse about 34,
+medium about 42 (alpha 0.13, so about 13% more on fine). Estimate for fine
+on 28 ranks: about 2.7 times the cost per Newton iteration, about 7.6 s; with
+7 to 8 Newton iterations per step, 53 to 61 s per step, 37 to 42 h for 2500
+steps at dt = 0.004. The Newton iterations per step on fine are not known:
+they depend on the dynamics, which changed from coarse (no oscillation, 4.6)
+to medium (oscillation, 7.0). Memory is not in the log; the medium mesh used
+41 GB (3 steps, 30 ranks). With the parts that grow linearly (x2.5) and the
+MUMPS factors of K_m (about unknowns^(4/3) in 3d, x3.4), fine needs about
+100 to 115 GB of the 125 GB, to be measured.
