@@ -17,6 +17,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.tools.cahouet_chabard import CahouetChabard, outflow_pressure_dofs
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.petsc_reuse import ReusePC
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
     append_qoi_row,
@@ -81,8 +82,9 @@ def solve(
     that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
     whole run. K_m does not couple the x, y and z components, so it is solved by an
-    additive fieldsplit over the components, with one MUMPS factorization each, which
-    leaves out the zero couplings between the components that the blocked matrix stores.
+    additive fieldsplit over the components, which leaves out the zero couplings between
+    the components that the blocked matrix stores. The components have the same matrix,
+    so the MUMPS factorization of the x component is reused for the y and z components.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
@@ -527,9 +529,8 @@ def solve(
             )
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
-        if comm.rank == 0:
-            vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
-            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
+        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
+        PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
 
@@ -909,22 +910,26 @@ def solve(
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
     # rows, so it is the same matrix in every Newton iteration and time step: factorize it
     # only once. K_m does not couple the x, y and z components, so the additive fieldsplit over
-    # the components solves it exactly, with one MUMPS factorization per component. That leaves
-    # out the zero couplings between the components, which the blocked matrix stores: on the
-    # medium mesh, MUMPS needs 42 GB for K_m as a whole and 7 GB for one component.
+    # the components solves it exactly. That leaves out the zero couplings between the
+    # components, which the blocked matrix stores: on the medium mesh, MUMPS needs 42 GB for
+    # K_m as a whole and 7 GB for one component. The components also have the same matrix, so
+    # only the x component is factorized, and the y and z components apply its factorization
+    # through a ReusePC.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
         "pc_type": "fieldsplit",
         "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
+        "fieldsplit_x_ksp_type": "preonly",
+        "fieldsplit_x_pc_type": "lu",
+        "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
+        # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+        "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
     }
-    for name in component_names:
+    for name in component_names[1:]:
         mesh_motion_solve_options |= {
             f"fieldsplit_{name}_ksp_type": "preonly",
-            f"fieldsplit_{name}_pc_type": "lu",
-            f"fieldsplit_{name}_pc_factor_mat_solver_type": "mumps",
-            f"fieldsplit_{name}_mat_mumps_icntl_14": 80,
-            f"fieldsplit_{name}_mat_mumps_cntl_1": 1e-4,
+            f"fieldsplit_{name}_pc_type": "python",
         }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
@@ -946,7 +951,13 @@ def solve(
     ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
     if not direct_k_c_solve:
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
+
     ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
+    ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
+    pc_mesh_motion_reuse = ReusePC(ksp_m_components[0].getPC())
+    for ksp_m_i in ksp_m_components[1:]:
+        ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
+        ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
 
     if cahouet_chabard_schur_preconditioner:
         # The pressure operators are assembled on the reference fluid mesh, so they, and their
@@ -991,8 +1002,7 @@ def solve(
     if not restart:
         write_output(t, step)
 
-    if mesh.comm.rank == 0:
-        print("", flush=True)
+    PETSc.Sys.Print("")
     mesh.comm.barrier()
 
     PETSc.Log.begin()
@@ -1008,8 +1018,7 @@ def solve(
         u_old.x.array[:] = u.x.array[:]
         v_old.x.array[:] = v.x.array[:]
 
-        if comm.rank == 0:
-            print(f"\n{t = :.3f}")
+        PETSc.Sys.Print(f"\n{t = :.3f}")
 
         ksp_check.clear()
         problem.solve()
@@ -1065,8 +1074,8 @@ def solve(
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
-            "    MUMPS LU on each component of K_m, CG with Jacobi on A_S, with the factorizations of K_m reused\n"
-            "    for the whole run\n"
+            "    MUMPS LU on the x component of K_m, reused for the y and z components and for the\n"
+            "    whole run, CG with Jacobi on A_S\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
