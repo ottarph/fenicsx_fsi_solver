@@ -104,9 +104,10 @@ def solve(
     is A_0 as well, smoothed by Chebyshev with Jacobi. In the full Schur solve, the
     velocity GMRES must solve with A, so the finest smoother iterates with the
     nonsymmetric A, and SOR smoothing is used. Without the auxiliary operator, GAMG is
-    built from A with SOR smoothing in both solves. SOR smoothing is damped by 0.5: in
-    parallel, PETSc's SOR is Gauss-Seidel within each rank and Jacobi between ranks, and
-    undamped it made GAMG diverge for some partitions of the 3d mesh.
+    built from A with SOR smoothing in both solves. The SOR is under-relaxed, with
+    omega = 0.5: in parallel, PETSc's SOR is Gauss-Seidel within each rank and Jacobi
+    between ranks, and with omega = 1 it made GAMG diverge for some partitions of the 3d
+    mesh.
 
     The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
     19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
@@ -789,13 +790,18 @@ def solve(
 
     # GAMG smoothing with SOR. In parallel, PETSc's SOR is Gauss-Seidel within each rank and
     # Jacobi between ranks, which can diverge where the coupling across a rank boundary is strong,
-    # such as in the thin, stiff beam. Undamped, GAMG diverged on 26 to 30 ranks on the coarse mesh
-    # and on 30 ranks on the medium mesh; damped by 0.5, it converged on all ranks tried (1 to 30)
+    # such as in the thin, stiff beam. With omega = 1, GAMG diverged on 26 to 30 ranks on the coarse
+    # mesh and on 30 ranks on the medium mesh; with omega = 0.7, on 30 ranks on the coarse mesh.
+    # Under-relaxed with omega = 0.5, it converged on all ranks tried, also with the beam
+    # oscillating. Damping the Richardson iteration instead (scale 0.5) converged too, but costs
+    # a separate MatMult for the residual in every smoothing step, since PETSc only applies SOR
+    # directly as the smoother when the Richardson scale is 1, and needed about 20% more FGMRES
+    # iterations: omega = 0.5 takes 14 to 16% less time per step on the medium mesh
     # (notes/fsi3d/implementation-log.md).
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
-        "fieldsplit_v_mg_levels_ksp_richardson_scale": 0.5,
         "fieldsplit_v_mg_levels_pc_type": "sor",
+        "fieldsplit_v_mg_levels_pc_sor_omega": 0.5,
     }
 
     if direct_k_c_solve:
@@ -1038,8 +1044,8 @@ def solve(
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
                 f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
             )
-            if "fieldsplit_v_mg_levels_ksp_richardson_scale" in options:
-                gamg_description += f", damped by {options['fieldsplit_v_mg_levels_ksp_richardson_scale']}"
+            if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+                gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
             if block_preconditioned_k_c_solve:
                 k_c_solve_description = (
                     f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"

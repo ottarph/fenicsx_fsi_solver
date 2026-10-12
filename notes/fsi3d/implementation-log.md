@@ -413,3 +413,11 @@ over steps 2 to 10:
   and 14% less time per step. MatMult per V-cycle 9.9 against 27.5; the
   V-cycle itself costs the same (57 ms), so the gain is the iterations.
 - omega 0.7: 10% faster on 28 ranks, no faster on 30 ranks.
+
+#### Switched to omega = 0.5
+
+`sor_smoothing_options` now uses `pc_sor_omega 0.5` with the Richardson
+scale at 1 (the default). Checked: the coarse mesh on 30 ranks reproduces the
+FGMRES iterations of the scratch experiment (37 30 22 37); the full Schur
+solve, which uses the same smoother, converges on 26 and 30 ranks (25 to 36
+GMRES iterations on A).
