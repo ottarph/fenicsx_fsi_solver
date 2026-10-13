@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: MIT
 
-import sys
 import warnings
 from timeit import default_timer as timer
 
@@ -17,6 +16,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.petsc_reuse import ReusePC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -48,8 +48,10 @@ def solve(
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_write_every=None,
+    plot_matrices=False,
     restart=False,
     gamma_reassemble=0.2,
+    mesh_motion_direct_solver=True,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
@@ -69,6 +71,20 @@ def solve(
     checkpoint time are dropped from ``qoi_path`` before appending, and the
     VTX output is written to new files with a ``_from_t<time>`` suffix, since
     ``VTXWriter`` cannot append.
+
+    Each Newton step is solved by a multiplicative fieldsplit over q = (u_S, v, p) and
+    m = u_I, with MUMPS LU on K_q. K_m (the C0IP mesh motion) is assembled on the
+    reference fluid mesh, so it is the same matrix for the whole run. It does not couple
+    the x and y components, and the components have the same matrix, so it is solved by
+    an additive fieldsplit over the components, and the preconditioner of the x component
+    is set up once and reused for the y component (``ReusePC``). With
+    ``mesh_motion_direct_solver=True``, this is a MUMPS Cholesky factorization. Otherwise,
+    each component is solved by CG preconditioned by GAMG, to a relative tolerance of 1e-5
+    and an absolute tolerance of 1e-7 in the unpreconditioned residual norm.
+
+    With ``plot_matrices=True``, spy plots and block norm plots of the Jacobian and the
+    approximate Jacobian at the final state are saved to ``spy_*.png`` and
+    ``block_norms_*.png`` in the working directory.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -658,29 +674,100 @@ def solve(
 
     is_q, is_m = make_is(rows_q), make_is(rows_m)
 
+    # Rows of each displacement component in the m submatrix, for solving K_m component by
+    # component. The owned u dofs are stored interleaved per node, (x, y), so the component of
+    # a dof is its position in its block modulo block_size. The m submatrix holds the rows of
+    # rows_m in sorted order.
+    component_names = ["x", "y"]
+    block_size = U.dofmap.bs
+    component_u_I = (np.arange(len(rows_u)) % block_size)[~u_solid]
+    components_m = component_u_I[np.argsort(rows_m)]
+    start_m = comm.exscan(len(rows_m)) or 0  # first row of this rank in the m submatrix
+    is_m_components = [make_is(start_m + np.flatnonzero(components_m == c)) for c in range(block_size)]
+
     pc = solver.getKSP().getPC()
     pc.setFieldSplitIS(("q", is_q), ("m", is_m))
 
-    direct_solve_options = {
+    fluid_solid_solve_options = {
         "ksp_type": "preonly",
         "pc_type": "lu",
         "pc_factor_mat_solver_type": "mumps",
-        "mat_mumps_icntl_14": 80,
         "mat_mumps_cntl_1": 1e-4,
     }
 
+    # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
+    # rows, so it is the same matrix in every Newton iteration and time step: set up its
+    # preconditioner only once. The components have the same matrix, so only the x component
+    # sets up a preconditioner, which the y component applies through a ReusePC.
+    mesh_motion_solve_options = {
+        "ksp_type": "preonly",
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "additive",
+        "ksp_reuse_preconditioner": True,
+    }
+    if mesh_motion_direct_solver:
+        mesh_motion_solve_options |= {
+            "fieldsplit_x_ksp_type": "preonly",
+            "fieldsplit_x_pc_type": "cholesky",
+            "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
+            # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+            "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
+        }
+        for name in component_names[1:]:
+            mesh_motion_solve_options |= {
+                f"fieldsplit_{name}_ksp_type": "preonly",
+                f"fieldsplit_{name}_pc_type": "python",
+            }
+    else:
+        for name in component_names:
+            mesh_motion_solve_options |= {
+                f"fieldsplit_{name}_ksp_type": "cg",
+                f"fieldsplit_{name}_ksp_norm_type": "unpreconditioned",
+                # Works even faster with rtol 1e-3, atol 1e-5, but this changes the number of snes iterations
+                # from what it is with direct mesh motion solve, even reduces it, which makes me a bit nervous.
+                f"fieldsplit_{name}_ksp_rtol": 1e-5,
+                f"fieldsplit_{name}_ksp_atol": 1e-7,
+                f"fieldsplit_{name}_ksp_max_it": 200,
+                # f"fieldsplit_{name}_ksp_monitor_true_residual": None,
+                # f"fieldsplit_{name}_ksp_converged_reason": None,
+                # f"fieldsplit_{name}_ksp_error_if_not_converged": True,
+                # f"fieldsplit_{name}_ksp_view": None,
+            }
+        mesh_motion_solve_options |= {
+            "fieldsplit_x_pc_type": "gamg",
+            "fieldsplit_x_pc_gamg_type": "agg",
+            "fieldsplit_x_pc_gamg_threshold": 0.2,
+            "fieldsplit_x_pc_gamg_reuse_interpolation": True,
+        }
+        for name in component_names[1:]:
+            mesh_motion_solve_options |= {
+                f"fieldsplit_{name}_pc_type": "python",
+            }
+
+    # Set through the options database, since the fieldsplit calls setFromOptions on its
+    # sub-KSPs in PCSetUp, which would override types set directly on them.
+    split_options = {"q": fluid_solid_solve_options, "m": mesh_motion_solve_options}
     opts = PETSc.Options()
-    for sub_ksp in pc.getFieldSplitSubKSP():
-        opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_ / <prefix>fieldsplit_m_
-        for key, value in direct_solve_options.items():
+    # List the options that were set but never used when PETSc finalizes, which catches misspelled
+    # option names. A global option without a prefix, so not in a petsc_options dict, whose options
+    # dolfinx prefixes and deletes after setting up the solver.
+    opts["options_left"] = None
+    # opts["log_view"] = None
+    for options, sub_ksp in zip(split_options.values(), pc.getFieldSplitSubKSP(), strict=True):
+        opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_ / _m_
+        for key, value in options.items():
             opts[key] = value
         opts.prefixPop()
         sub_ksp.setFromOptions()
 
-    # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet rows,
-    # so it is the same matrix in every Newton iteration and time step: factorize it only once.
-    _, ksp_m = pc.getFieldSplitSubKSP()
-    ksp_m.getPC().setReusePreconditioner(True)
+    ksp_q, ksp_m = pc.getFieldSplitSubKSP()
+
+    ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
+    ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
+    pc_mesh_motion_reuse = ReusePC(ksp_m_components[0].getPC())
+    for ksp_m_i in ksp_m_components[1:]:
+        ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
+        ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
@@ -694,6 +781,7 @@ def solve(
 
     first_step = step
     num_newton_iterations = 0
+    first_solve_start = timer()
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
@@ -704,14 +792,14 @@ def solve(
         v_old.x.array[:] = v.x.array[:]
 
         if comm.rank == 0:
-            print(f"\n{t = :.3f}")
+            print(f"\n{t = :.3f}", flush=True)
 
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
         check_converged(problem, f"t = {t:.4f}", writers=writers)
 
-        if comm.rank == 0:
-            sys.stdout.flush()
+        if step == first_step:
+            first_solve_end = timer()
 
         step += 1
         write_output(t, step, writers)
@@ -720,16 +808,31 @@ def solve(
             checkpointer.write([u, v, p], t, step, dt_val)
 
     end = timer()
+    first_solve_runtime = first_solve_end - first_solve_start
+    runtime = (end - start) - first_solve_runtime
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
-        print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        print(f"Elapsed time first solve: {first_solve_runtime:.3f} s")
+        print(f"Elapsed time subsequent solves: {runtime:.3f} s")
+        print(f"Time per subsequent step: {(runtime) / max(step - first_step - 1, 1):.3f} s")
+        if mesh_motion_direct_solver:
+            mesh_motion_description = "MUMPS Cholesky"
+        else:
+            options = mesh_motion_solve_options
+            mesh_motion_description = (
+                f"CG (rtol {options['fieldsplit_x_ksp_rtol']:g}, atol {options['fieldsplit_x_ksp_atol']:g}) "
+                f"with GAMG (agg, threshold {options['fieldsplit_x_pc_gamg_threshold']:g})"
+            )
         print(
             "\nSolver setup:\n"
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q = (u_S, v, p) and m = u_I,\n"
-            "    MUMPS LU on K_q and K_m, with the factorization of K_m reused for the whole run\n"
+            "    MUMPS LU on K_q\n"
+            "  K_m solve: additive fieldsplit over the x and y components,\n"
+            f"    {mesh_motion_description}, with the preconditioner of the x\n"
+            "    component reused for the y component and for the whole run\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
@@ -739,127 +842,130 @@ def solve(
 
     [writer.close() for writer in writers]
 
-    import matplotlib.pyplot as plt
+    if plot_matrices:
+        import matplotlib.pyplot as plt
 
-    # Spy plots and block norms of the Jacobian and the approximate Jacobian at the
-    # current state, with the dofs reordered block by block (the global numbering is
-    # [u, v, p] per rank).
-    dolfinx.fem.petsc.assign([u, v, p], problem.x)
+        # Spy plots and block norms of the Jacobian and the approximate Jacobian at the
+        # current state, with the dofs reordered block by block (the global numbering is
+        # [u, v, p] per rank).
+        dolfinx.fem.petsc.assign([u, v, p], problem.x)
 
-    # gather_jacobian assembles into new matrices, so make wrapped_jacobian_approximate
-    # assemble instead of reusing J_mat.
-    jacobian_state["assembled"] = False
+        # gather_jacobian assembles into new matrices, so make wrapped_jacobian_approximate
+        # assemble instead of reusing J_mat.
+        jacobian_state["assembled"] = False
 
-    def gather_dofs(dofs):
-        """Global dofs of all ranks on rank 0, in rank order."""
-        dofs = comm.gather(dofs, root=0)
-        return np.concatenate(dofs) if comm.rank == 0 else None
+        def gather_dofs(dofs):
+            """Global dofs of all ranks on rank 0, in rank order."""
+            dofs = comm.gather(dofs, root=0)
+            return np.concatenate(dofs) if comm.rank == 0 else None
 
-    # Owned global dofs of the storage blocks [u, v, p]. As in eq. (1) of
-    # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
-    # u_S (including the interface) and the remaining fluid-interior dofs u_I.
-    row_start = J_mat.getOwnershipRange()[0]
-    u_dofs, v_dofs, p_dofs = (
-        row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
-    )
-    u_solid = solid_supported(U, len(u_dofs))
-    dofs_u_S = gather_dofs(u_dofs[u_solid])
-    dofs_u_I = gather_dofs(u_dofs[~u_solid])
-    dofs_u = gather_dofs(u_dofs)
-    dofs_v = gather_dofs(v_dofs)
-    dofs_p = gather_dofs(p_dofs)
-
-    # Make spy plots and block norm plots with the different partitionings.
-
-    def gather_jacobian(assemble_jacobian):
-        """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
-        columns and values on rank 0.
-
-        Assembles into a new matrix with the full Jacobian sparsity pattern, which contains
-        the approximate one. J_mat cannot be used: it is created from the approximate
-        Jacobian forms, and PETSc also drops the preallocated entries that its first
-        assembly does not set, so it has no room for the full Jacobian.
-        """
-        J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
-        J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
-        assemble_jacobian(solver, problem.x, J, P_mat)
-        indptr, cols, vals = J.getValuesCSR()
-        J.destroy()
-        rows = row_start + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
-        nonzero = vals != 0.0
-        gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
-        return [np.concatenate(a) for a in gathered] if comm.rank == 0 else (None, None, None)
-
-    rows_full, cols_full, vals_full = gather_jacobian(wrapped_jacobian_full)
-    rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
-
-    def plot_blocks(J, blocks, names, title, label):
-        """Save spy_{label}.png and block_norms_{label}.png of the scipy sparse matrix J,
-        reordered by the global dofs in blocks."""
-        import matplotlib.colors
-
-        perm = np.concatenate(blocks)
-        J_spy = J.tocsr()[perm][:, perm].tocoo()
-        J_spy.eliminate_zeros()
-        n = J_spy.shape[0]
-
-        fig, ax = plt.subplots(figsize=(10, 10))
-        ax.spy(J_spy, markersize=0.05, color="black")
-        bounds = np.cumsum([0] + [len(b) for b in blocks])
-        for b in bounds[1:-1]:
-            ax.axhline(b - 0.5, color="tab:red", linewidth=0.8)
-            ax.axvline(b - 0.5, color="tab:red", linewidth=0.8)
-        centers = 0.5 * (bounds[:-1] + bounds[1:])
-        ax.set_xticks(centers, names)
-        ax.set_yticks(centers, names)
-        ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-        ax.set_xlabel(f"{title} nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
-        fig.savefig(f"spy_{label}.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved spy plot to spy_{label}.png ({J_spy.nnz} nonzeros, {n} dofs)")
-
-        # Frobenius norms of the blocks, with blocks without nonzeros left blank
-        row_blocks = np.searchsorted(bounds, J_spy.row, side="right") - 1
-        col_blocks = np.searchsorted(bounds, J_spy.col, side="right") - 1
-        sq_norms = np.zeros((len(blocks), len(blocks)))
-        np.add.at(sq_norms, (row_blocks, col_blocks), J_spy.data**2)
-        block_norms = np.ma.masked_equal(np.sqrt(sq_norms), 0.0)
-
-        cmap = plt.get_cmap("viridis").copy()
-        cmap.set_bad("white")
-        fig, ax = plt.subplots()
-        im = ax.matshow(block_norms, cmap=cmap, norm=matplotlib.colors.LogNorm())
-        fig.colorbar(im, ax=ax, label="Frobenius norm")
-        for (i, j), norm in np.ndenumerate(block_norms):
-            if norm is not np.ma.masked:
-                ax.text(j, i, f"{norm:.2e}", ha="center", va="center", color="white", fontsize="small")
-        ax.set_xticks(range(len(blocks)), names)
-        ax.set_yticks(range(len(blocks)), names)
-        ax.set_xlabel(f"{title} block norms at t = {t:.4f}", fontsize="large")
-        fig.savefig(f"block_norms_{label}.png", dpi=200, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved block norm plot to block_norms_{label}.png")
-
-    if comm.rank == 0:
-        import scipy.sparse
-
-        n = J_mat.getSize()[0]
-        J_full = scipy.sparse.coo_matrix((vals_full, (rows_full, cols_full)), shape=(n, n))
-
-        names_eq1 = ["$u_S$", "$v$", "$p$", "$u_I$"]
-        blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_u_I]
-        plot_blocks(J_full, [dofs_u, dofs_v, dofs_p], ["u", "v", "p"], "Jacobian C0IP", "storage_c0ip")
-        plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian C0IP", "eq1_c0ip")
-
-        J_approximate = scipy.sparse.coo_matrix((vals_approximate, (rows_approximate, cols_approximate)), shape=(n, n))
-        plot_blocks(
-            J_approximate,
-            [dofs_u, dofs_v, dofs_p],
-            ["u", "v", "p"],
-            "Approximate Jacobian C0IP",
-            "approximate_storage_c0ip",
+        # Owned global dofs of the storage blocks [u, v, p]. As in eq. (1) of
+        # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
+        # u_S (including the interface) and the remaining fluid-interior dofs u_I.
+        row_start = J_mat.getOwnershipRange()[0]
+        u_dofs, v_dofs, p_dofs = (
+            row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
         )
-        plot_blocks(J_approximate, blocks_eq1, names_eq1, "Approximate Jacobian C0IP", "approximate_eq1_c0ip")
+        u_solid = solid_supported(U, len(u_dofs))
+        dofs_u_S = gather_dofs(u_dofs[u_solid])
+        dofs_u_I = gather_dofs(u_dofs[~u_solid])
+        dofs_u = gather_dofs(u_dofs)
+        dofs_v = gather_dofs(v_dofs)
+        dofs_p = gather_dofs(p_dofs)
+
+        # Make spy plots and block norm plots with the different partitionings.
+
+        def gather_jacobian(assemble_jacobian):
+            """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
+            columns and values on rank 0.
+
+            Assembles into a new matrix with the full Jacobian sparsity pattern, which contains
+            the approximate one. J_mat cannot be used: it is created from the approximate
+            Jacobian forms, and PETSc also drops the preallocated entries that its first
+            assembly does not set, so it has no room for the full Jacobian.
+            """
+            J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
+            J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
+            assemble_jacobian(solver, problem.x, J, P_mat)
+            indptr, cols, vals = J.getValuesCSR()
+            J.destroy()
+            rows = row_start + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+            nonzero = vals != 0.0
+            gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
+            return [np.concatenate(a) for a in gathered] if comm.rank == 0 else (None, None, None)
+
+        rows_full, cols_full, vals_full = gather_jacobian(wrapped_jacobian_full)
+        rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
+
+        def plot_blocks(J, blocks, names, title, label):
+            """Save spy_{label}.png and block_norms_{label}.png of the scipy sparse matrix J,
+            reordered by the global dofs in blocks."""
+            import matplotlib.colors
+
+            perm = np.concatenate(blocks)
+            J_spy = J.tocsr()[perm][:, perm].tocoo()
+            J_spy.eliminate_zeros()
+            n = J_spy.shape[0]
+
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.spy(J_spy, markersize=0.05, color="black")
+            bounds = np.cumsum([0] + [len(b) for b in blocks])
+            for b in bounds[1:-1]:
+                ax.axhline(b - 0.5, color="tab:red", linewidth=0.8)
+                ax.axvline(b - 0.5, color="tab:red", linewidth=0.8)
+            centers = 0.5 * (bounds[:-1] + bounds[1:])
+            ax.set_xticks(centers, names)
+            ax.set_yticks(centers, names)
+            ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
+            ax.set_xlabel(f"{title} nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
+            fig.savefig(f"spy_{label}.png", dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            print(f"Saved spy plot to spy_{label}.png ({J_spy.nnz} nonzeros, {n} dofs)")
+
+            # Frobenius norms of the blocks, with blocks without nonzeros left blank
+            row_blocks = np.searchsorted(bounds, J_spy.row, side="right") - 1
+            col_blocks = np.searchsorted(bounds, J_spy.col, side="right") - 1
+            sq_norms = np.zeros((len(blocks), len(blocks)))
+            np.add.at(sq_norms, (row_blocks, col_blocks), J_spy.data**2)
+            block_norms = np.ma.masked_equal(np.sqrt(sq_norms), 0.0)
+
+            cmap = plt.get_cmap("viridis").copy()
+            cmap.set_bad("white")
+            fig, ax = plt.subplots()
+            im = ax.matshow(block_norms, cmap=cmap, norm=matplotlib.colors.LogNorm())
+            fig.colorbar(im, ax=ax, label="Frobenius norm")
+            for (i, j), norm in np.ndenumerate(block_norms):
+                if norm is not np.ma.masked:
+                    ax.text(j, i, f"{norm:.2e}", ha="center", va="center", color="white", fontsize="small")
+            ax.set_xticks(range(len(blocks)), names)
+            ax.set_yticks(range(len(blocks)), names)
+            ax.set_xlabel(f"{title} block norms at t = {t:.4f}", fontsize="large")
+            fig.savefig(f"block_norms_{label}.png", dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            print(f"Saved block norm plot to block_norms_{label}.png")
+
+        if comm.rank == 0:
+            import scipy.sparse
+
+            n = J_mat.getSize()[0]
+            J_full = scipy.sparse.coo_matrix((vals_full, (rows_full, cols_full)), shape=(n, n))
+
+            names_eq1 = ["$u_S$", "$v$", "$p$", "$u_I$"]
+            blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_u_I]
+            plot_blocks(J_full, [dofs_u, dofs_v, dofs_p], ["u", "v", "p"], "Jacobian C0IP", "storage_c0ip")
+            plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian C0IP", "eq1_c0ip")
+
+            J_approximate = scipy.sparse.coo_matrix(
+                (vals_approximate, (rows_approximate, cols_approximate)), shape=(n, n)
+            )
+            plot_blocks(
+                J_approximate,
+                [dofs_u, dofs_v, dofs_p],
+                ["u", "v", "p"],
+                "Approximate Jacobian C0IP",
+                "approximate_storage_c0ip",
+            )
+            plot_blocks(J_approximate, blocks_eq1, names_eq1, "Approximate Jacobian C0IP", "approximate_eq1_c0ip")
 
     # Destroying the MUMPS factorization is collective, so destroy the solver on all
     # ranks here instead of leaving it to garbage collection, which can run at
@@ -878,7 +984,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=16.0,
+        T=16.0 + 10 * 0.0025,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharm_c0ip.bp",
         output_path_p="output/pv/fsi2_biharm_p_c0ip.bp",
@@ -886,7 +992,9 @@ def main():
         checkpoint_dir="output/checkpoints/fsi2_biharm_c0ip",
         checkpoint_every=400,
         vtx_write_every=None,
+        plot_matrices=False,
         gamma_reassemble=0.5,  # Default 0.2.
+        mesh_motion_direct_solver=False,
         restart=args.restart,
     )
 
