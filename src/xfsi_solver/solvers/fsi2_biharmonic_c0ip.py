@@ -782,6 +782,7 @@ def solve(
     first_step = step
     num_newton_iterations = 0
     first_solve_start = timer()
+    first_solve_end = first_solve_start  # kept if no time step runs
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
