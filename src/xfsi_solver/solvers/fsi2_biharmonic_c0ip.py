@@ -534,6 +534,7 @@ def solve(
             "snes_max_it": 20,
             "snes_atol": 1.0e-7,
             "snes_rtol": 1.0e-12,
+            "snes_stol": 0.0,
             # KSP options
             "ksp_type": "preonly",
             "pc_type": "fieldsplit",
@@ -723,15 +724,15 @@ def solve(
             mesh_motion_solve_options |= {
                 f"fieldsplit_{name}_ksp_type": "cg",
                 f"fieldsplit_{name}_ksp_norm_type": "unpreconditioned",
-                # Works even faster with rtol 1e-3, atol 1e-5, but this changes the number of snes iterations
-                # from what it is with direct mesh motion solve, even reduces it, which makes me a bit nervous.
+                # atol well below snes_atol, or Newton stalls at about atol. rtol 1e-5 follows the
+                # Newton iterations of the direct solve. rtol 1e-3 halves the CG iterations for about the
+                # same Newton iterations in total, with the Jacobian reassembled about twice as often;
+                # rtol 1e-2 needs 1.7 times the Newton iterations.
                 f"fieldsplit_{name}_ksp_rtol": 1e-5,
-                f"fieldsplit_{name}_ksp_atol": 1e-7,
+                f"fieldsplit_{name}_ksp_atol": 1e-9,
                 f"fieldsplit_{name}_ksp_max_it": 200,
                 # f"fieldsplit_{name}_ksp_monitor_true_residual": None,
                 # f"fieldsplit_{name}_ksp_converged_reason": None,
-                # f"fieldsplit_{name}_ksp_error_if_not_converged": True,
-                # f"fieldsplit_{name}_ksp_view": None,
             }
         mesh_motion_solve_options |= {
             "fieldsplit_x_pc_type": "gamg",
@@ -995,7 +996,7 @@ def main():
         vtx_write_every=None,
         plot_matrices=False,
         gamma_reassemble=0.5,  # Default 0.2.
-        mesh_motion_direct_solver=False,
+        mesh_motion_direct_solver=True,
         restart=args.restart,
     )
 
