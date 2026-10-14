@@ -6,6 +6,7 @@ import gmsh
 
 from xfsi_solver.scripts.create_mesh_DFG2d import create_mesh as create_dfg2d_mesh
 from xfsi_solver.scripts.create_mesh_FSI2 import create_mesh as create_fsi2_mesh
+from xfsi_solver.scripts.create_mesh_FSI3D import create_mesh as create_fsi3d_mesh
 
 
 def main():
@@ -39,6 +40,13 @@ def main():
 
     # data/meshes/dfg2d_alt/mesh_quad_coarse.xdmf
     create_dfg2d_mesh(quads=True, coarse=True)
+    gmsh.clear()
+    # gmsh.clear() keeps the options, and the quad recombination of the quad meshes fails for the
+    # periodic surfaces of the 3d mesh
+    gmsh.option.restoreDefaults()
+
+    # data/meshes/fsi3d/mesh_sec_coarse.xdmf
+    create_fsi3d_mesh(resolution_close=0.02, resolution_far=0.08, second_order=True, suffix="_coarse")
 
 
 if __name__ == "__main__":
