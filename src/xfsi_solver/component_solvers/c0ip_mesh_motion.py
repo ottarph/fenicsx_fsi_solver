@@ -50,14 +50,13 @@ PHYSICAL_MARKERS = {"solid": 1, "ALE_fluid": 2}
 # transfer of the deformation between meshes.
 TIP_POINTS = {2: np.array([0.6, 0.2, 0.0]), 3: np.array([0.9, 0.2, 0.3])}
 
-# "direct": MUMPS LU on the whole vector system, as a reference.
 # "direct_component": MUMPS Cholesky on the x component, reused for the others, as in the FSI solver.
 # "cg_gamg": CG with GAMG on each component, with the GAMG of the x component reused for the others.
 # "cg_laplacian_squared": CG on each component, preconditioned by LaplacianSquaredPC, set up on the
 #   x component and reused for the others.
-# "cg_c0ip_multigrid": CG on each component, preconditioned by a V-cycle of C0IPMultigridPC, set
-#   up on the x component and reused for the others.
-SOLVERS = ("direct", "direct_component", "cg_gamg", "cg_laplacian_squared", "cg_c0ip_multigrid")
+# The study also tried MUMPS LU on the whole vector system and the C0IP multigrid of Brenner and Sung
+# (notes/c0ip-mesh-motion/implementation-log.md); both were dropped.
+SOLVERS = ("direct_component", "cg_gamg", "cg_laplacian_squared")
 
 CASES = {
     "fsi2": {
@@ -157,8 +156,8 @@ def c0ip_forms(U, a_val):
 
 class LaplacianSquaredPC:
     """PCPYTHON context applying L^{-1} M L^{-1}, with L the stiffness matrix of the Laplacian and
-    M the mass matrix, and L^{-1} one V-cycle of algebraic multigrid (multigrid "hypre" for
-    BoomerAMG or "gamg"), or a MUMPS LU solve (multigrid "lu"), to check the V-cycles.
+    M the mass matrix, and L^{-1} one BoomerAMG V-cycle (multigrid "hypre"), or a MUMPS LU solve
+    (multigrid "lu"), to check the V-cycles. A GAMG V-cycle did not converge in 1000 iterations.
 
     The biharmonic operator is the square of the Laplacian, and its discretization is close to
     L M^{-1} L. With the same symmetric V-cycle for both L^{-1}, the preconditioner is symmetric,
@@ -195,155 +194,6 @@ class LaplacianSquaredPC:
         self.ksp.destroy()
         self.Linv_x.destroy()
         self.M_Linv_x.destroy()
-
-
-class PoissonPC:
-    """PCPYTHON context applying one BoomerAMG V-cycle for the Laplacian L, whatever the operator
-    of the PC it is set on."""
-
-    def __init__(self, L: PETSc.Mat):
-        self.ksp = PETSc.KSP().create(L.getComm())
-        self.ksp.setOperators(L)
-        self.ksp.setType("preonly")
-        self.ksp.getPC().setType("hypre")
-        self.ksp.getPC().setHYPREType("boomeramg")
-        self.ksp.setUp()
-
-    def apply(self, pc: PETSc.PC, x: PETSc.Vec, y: PETSc.Vec) -> None:
-        self.ksp.solve(x, y)
-
-    def destroy_solvers(self) -> None:
-        self.ksp.destroy()
-
-
-class C0IPMultigridPC:
-    """PCPYTHON context applying one V-cycle of the multigrid algorithm for C0 interior penalty
-    methods of Brenner and Sung (SIAM J. Numer. Anal. 44, 2006), made algebraic.
-
-    The smoother on each level k is Richardson preconditioned by a Poisson solve,
-    z <- z + gamma_k B_k^{-1} (r - A_k z), with B_k^{-1} one BoomerAMG V-cycle for the Laplacian
-    L_k and gamma_k = 1 / (1.1 lambda_max(B_k^{-1} A_k)), estimated by CG, with
-    smoothing_steps steps before and after the coarse-grid correction, and a direct solve on the
-    coarsest level (Algorithm 2.3). The paper uses nested meshes; here, the hierarchy is that of
-    GAMG on the Laplacian L, and the coarse operators are the Galerkin products P^T A P and
-    P^T L P. With smoother "chebyshev", the Richardson iteration is replaced by Chebyshev, which
-    estimates the eigenvalues itself. The V-cycle is symmetric, so it can be used in CG.
-
-    The Dirichlet rows of A (local indices dirichlet_rows) are identity rows, so their exact
-    inverse, the identity, is applied there instead of the V-cycle. Errors in these dofs cost
-    almost nothing in the energy norm of A, whose other entries are orders of magnitude larger, so
-    the V-cycle barely reduces them: without this, the error of CG at rtol 1e-5 was 0.27 on
-    mesh_sec, with it 0.016.
-
-    The operator A is that of the PC the context is set on, when it is set up. L must have the
-    identity rows of the Dirichlet dofs of A. Call destroy_solvers when done: a method named
-    destroy would be called by petsc4py when the PC is destroyed.
-    """
-
-    def __init__(self, L: PETSc.Mat, dirichlet_rows, smoothing_steps: int, smoother: str = "chebyshev"):
-        self.L = L
-        self.dirichlet_rows = dirichlet_rows
-        self.smoothing_steps = smoothing_steps
-        self.smoother = smoother
-        self.poisson = []
-        self.matrices = []
-
-    def setUp(self, pc: PETSc.PC) -> None:
-        A, _ = pc.getOperators()
-        comm = A.getComm()
-        opts = PETSc.Options()
-
-        # The hierarchy: the interpolations of GAMG on L, without moving the coarse levels to
-        # fewer ranks, so that all levels live on all ranks.
-        self.ksp_hierarchy = PETSc.KSP().create(comm)
-        self.ksp_hierarchy.setOptionsPrefix("c0ip_mg_hierarchy_")
-        self.ksp_hierarchy.setOperators(self.L)
-        for key, value in {
-            "ksp_type": "preonly",
-            "pc_type": "gamg",
-            "pc_gamg_type": "agg",
-            "pc_gamg_process_eq_limit": 1,
-        }.items():
-            opts[f"c0ip_mg_hierarchy_{key}"] = value
-        self.ksp_hierarchy.setFromOptions()
-        self.ksp_hierarchy.setUp()
-        pc_hierarchy = self.ksp_hierarchy.getPC()
-        num_levels = pc_hierarchy.getMGLevels()
-        interpolations = [None] + [pc_hierarchy.getMGInterpolation(k) for k in range(1, num_levels)]
-
-        # The Galerkin coarse operators of A and L, finest last.
-        A_levels, L_levels = [A], [self.L]
-        for k in range(num_levels - 1, 0, -1):
-            A_levels.insert(0, A_levels[0].ptap(interpolations[k]))
-            L_levels.insert(0, L_levels[0].ptap(interpolations[k]))
-        self.matrices = A_levels[:-1] + L_levels[:-1]
-
-        self.mg = PETSc.PC().create(comm)
-        self.mg.setOptionsPrefix("c0ip_mg_")
-        self.mg.setType("mg")
-        self.mg.setMGLevels(num_levels)
-        self.mg.setMGType(PETSc.PC.MGType.MULTIPLICATIVE)
-        self.mg.setMGCycleType(PETSc.PC.MGCycleType.V)
-        for k in range(1, num_levels):
-            self.mg.setMGInterpolation(k, interpolations[k])
-        self.mg.setOperators(A, A)
-
-        coarse = self.mg.getMGCoarseSolve()
-        coarse.setOperators(A_levels[0], A_levels[0])
-        opts["c0ip_mg_mg_coarse_ksp_type"] = "preonly"
-        opts["c0ip_mg_mg_coarse_pc_type"] = "cholesky"
-        opts["c0ip_mg_mg_coarse_pc_factor_mat_solver_type"] = "mumps"
-        coarse.setFromOptions()
-
-        for k in range(1, num_levels):
-            poisson = PoissonPC(L_levels[k])
-            self.poisson.append(poisson)
-            prefix = f"c0ip_mg_mg_levels_{k}_"
-            level_options = {"ksp_max_it": self.smoothing_steps, "ksp_norm_type": "none", "pc_type": "python"}
-            if self.smoother == "richardson":
-                gamma = 1.0 / (1.1 * self._largest_eigenvalue(A_levels[k], poisson))
-                level_options |= {"ksp_type": "richardson", "ksp_richardson_scale": gamma}
-            else:
-                level_options |= {"ksp_type": "chebyshev"}
-            for key, value in level_options.items():
-                opts[prefix + key] = value
-            smoother = self.mg.getMGSmoother(k)
-            smoother.setOperators(A_levels[k], A_levels[k])
-            smoother.setFromOptions()
-            smoother.getPC().setPythonContext(poisson)
-        self.mg.setUp()
-
-    @staticmethod
-    def _largest_eigenvalue(A: PETSc.Mat, poisson: "PoissonPC") -> float:
-        """An estimate of the largest eigenvalue of B^{-1} A, from 20 CG iterations."""
-        ksp = PETSc.KSP().create(A.getComm())
-        ksp.setOperators(A)
-        ksp.setType("cg")
-        ksp.getPC().setType("python")
-        ksp.getPC().setPythonContext(poisson)
-        ksp.setComputeSingularValues(True)
-        ksp.setTolerances(rtol=1e-50, atol=1e-50, max_it=20)
-        ksp.setConvergenceTest(lambda *args: PETSc.KSP.ConvergedReason.ITERATING)
-        b, x = A.createVecs()
-        b.setRandom()
-        ksp.solve(b, x)
-        largest, _ = ksp.computeExtremeSingularValues()
-        ksp.destroy()
-        b.destroy()
-        x.destroy()
-        return largest
-
-    def apply(self, pc: PETSc.PC, x: PETSc.Vec, y: PETSc.Vec) -> None:
-        self.mg.apply(x, y)
-        y.array[self.dirichlet_rows] = x.getArray(readonly=True)[self.dirichlet_rows]
-
-    def destroy_solvers(self) -> None:
-        self.mg.destroy()
-        self.ksp_hierarchy.destroy()
-        for poisson in self.poisson:
-            poisson.destroy_solvers()
-        for matrix in self.matrices:
-            matrix.destroy()
 
 
 def laplacian_and_mass(U, bc, rows):
@@ -384,15 +234,6 @@ def split_components(ksp, component_names, component_rows, split_options, x_opti
 
 def solver_options(solver, rtol, atol, max_it):
     """Options of the KSP, and of the splits of its components, for one of SOLVERS."""
-    if solver == "direct":
-        options = {
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_cntl_1": 1e-4,
-        }
-        return options, {}
-
     options = {"ksp_type": "preonly", "pc_type": "fieldsplit", "pc_fieldsplit_type": "additive"}
     if solver == "direct_component":
         split_options = {"ksp_type": "preonly"}
@@ -423,8 +264,6 @@ def solve(
     max_it=1000,
     a_val=2.0,
     multigrid="hypre",
-    smoothing_steps=5,
-    smoother="chebyshev",
     compare_with_direct=False,
     output_path=None,
 ):
@@ -437,9 +276,8 @@ def solve(
     hierarchy), the second applies the solver that is set up, as in all but the first Newton
     iterations of the FSI solver, where K_m stays the same. rtol, atol and max_it are those of CG
     on each component, a_val scales the C0IP penalty. multigrid is the PETSc PC type of the
-    solves with the Laplacian in cg_laplacian_squared: "hypre" (a BoomerAMG V-cycle), "gamg" (a
-    GAMG V-cycle) or "lu" (MUMPS). smoothing_steps and smoother ("chebyshev" or "richardson") are
-    those of C0IPMultigridPC in cg_c0ip_multigrid. With compare_with_direct, the system is also
+    solves with the Laplacian in cg_laplacian_squared: "hypre" (a BoomerAMG V-cycle) or "lu"
+    (MUMPS). With compare_with_direct, the system is also
     solved with MUMPS Cholesky on each component, to print the error of the solution relative to
     it, which for this fourth-order operator can be much larger than the relative residual. With
     output_path, the displacement is written to a VTX file.
@@ -489,26 +327,15 @@ def solve(
     component_rows = [
         PETSc.IS().createGeneral(np.arange(start + c, end, tdim, dtype=np.int32), comm=comm) for c in range(tdim)
     ]
-    laplacian_squared = c0ip_multigrid = None
-    if solver != "direct":
-        component_ksps = split_components(
-            ksp, component_names, component_rows, component_options["split"], component_options["x"]
-        )
-        if solver == "cg_laplacian_squared":
-            L_x, M_x = laplacian_and_mass(U, bc, component_rows[0])
-            laplacian_squared = LaplacianSquaredPC(L_x, M_x, multigrid)
-            component_ksps[0].getPC().setType(PETSc.PC.Type.PYTHON)
-            component_ksps[0].getPC().setPythonContext(laplacian_squared)
-        if solver == "cg_c0ip_multigrid":
-            L_x, M_x = laplacian_and_mass(U, bc, component_rows[0])
-            # The owned Dirichlet dofs, unrolled, are interleaved per node like the rows, so those
-            # of the x component are every tdim-th, at node dof // tdim of its rows.
-            dirichlet_dofs, num_owned = bc.dof_indices()
-            dirichlet_dofs = dirichlet_dofs[:num_owned]
-            dirichlet_rows_x = dirichlet_dofs[dirichlet_dofs % tdim == 0] // tdim
-            c0ip_multigrid = C0IPMultigridPC(L_x, dirichlet_rows_x, smoothing_steps, smoother)
-            component_ksps[0].getPC().setType(PETSc.PC.Type.PYTHON)
-            component_ksps[0].getPC().setPythonContext(c0ip_multigrid)
+    laplacian_squared = None
+    component_ksps = split_components(
+        ksp, component_names, component_rows, component_options["split"], component_options["x"]
+    )
+    if solver == "cg_laplacian_squared":
+        L_x, M_x = laplacian_and_mass(U, bc, component_rows[0])
+        laplacian_squared = LaplacianSquaredPC(L_x, M_x, multigrid)
+        component_ksps[0].getPC().setType(PETSc.PC.Type.PYTHON)
+        component_ksps[0].getPC().setPythonContext(laplacian_squared)
 
     # First solve: assembly, setup of the solver, and the solve. The setup time is the time in
     # PCSetUp and PCSetUpOnBlocks, the slowest rank's: the fieldsplit sets up the preconditioners
@@ -520,9 +347,9 @@ def solve(
     setup_time = comm.allreduce(
         sum(PETSc.Log.Event(name).getPerfInfo()["time"] for name in ["PCSetUp", "PCSetUpOnBlocks"]), op=MPI.MAX
     )
-    iterations = [k.getIterationNumber() for k in component_ksps] if solver != "direct" else []
+    iterations = [k.getIterationNumber() for k in component_ksps]
     reason_names = {value: name for name, value in vars(PETSc.KSP.ConvergedReason).items() if isinstance(value, int)}
-    reasons = [reason_names[k.getConvergedReason()] for k in component_ksps] if solver != "direct" else []
+    reasons = [reason_names[k.getConvergedReason()] for k in component_ksps]
 
     # Second solve: the solver set up in the first one, applied to the same right-hand side.
     x = problem.x.duplicate()
@@ -563,9 +390,7 @@ def solve(
     min_det_F = comm.allreduce(det_F.x.array[:num_owned_cells].min(), op=MPI.MIN)
 
     factors = []
-    if solver == "direct":
-        factors = [ksp.getPC().getFactorMatrix()]
-    elif solver == "direct_component":
+    if solver == "direct_component":
         factors = [component_ksps[0].getPC().getFactorMatrix()]
     mumps_memory = sum(F.getMumpsInfog(22) for F in factors)  # MB, summed over the ranks
     peak_memory = comm.allreduce(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, op=MPI.SUM)  # kB
@@ -584,10 +409,8 @@ def solve(
             f"Solver: {solver}"
             + (f" (rtol {rtol:g}, atol {atol:g}, max_it {max_it})" if solver.startswith("cg") else "")
             + (f", V-cycles of {multigrid}" if solver == "cg_laplacian_squared" else "")
-            + (f", {smoother} with {smoothing_steps} steps" if solver == "cg_c0ip_multigrid" else "")
         )
-        if solver != "direct":
-            print(f"  iterations per component: {iterations}, converged reasons: {reasons}")
+        print(f"  iterations per component: {iterations}, converged reasons: {reasons}")
         print(f"  first solve (assembly, setup and solve): {first_solve_time:.3f} s, of which setup {setup_time:.3f} s")
         print(f"  second solve (solve only): {second_solve_time:.3f} s")
         print(f"  relative residual: {relative_residual:.3e}")
@@ -610,9 +433,6 @@ def solve(
     ksp.destroy()
     if laplacian_squared is not None:
         laplacian_squared.destroy_solvers()
-    if c0ip_multigrid is not None:
-        c0ip_multigrid.destroy_solvers()
-    if laplacian_squared is not None or c0ip_multigrid is not None:
         L_x.destroy()
         M_x.destroy()
 
@@ -627,12 +447,10 @@ def main():
     parser.add_argument("--rtol", type=float, default=1e-5, help="relative tolerance of CG")
     parser.add_argument(
         "--multigrid",
-        choices=["hypre", "gamg", "lu"],
+        choices=["hypre", "lu"],
         default="hypre",
         help="solves with the Laplacian in cg_laplacian_squared",
     )
-    parser.add_argument("--smoothing-steps", type=int, default=5, help="per level in cg_c0ip_multigrid")
-    parser.add_argument("--smoother", choices=["chebyshev", "richardson"], default="chebyshev")
     parser.add_argument("--compare", action="store_true", help="also solve with MUMPS Cholesky and print the error")
     parser.add_argument("--output", help="VTX file for the displacement")
     args = parser.parse_args()
@@ -646,8 +464,6 @@ def main():
         solver=args.solver,
         rtol=args.rtol,
         multigrid=args.multigrid,
-        smoothing_steps=args.smoothing_steps,
-        smoother=args.smoother,
         compare_with_direct=args.compare,
         output_path=args.output,
     )
