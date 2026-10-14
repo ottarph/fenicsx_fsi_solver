@@ -168,3 +168,61 @@ From two meshes (medium on 16 ranks, fine on 28), so order of magnitude only.
   refinement beyond the fine mesh. Beyond it, an iterative solver is needed
   because of memory, not speed; the Laplacian-squared preconditioner would
   then need about 75 iterations at rtol 1e-5.
+
+## Multigrid of Brenner and Sung (2026-10-14)
+
+Brenner and Sung, *Multigrid algorithms for C0 interior penalty methods*,
+SIAM J. Numer. Anal. 44 (2006): a V-cycle on the C0IP operator A_k whose
+smoother is Richardson preconditioned by a Poisson solve,
+z ← z + γ_k B_k^{-1}(ψ − A_k z), with B_k^{-1} a symmetric V-cycle for the
+Laplacian and γ_k ≈ 1/λ_max(B_k^{-1} A_k). The smoothed operator has a
+condition number of O(h^{-2}) instead of O(h^{-4}). On nested uniform meshes
+(Q2, unit square and L-shape), the V-cycle contracts by 0.3–0.45 per cycle
+with m = 5 pre- and post-smoothing steps, independently of the mesh.
+
+`C0IPMultigridPC` (`--solver cg_c0ip_multigrid`) makes it algebraic, since
+our meshes are not nested:
+
+- hierarchy: the interpolations of GAMG (agg) on the P2 Laplacian, with the
+  coarse levels kept on all ranks; coarse operators P^T A P and P^T L P;
+- smoothers: Richardson with γ = 1/(1.1 λ_max) from 20 CG iterations, as in
+  the paper, or Chebyshev; B_k^{-1} one BoomerAMG V-cycle on L_k;
+- coarsest level: MUMPS Cholesky; the symmetric V-cycle preconditions CG.
+
+Findings, 4 ranks for 2d, 8 for 3d, rtol 1e-5:
+
+- Dirichlet rows: A has identity rows there, with entries orders of magnitude
+  smaller than the rest, so errors in these dofs cost almost nothing in the
+  energy norm, and the V-cycle barely reduces them (γ is tiny). CG then
+  converged in the residual with an error of 0.27 on `mesh_sec`. Applying the
+  identity on these rows instead of the V-cycle brings the error to 0.016.
+  Zeroing the interpolation on them changes nothing (GAMG's interpolation is
+  already zero there, the rows having no couplings in L).
+- More smoothing of GAMG's prolongator (`pc_gamg_agg_nsmooths` 2 and 3)
+  reduces the iterations slightly (43 to 35) but not the error.
+- Chebyshev needs half the iterations of Richardson (43 against 83 on
+  `mesh_sec`), at a similar error, and is the default.
+
+| mesh | iterations | s per solve | error | GAMG on A: iterations, s per solve, error |
+|---|---|---|---|---|
+| 2d coarse | 19–20 | 0.10 | 4.5e-4 | 29–32, 0.005, 2.9e-4 |
+| 2d `mesh_sec` | 41–43 | 0.87 | 1.6e-2 | 58–61, 0.058, 6.3e-3 |
+| 2d fine | 51–54 | 2.74 | 5.6e-2 | 101–110, 0.35, 3.4e-2 |
+| 2d fine, m = 10 | 28–31 | 3.02 | 8.7e-2 | |
+| 3d coarse | 36–43 | 3.06 | 1.6e-4 | 33–35, 0.18, 1.6e-4 |
+
+Chebyshev, m = 5 unless stated.
+
+- The iterations grow (20, 42, 53 over the 2d meshes) more slowly than with
+  GAMG on A, but are not mesh-independent as in the paper, and the error at a
+  fixed rtol grows faster than with the other preconditioners.
+- Each iteration costs 2m BoomerAMG V-cycles per level, so a solve is 5 to 15
+  times slower than GAMG on A and 4 to 6 times slower than the
+  Laplacian-squared preconditioner.
+- The algebraic hierarchy is the likely weak point: aggregation-based coarse
+  functions are made for second-order problems, and their kinks are costly in
+  the C0IP norm, while the paper's analysis relies on nested spaces with an
+  H²-conforming relative (its Section 3). A geometric hierarchy would need
+  nested meshes, which our curved second-order meshes do not have.
+- Not pursued further: for these meshes the reused Cholesky factorization
+  stays the choice (above).
