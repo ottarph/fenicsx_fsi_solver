@@ -19,15 +19,17 @@ def test_fsi2_harmonic_lagrange_solve(output_dirs):
     dt_val = 0.0025
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
-        # save_every=8 in the solver, so run enough steps to save at least 2 snapshots
+        # Run enough steps to save at least 2 VTX snapshots
         T=10 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / "fsi2_harmonic_lagrange.bp"),
         output_path_p=str(output_dirs["pv"] / "fsi2_harmonic_lagrange_p.bp"),
         qoi_path=str(output_dirs["qoi"] / "fsi2_harmonic_lagrange.txt"),
+        vtx_save_every=8,
     )
 
     assert (output_dirs["qoi"] / "fsi2_harmonic_lagrange.txt").exists()
+    assert (output_dirs["pv"] / "fsi2_harmonic_lagrange.bp").exists()
 
 
 def test_fsi2_harmonic_lagrange_restart_reproduces_continuous_run(output_dirs, tmp_path):

@@ -41,7 +41,12 @@ def solve(
     lift_plot_path,
     drag_coeff_plot_path,
     lift_coeff_plot_path,
+    vtx_save_every=None,
 ):
+    """Solve the DFG 2D-3 benchmark up to time ``T``, writing drag and lift every time step
+    and, with ``vtx_save_every``, a VTX snapshot every ``vtx_save_every`` steps. With
+    ``vtx_save_every=None``, no VTX output is written.
+    """
 
     log = PETSc.Log()
     log.begin()
@@ -80,12 +85,10 @@ def solve(
 
     theta = dolfinx.fem.Constant(fluid_mesh, 0.5)
 
-    save_every = 10
-
     total_steps = int(np.ceil((T - t0) / dt_val))
-    if total_steps < save_every:
+    if vtx_save_every is not None and total_steps < vtx_save_every:
         warnings.warn(
-            f"save_every ({save_every}) is larger than the total number of time "
+            f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
             f"steps ({total_steps}); no VTX output will ever be written to "
             f"{output_path!r} or {output_path_p!r}.",
             stacklevel=2,
@@ -193,8 +196,9 @@ def solve(
         },
     )
 
-    writer = dolfinx.io.VTXWriter(comm, output_path, [v])
-    writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p])
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
 
     from timeit import default_timer as timer
 
@@ -269,6 +273,15 @@ def solve(
 
     hooks = [drag_hook, lift_hook]
 
+    def write_output(t, step):
+        """Write drag and lift, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
+        for hook in hooks:
+            hook(t)
+
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
+
     if fluid_mesh.comm.rank == 0:
         print("", flush=True)
     fluid_mesh.comm.barrier()
@@ -289,17 +302,12 @@ def solve(
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
+        check_converged(problem, f"t = {t:.4f}", writers=writers)
 
         if comm.rank == 0:
             sys.stdout.flush()
 
-        for hook in hooks:
-            hook(t)
-
-        if i % save_every == 0:
-            writer.write(t)
-            writer_p.write(t)
+        write_output(t, i)
 
     end = timer()
     if comm.rank == 0:
@@ -307,8 +315,8 @@ def solve(
         print(f"Elapsed time: {end - start:.2f} s")
         print(f"Time per step: {(end - start) / i:.3e} s")
 
-    writer.close()
-    writer_p.close()
+    for writer in writers:
+        writer.close()
 
     # dolfinx.common.list_timings(comm, [dolfinx.common.TimingType.wall])
     # log.view()
@@ -373,6 +381,7 @@ def main():
         lift_plot_path="output/figures/dfg_2d_3_lift.png",
         drag_coeff_plot_path="output/figures/dfg_2d_3_drag_coeff.png",
         lift_coeff_plot_path="output/figures/dfg_2d_3_lift_coeff.png",
+        vtx_save_every=10,
     )
 
 

@@ -43,10 +43,13 @@ def solve(
     qoi_path,
     checkpoint_dir=None,
     checkpoint_every=None,
+    vtx_save_every=None,
     restart=False,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
-    steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
+    steps, writing the initial state at ``t0`` as the first QoI row and, with
+    ``vtx_save_every``, as the first VTX snapshot. With ``vtx_save_every=None``, no VTX
+    output is written; otherwise a snapshot is written every ``vtx_save_every`` steps.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -135,12 +138,10 @@ def solve(
 
     theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
 
-    save_every = 4
-
     num_steps = round((T - t0) / dt_val)
-    if num_steps < save_every:
+    if vtx_save_every is not None and num_steps < vtx_save_every:
         warnings.warn(
-            f"save_every ({save_every}) is larger than the total number of time "
+            f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
             f"steps ({num_steps}); at most one VTX snapshot will be written to "
             f"{output_path!r} or {output_path_p!r}, which is not a usable time "
             f"series in ParaView.",
@@ -342,15 +343,14 @@ def solve(
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
         if comm.rank == 0:
-            print(
-                f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
-                f"writing VTX output to {output_path} and {output_path_p}"
-            )
+            vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
+            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
 
-    writer = dolfinx.io.VTXWriter(comm, output_path, [u, v])
-    writer_p = dolfinx.io.VTXWriter(comm, output_path_p, [p])
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
 
     # Quantities of interest: the displacement at the tip of the structure, and the drag and
     # lift on the obstacle and on the fluid side of the solid-fluid interface.
@@ -367,10 +367,10 @@ def solve(
     )
 
     def write_output(t, step):
-        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
-        if step % save_every == 0:
-            writer.write(t)
-            writer_p.write(t)
+        """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
 
         u_spot = point_value(u, spot_dof)
         drag = assemble_force(drag_forms, comm)
@@ -400,7 +400,7 @@ def solve(
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        check_converged(problem, f"t = {t:.4f}", writers=[writer, writer_p])
+        check_converged(problem, f"t = {t:.4f}", writers=writers)
 
         if comm.rank == 0:
             sys.stdout.flush()
@@ -417,8 +417,8 @@ def solve(
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
-    writer.close()
-    writer_p.close()
+    for writer in writers:
+        writer.close()
 
     return
 
@@ -439,6 +439,7 @@ def main():
         qoi_path="output/qoi/fsi2_harmonic.txt",
         checkpoint_dir="output/checkpoints/fsi2_harmonic",
         checkpoint_every=100,
+        vtx_save_every=4,
         restart=args.restart,
     )
 

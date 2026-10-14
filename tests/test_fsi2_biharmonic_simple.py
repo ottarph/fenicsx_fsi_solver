@@ -15,15 +15,17 @@ def test_fsi2_biharmonic_simple_solve(output_dirs):
     dt_val = 0.0025
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
-        # save_every=4 in the solver, so run enough steps to save at least 2 snapshots
+        # Run enough steps to save at least 2 VTX snapshots
         T=6 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / "fsi2_biharmonic_simple.bp"),
         output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_simple_p.bp"),
         qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_simple.txt"),
+        vtx_save_every=4,
     )
 
     assert (output_dirs["qoi"] / "fsi2_biharmonic_simple.txt").exists()
+    assert (output_dirs["pv"] / "fsi2_biharmonic_simple.bp").exists()
 
 
 def test_fsi2_biharmonic_simple_restart_reproduces_continuous_run(output_dirs, tmp_path):

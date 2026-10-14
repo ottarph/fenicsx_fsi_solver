@@ -16,8 +16,24 @@ def test_fsi2_harmonic_solve(output_dirs):
     solve(
         # smaller stand-in for the default "mesh_quad_fine_sec.xdmf" mesh
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
-        # save_every=4 in the solver, so run enough steps to save at least 2 snapshots
+        # Run enough steps to save at least 2 VTX snapshots
         T=6 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "fsi2_harmonic.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_harmonic_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "fsi2_harmonic.txt"),
+        vtx_save_every=4,
+    )
+
+    assert (output_dirs["qoi"] / "fsi2_harmonic.txt").exists()
+    assert (output_dirs["pv"] / "fsi2_harmonic.bp").exists()
+
+
+def test_fsi2_harmonic_writes_no_vtx_by_default(output_dirs):
+    dt_val = 0.0025
+    solve(
+        mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
+        T=2 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / "fsi2_harmonic.bp"),
         output_path_p=str(output_dirs["pv"] / "fsi2_harmonic_p.bp"),
@@ -25,6 +41,7 @@ def test_fsi2_harmonic_solve(output_dirs):
     )
 
     assert (output_dirs["qoi"] / "fsi2_harmonic.txt").exists()
+    assert not any(output_dirs["pv"].iterdir())
 
 
 def test_fsi2_harmonic_restart_reproduces_continuous_run(output_dirs, tmp_path):

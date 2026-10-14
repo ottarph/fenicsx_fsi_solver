@@ -107,6 +107,7 @@ def check_restart_reproduces_continuous_run(
             qoi_path=str(output_dirs["qoi"] / f"{name}_qoi.txt"),
             checkpoint_dir=tmp_path / name,
             checkpoint_every=4,
+            vtx_save_every=4,
             restart=restart,
             **(solve_kwargs or {}),
         )

@@ -20,16 +20,18 @@ def test_fsi2_biharmonic_fulljacobian_solve(output_dirs, mesh_motion_scaling):
     dt_val = 0.0025
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
-        # save_every=4 in the solver, so run enough steps to save at least 2 snapshots
+        # Run enough steps to save at least 2 VTX snapshots
         T=6 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp"),
         output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian_p.bp"),
         qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
+        vtx_save_every=4,
         mesh_motion_scaling=mesh_motion_scaling,
     )
 
     assert (output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt").exists()
+    assert (output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp").exists()
 
 
 @SCALINGS

@@ -15,7 +15,7 @@ def test_dfg_2d_3_solve(output_dirs, cell_type, mesh_path):
     dt_val = 1 / 400
     solve(
         mesh_path=mesh_path,
-        # save_every=10 in the solver, so run enough steps to save at least 2 snapshots
+        # Run enough steps to save at least 2 VTX snapshots
         T=21 * dt_val,
         dt_val=dt_val,
         output_path=str(output_dirs["pv"] / f"dfg_2d_3_{cell_type}.bp"),
@@ -26,7 +26,9 @@ def test_dfg_2d_3_solve(output_dirs, cell_type, mesh_path):
         lift_plot_path=str(output_dirs["figures"] / f"dfg_2d_3_lift_{cell_type}.png"),
         drag_coeff_plot_path=str(output_dirs["figures"] / f"dfg_2d_3_drag_coeff_{cell_type}.png"),
         lift_coeff_plot_path=str(output_dirs["figures"] / f"dfg_2d_3_lift_coeff_{cell_type}.png"),
+        vtx_save_every=10,
     )
 
     assert (output_dirs["qoi"] / f"dfg_2d_3_drag_{cell_type}.txt").exists()
     assert (output_dirs["figures"] / f"dfg_2d_3_drag_coeff_{cell_type}.png").exists()
+    assert (output_dirs["pv"] / f"dfg_2d_3_{cell_type}.bp").exists()
