@@ -53,7 +53,9 @@ TIP_POINTS = {2: np.array([0.6, 0.2, 0.0]), 3: np.array([0.9, 0.2, 0.3])}
 # "direct": MUMPS LU on the whole vector system, as a reference.
 # "direct_component": MUMPS Cholesky on the x component, reused for the others, as in the FSI solver.
 # "cg_gamg": CG with GAMG on each component, with the GAMG of the x component reused for the others.
-SOLVERS = ("direct", "direct_component", "cg_gamg")
+# "cg_laplacian_squared": CG on each component, preconditioned by LaplacianSquaredPC, set up on the
+#   x component and reused for the others.
+SOLVERS = ("direct", "direct_component", "cg_gamg", "cg_laplacian_squared")
 
 CASES = {
     "fsi2": {
@@ -151,6 +153,61 @@ def c0ip_forms(U, a_val):
     return a, L, facet_entity_map
 
 
+class LaplacianSquaredPC:
+    """PCPYTHON context applying L^{-1} M L^{-1}, with L the stiffness matrix of the Laplacian and
+    M the mass matrix, and L^{-1} one V-cycle of algebraic multigrid (multigrid "hypre" for
+    BoomerAMG or "gamg"), or a MUMPS LU solve (multigrid "lu"), to check the V-cycles.
+
+    The biharmonic operator is the square of the Laplacian, and its discretization is close to
+    L M^{-1} L. With the same symmetric V-cycle for both L^{-1}, the preconditioner is symmetric,
+    so it can be used in CG. For the clamped boundary conditions of the mesh motion, the condition
+    number of the preconditioned operator grows like h^{-1} (Braess and Peisker, IMA J. Numer.
+    Anal. 6, 1986), instead of h^{-4} without a preconditioner. L and M must have the identity rows
+    of the Dirichlet dofs of the biharmonic system.
+
+    Call destroy_solvers when done: a method named destroy would be called by petsc4py when the
+    PC is destroyed.
+    """
+
+    def __init__(self, L: PETSc.Mat, M: PETSc.Mat, multigrid: str):
+        self.M = M
+        self.ksp = PETSc.KSP().create(L.getComm())
+        self.ksp.setOperators(L)
+        self.ksp.setType("preonly")
+        self.ksp.getPC().setType(multigrid)
+        if multigrid == "hypre":
+            self.ksp.getPC().setHYPREType("boomeramg")
+        elif multigrid == "lu":
+            self.ksp.getPC().setFactorSolverType("mumps")
+        self.Linv_x, self.M_Linv_x = M.createVecs()
+
+    def setUp(self, pc: PETSc.PC) -> None:
+        self.ksp.setUp()
+
+    def apply(self, pc: PETSc.PC, x: PETSc.Vec, y: PETSc.Vec) -> None:
+        self.ksp.solve(x, self.Linv_x)
+        self.M.mult(self.Linv_x, self.M_Linv_x)
+        self.ksp.solve(self.M_Linv_x, y)
+
+    def destroy_solvers(self) -> None:
+        self.ksp.destroy()
+        self.Linv_x.destroy()
+        self.M_Linv_x.destroy()
+
+
+def laplacian_and_mass(U, bc, rows):
+    """The stiffness matrix of the Laplacian and the mass matrix on the vector space U, with the
+    identity rows of bc, restricted to the rows and columns in the index set rows."""
+    u, du = ufl.TrialFunction(U), ufl.TestFunction(U)
+    matrices = []
+    for form in [ufl.inner(ufl.grad(u), ufl.grad(du)) * ufl.dx, ufl.inner(u, du) * ufl.dx]:
+        A = dolfinx.fem.petsc.assemble_matrix(dolfinx.fem.form(form), bcs=[bc])
+        A.assemble()
+        matrices.append(A.createSubMatrix(rows, rows))
+        A.destroy()
+    return matrices
+
+
 def solver_options(solver, rtol, atol, max_it):
     """Options of the KSP, and of the splits of its components, for one of SOLVERS."""
     if solver == "direct":
@@ -174,7 +231,10 @@ def solver_options(solver, rtol, atol, max_it):
             "ksp_atol": atol,
             "ksp_max_it": max_it,
         }
-        x_options = {"pc_type": "gamg", "pc_gamg_type": "agg", "pc_gamg_threshold": 0.2}
+        if solver == "cg_gamg":
+            x_options = {"pc_type": "gamg", "pc_gamg_type": "agg", "pc_gamg_threshold": 0.2}
+        else:
+            x_options = {"pc_type": "python"}
     return options, {"split": split_options, "x": x_options}
 
 
@@ -188,6 +248,7 @@ def solve(
     atol=1e-9,
     max_it=1000,
     a_val=2.0,
+    multigrid="hypre",
     compare_with_direct=False,
     output_path=None,
 ):
@@ -199,8 +260,10 @@ def solve(
     The solve is done twice: the first includes the setup of the solver (factorization or GAMG
     hierarchy), the second applies the solver that is set up, as in all but the first Newton
     iterations of the FSI solver, where K_m stays the same. rtol, atol and max_it are those of CG
-    on each component, a_val scales the C0IP penalty. With compare_with_direct, the system is
-    also solved with MUMPS LU, to print the error of the solution relative to it, which for this
+    on each component, a_val scales the C0IP penalty. multigrid is the PETSc PC type of the
+    solves with the Laplacian in cg_laplacian_squared: "hypre" (a BoomerAMG V-cycle), "gamg" (a
+    GAMG V-cycle) or "lu" (MUMPS). With compare_with_direct, the system is also solved with
+    MUMPS Cholesky, to print the error of the solution relative to it, which for this
     fourth-order operator can be much larger than the relative residual. With output_path, the
     displacement is written to a VTX file.
     """
@@ -245,15 +308,14 @@ def solve(
     # The owned dofs are stored interleaved per node, (x, y[, z]), so the rows of a component are
     # every tdim-th owned row. The components are not coupled and have the same matrix.
     component_names = ["x", "y", "z"][:tdim]
+    laplacian_squared = None
     if solver != "direct":
         start, end = problem.A.getOwnershipRange()
+        component_rows = [
+            PETSc.IS().createGeneral(np.arange(start + c, end, tdim, dtype=np.int32), comm=comm) for c in range(tdim)
+        ]
         pc = ksp.getPC()
-        pc.setFieldSplitIS(
-            *(
-                (name, PETSc.IS().createGeneral(np.arange(start + c, end, tdim, dtype=np.int32), comm=comm))
-                for c, name in enumerate(component_names)
-            )
-        )
+        pc.setFieldSplitIS(*zip(component_names, component_rows, strict=True))
         # Set through the options database, since the fieldsplit calls setFromOptions on its
         # sub-KSPs in PCSetUp, which would override types set directly on them.
         opts = PETSc.Options()
@@ -266,18 +328,26 @@ def solve(
                 opts[key] = value
             opts.prefixPop()
             component_ksp.setFromOptions()
+        if solver == "cg_laplacian_squared":
+            L_x, M_x = laplacian_and_mass(U, bc, component_rows[0])
+            laplacian_squared = LaplacianSquaredPC(L_x, M_x, multigrid)
+            component_ksps[0].getPC().setType(PETSc.PC.Type.PYTHON)
+            component_ksps[0].getPC().setPythonContext(laplacian_squared)
         pc_reuse = ReusePC(component_ksps[0].getPC())
         for component_ksp in component_ksps[1:]:
             component_ksp.getPC().setType(PETSc.PC.Type.PYTHON)
             component_ksp.getPC().setPythonContext(pc_reuse)
 
     # First solve: assembly, setup of the solver, and the solve. The setup time is the time in
-    # PCSetUp, the slowest rank's, including the setup of the components' preconditioners.
+    # PCSetUp and PCSetUpOnBlocks, the slowest rank's: the fieldsplit sets up the preconditioners
+    # of the components in PCSetUpOnBlocks.
     PETSc.Log.begin()
     start_time = timer()
     problem.solve()
     first_solve_time = timer() - start_time
-    setup_time = comm.allreduce(PETSc.Log.Event("PCSetUp").getPerfInfo()["time"], op=MPI.MAX)
+    setup_time = comm.allreduce(
+        sum(PETSc.Log.Event(name).getPerfInfo()["time"] for name in ["PCSetUp", "PCSetUpOnBlocks"]), op=MPI.MAX
+    )
     iterations = [k.getIterationNumber() for k in component_ksps] if solver != "direct" else []
     reason_names = {value: name for name, value in vars(PETSc.KSP.ConvergedReason).items() if isinstance(value, int)}
     reasons = [reason_names[k.getConvergedReason()] for k in component_ksps] if solver != "direct" else []
@@ -294,11 +364,11 @@ def solve(
     relative_residual = residual.norm() / problem.b.norm()
 
     if compare_with_direct:
-        # The same assembled system, solved with MUMPS LU.
+        # The same assembled system, solved with MUMPS Cholesky, which needs less memory than LU.
         ksp_direct = PETSc.KSP().create(comm)
         ksp_direct.setOperators(problem.A)
         ksp_direct.setType("preonly")
-        ksp_direct.getPC().setType("lu")
+        ksp_direct.getPC().setType("cholesky")
         ksp_direct.getPC().setFactorSolverType("mumps")
         x_direct = problem.x.duplicate()
         ksp_direct.solve(problem.b, x_direct)
@@ -335,7 +405,9 @@ def solve(
         print(f"  tip displacement in the checkpoint: {tip_checkpoint}, in the boundary condition: {tip_bc}")
         print(f"Unknowns: {num_dofs} ({num_dofs // tdim} per component), ranks: {comm.size}")
         print(
-            f"Solver: {solver}" + (f" (rtol {rtol:g}, atol {atol:g}, max_it {max_it})" if solver == "cg_gamg" else "")
+            f"Solver: {solver}"
+            + (f" (rtol {rtol:g}, atol {atol:g}, max_it {max_it})" if solver.startswith("cg") else "")
+            + (f", V-cycles of {multigrid}" if solver == "cg_laplacian_squared" else "")
         )
         if solver != "direct":
             print(f"  iterations per component: {iterations}, converged reasons: {reasons}")
@@ -346,7 +418,7 @@ def solve(
             print(f"  MUMPS memory: {mumps_memory} MB")
         print(f"  peak memory, summed over the ranks: {peak_memory / 1024**2:.2f} GB")
         if compare_with_direct:
-            print(f"  error relative to MUMPS LU (l2 norm of the dofs): {relative_error:.3e}")
+            print(f"  error relative to MUMPS Cholesky (l2 norm of the dofs): {relative_error:.3e}")
         print(f"L2 norm of the displacement: {u_norm:.10e}")
         print(f"Smallest det(I + grad u) at the cell midpoints: {min_det_F:.4f}")
 
@@ -359,6 +431,10 @@ def solve(
     # Destroying a MUMPS factorization is collective, so destroy the solver on all ranks here
     # instead of leaving it to garbage collection.
     ksp.destroy()
+    if laplacian_squared is not None:
+        laplacian_squared.destroy_solvers()
+        L_x.destroy()
+        M_x.destroy()
 
     return uh
 
@@ -369,7 +445,13 @@ def main():
     parser.add_argument("--mesh", help="mesh to solve on, if not the checkpoint's; the deformation is interpolated")
     parser.add_argument("--solver", choices=SOLVERS, default="cg_gamg")
     parser.add_argument("--rtol", type=float, default=1e-5, help="relative tolerance of CG")
-    parser.add_argument("--compare", action="store_true", help="also solve with MUMPS LU and print the error")
+    parser.add_argument(
+        "--multigrid",
+        choices=["hypre", "gamg", "lu"],
+        default="hypre",
+        help="solves with the Laplacian in cg_laplacian_squared",
+    )
+    parser.add_argument("--compare", action="store_true", help="also solve with MUMPS Cholesky and print the error")
     parser.add_argument("--output", help="VTX file for the displacement")
     args = parser.parse_args()
 
@@ -381,6 +463,7 @@ def main():
         checkpoint_mesh_path=case["mesh_path"],
         solver=args.solver,
         rtol=args.rtol,
+        multigrid=args.multigrid,
         compare_with_direct=args.compare,
         output_path=args.output,
     )
