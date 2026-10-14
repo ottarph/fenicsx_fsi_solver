@@ -15,6 +15,7 @@ def test_navier_stokes_ale_fsi2_mm_bih_solve(output_dirs, cell_type, mesh_path):
         dt_val=0.0025,
         bd_dset_path="data/fsi2_boundary/",
         output_path=str(output_path),
+        vtx_save_every=1,
         max_steps=3,
     )
 

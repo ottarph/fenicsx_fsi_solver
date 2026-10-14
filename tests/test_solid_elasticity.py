@@ -16,6 +16,7 @@ def test_solid_elasticity_solve(output_dirs, cell_type, mesh_path):
         T=3 * dt_val,
         dt_val=dt_val,
         output_path=str(output_path),
+        vtx_save_every=1,
     )
 
     assert output_path.exists()

@@ -25,7 +25,7 @@ PHYSICAL_MARKERS = {
 }
 
 
-def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=None):
+def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=None, vtx_save_every=None):
 
     assert comm.size == 1, "This example only works in serial"
 
@@ -267,7 +267,16 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=No
         },
     )
 
-    writer = dolfinx.io.VTXWriter(comm, output_path, [u, v])
+    # With vtx_save_every=None, no VTX output is written; otherwise a snapshot every vtx_save_every steps.
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v])]
+
+    def write_output(t, step):
+        """Write the VTX snapshot of the state at time t, every vtx_save_every steps."""
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
 
     total_steps = num_cycles * num_steps
     if max_steps is not None:
@@ -292,14 +301,15 @@ def solve(mesh_path, dt_val, bd_dset_path, output_path, num_cycles, max_steps=No
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        check_converged(problem, f"t = {t:.4f}", writers=[writer])
+        check_converged(problem, f"t = {t:.4f}", writers=writers)
 
         if comm.rank == 0:
             sys.stdout.flush()
 
-        writer.write(t)
+        write_output(t, step)
 
-    writer.close()
+    for writer in writers:
+        writer.close()
 
     return
 
@@ -310,6 +320,7 @@ def main():
         dt_val=0.0025,
         bd_dset_path="data/fsi2_boundary/",
         output_path="output/pv/navier_stokes_ale_fsi2.bp",
+        vtx_save_every=1,
         num_cycles=4,
     )
 

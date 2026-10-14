@@ -24,7 +24,7 @@ PHYSICAL_MARKERS = {
 }
 
 
-def solve(mesh_path, T, dt_val, output_path):
+def solve(mesh_path, T, dt_val, output_path, vtx_save_every=None):
 
     # load mesh and meshtags
 
@@ -157,12 +157,23 @@ def solve(mesh_path, T, dt_val, output_path):
         },
     )
 
-    writer = dolfinx.io.VTXWriter(comm, output_path, [u])
+    # With vtx_save_every=None, no VTX output is written; otherwise a snapshot every vtx_save_every steps.
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [u])]
+
+    def write_output(t, step):
+        """Write the VTX snapshot of the state at time t, every vtx_save_every steps."""
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
 
     t = t0
+    step = 0
 
     while t < T:
         t += dt.value
+        step += 1
 
         u_old.x.array[:] = u.x.array
         v_old.x.array[:] = v.x.array
@@ -173,14 +184,15 @@ def solve(mesh_path, T, dt_val, output_path):
             print(f"\n{t = :.3f}")
 
         problem.solve()
-        check_converged(problem, f"t = {t:.4f}", writers=[writer])
+        check_converged(problem, f"t = {t:.4f}", writers=writers)
 
         if comm.rank == 0:
             sys.stdout.flush()
 
-        writer.write(t)
+        write_output(t, step)
 
-    writer.close()
+    for writer in writers:
+        writer.close()
 
     return
 
@@ -191,6 +203,7 @@ def main():
         T=0.2,
         dt_val=0.0025,
         output_path="output/pv/solid_elasticity.bp",
+        vtx_save_every=1,
     )
 
 
