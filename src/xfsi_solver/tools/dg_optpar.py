@@ -40,9 +40,9 @@ def get_dg_penalty_parameters_tetrahedron(mesh: dolfinx.mesh.Mesh, a_val: float,
     areas area from compute_facet_diameters_and_areas.
 
     Not from the literature: the parameters of get_dg_penalty_parameters_triangle carried over to
-    tetrahedra. On triangles, the facet area h**2 is h * area, so the penalty sigma / h is
-    proportional to area / vol, the ratio in the trace inequality on simplices, and that ratio is
-    kept here. The constant is not tuned for tetrahedra, so check the coercivity by varying a_val.
+    tetrahedra. On triangles, a facet's diameter and area are both its length, so h**2 there is
+    h * area, and the penalty sigma / h is proportional to area / vol, the ratio in the trace
+    inequality on simplices. That ratio is kept here. The constant is not tuned for tetrahedra, so check the coercivity by varying a_val.
     """
     assert mesh.basix_cell() == basix.CellType.tetrahedron
 
