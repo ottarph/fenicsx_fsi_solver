@@ -572,7 +572,7 @@ def solve(
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharm_restr_split_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_mixed_snes_log.txt",
         },
     )
 
@@ -1053,10 +1053,10 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_fine_sec.xdmf",
         T=16.0 + 10 * 0.0025,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharm_dm_restr_split_condensed_fine.bp",
-        output_path_p="output/pv/fsi2_biharm_p_dm_restr_split_condensed_fine.bp",
-        qoi_path="output/qoi/fsi2_biharm_qoi_restr_split_condensed_fine.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr_split_approx_fine",
+        output_path="output/pv/fsi2_biharmonic_mixed_fine.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_fine_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_fine.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_fine",
         checkpoint_every=400,
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.

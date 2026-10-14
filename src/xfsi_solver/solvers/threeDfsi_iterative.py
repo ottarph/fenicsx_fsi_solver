@@ -66,7 +66,7 @@ def solve(
     first VTX snapshot. With ``vtx_save_every=None``, no VTX output is written; otherwise
     a snapshot is written every ``vtx_save_every`` steps.
 
-    This is the 3d version of the solver in fsi2_biharmonic_diffmesh_restricted_split_condensed.py,
+    This is the 3d version of the solver in fsi2_biharmonic_mixed.py,
     with the same formulation and the same solver options. The QoIs are the drag and the lift
     on the cylinder and the beam, and the displacement of the point B = (0.9, 0.2, 0.3) on the
     back face of the beam.
