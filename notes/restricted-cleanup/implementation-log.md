@@ -64,3 +64,26 @@ Other decisions:
   missing and partial files, and `plot_3d_qois`) and adding `plot_c0ip_comparison` in the same style.
 - `tools/petsc_reuse.py` and its test are byte-identical on both branches, so they merged cleanly.
 - Test suite on the merge: 111 passed.
+
+## Phase 2: renames and deletions (2026-10-14)
+
+- Each rename is its own commit. The script and its test move together, and the commit also updates the
+  defaults that carry the name: the output, checkpoint, QoI and log paths, and the PETSc prefix where it
+  was the script name. The three condensed solvers keep the prefix `solver_`. These edits are small, so git
+  still detects the renames.
+- QoI, VTX and checkpoint names follow the pattern `<script>[_<mesh>]`: `<script>.txt`, `<script>.bp`,
+  `<script>_p.bp`, `output/checkpoints/<script>`. The mesh suffix appears only where `main()` runs a
+  non-default mesh: `fsi2_biharmonic_mixed_fine`, `threeDfsi_mixed_medium`.
+- `fsi2_biharmonic_fulljacobian` gets the scaled factorization as `mesh_motion_scaling` (None or 1e-9).
+  The unscaled path is unchanged and still uses MUMPS `cntl_1 = 1e-4`. The scaled path is the `ScaledLU` of
+  the old `_scaled` solver, which did not set `cntl_1`. Both paths give QoIs bitwise identical to the two old
+  solvers, from rest and from developed flow. Both are tested, through a new `solve_kwargs` argument of
+  `check_restart_reproduces_continuous_run`.
+- `create_mesh_DFG2d_alt.py` replaces `create_mesh_DFG2d.py`. It still writes to `data/meshes/dfg2d_alt/`,
+  so existing meshes and paths keep working. The commented-out mesh option in `dfg_2d_3.py` that points to
+  the old script's mesh stays, since that mesh is still on disk.
+- The existing files in `output/` were renamed to the new names with `mv -n`: QoIs, checkpoints and VTX.
+  Output of deleted solvers, logs and figures stay as they were.
+- Check: all setups were rerun with the renamed code (tag `phase2`). They are bitwise identical to the
+  reference, except `fsi2_harmonic_lagrange`, which differs by 1.6e-6, the same as between two identical
+  runs.
