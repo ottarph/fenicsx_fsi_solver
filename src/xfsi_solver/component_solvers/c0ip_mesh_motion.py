@@ -10,7 +10,7 @@ simulation. The deformation is the displacement u of a checkpoint of an FSI run:
 the channel walls and the cylinder, and the solid's displacement on the fluid-solid interface.
 The problem is posed on the fluid submesh with u as Dirichlet condition on its whole boundary.
 The unknowns are then those of K_m; the interface dofs, which the FSI solver keeps in the solid
-block u_S, become identity rows here. There is no C0IP FSI solver in 3d yet; there, the penalty
+block u_S, become identity rows here. In 3d, as in ``solvers/threeDfsi_c0ip.py``, the penalty
 parameters are those of triangles carried over to tetrahedra (get_dg_penalty_parameters_tetrahedron).
 
 The deformation can be interpolated to another mesh of the same geometry, to solve for the same

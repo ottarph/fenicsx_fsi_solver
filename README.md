@@ -111,6 +111,7 @@ biharmonic mesh motion) on a submesh of the fluid domain, with dolfinx's mixed-m
 | ``fsi2_biharmonic_mixed`` | biharmonic, mixed form, restricted test functions | approximate Jacobian, fieldsplit; K_c by MUMPS or block-preconditioned FGMRES |
 | ``fsi2_biharmonic_c0ip`` | biharmonic, C0 interior penalty form, restricted test functions | as ``fsi2_biharmonic_mixed`` |
 | ``threeDfsi_mixed`` | as ``fsi2_biharmonic_mixed``, for the 3d benchmark of Failer and Richter (2020) | as ``fsi2_biharmonic_mixed`` |
+| ``threeDfsi_c0ip`` | as ``fsi2_biharmonic_c0ip``, for the 3d benchmark | as ``fsi2_biharmonic_mixed`` |
 
 The restricted-test-function formulation and the iterative solver of ``fsi2_biharmonic_mixed`` are described
 in ``docs/restricted-iterative-solver.md``. The design decisions and measurements behind the solvers are

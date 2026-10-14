@@ -184,3 +184,26 @@ Other decisions:
 | `restricted-test-functions-solver-time.md` | `notes/restricted-test-functions/solver-time.md` |
 | `output/figures/y-disp.svg` | `docs/figures/y-disp.svg` |
 | QoI files `fsi2_harm_dm_qoi.txt`, `fsi2_biharm_qoi.txt`, `fsi2_biharm_qoi_restr*.txt`, `fsi2_biharm_c0ip.txt`, `fsi3d_iterative_qoi_*.txt` | `<script>[_<mesh or variant>].txt` |
+
+## Phase 7: threeDfsi_c0ip (2026-10-14)
+
+- The machine was free after the cleanup, so `threeDfsi_c0ip` was built. It is `threeDfsi_mixed` with the
+  mesh motion of `fsi2_biharmonic_c0ip`. The penalty is `get_dg_penalty_parameters_tetrahedron`, with the
+  facet diameters and areas of `compute_facet_diameters_and_areas`.
+- Coarse 3d mesh, 14 ranks, iterative K_c, 20 steps:
+
+  | start | max rel. QoI difference to `threeDfsi_mixed` | Newton its | s/step, c0ip | s/step, mixed |
+  |---|---|---|---|---|
+  | rest | 9e-5 | 50 / 50 | 3.97 | 1.23 |
+  | t = 10, from the mixed checkpoint | 2e-3 | 74 / 71 | 5.42 | 1.65 |
+
+  The QoIs differ because the mesh motion differs. Both solvers converge with similar iteration counts.
+- Profile (`-log_view`, from rest): `SNESFunctionEval` takes 66 of 77 s, about 0.95 s per residual. The
+  K_c solves take 8.5 s, the Jacobian 1.3 s, and the Cholesky factorization of K_m 0.09 s. The C0IP facet
+  integrals on the curved tetrahedra are reassembled in every residual evaluation, although they are
+  linear in u.
+- Possible next step: assemble the C0IP block once and add its product with u to the residual, instead of
+  integrating it again each time. Not done here, since it changes the formulation code and needs its own
+  check. In 2d, the C0IP solver is about 25% slower per step than the mixed one (0.37 vs 0.30 s/step from
+  t = 16).
+- No production run of `threeDfsi_c0ip` has been made.
