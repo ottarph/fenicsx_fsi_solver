@@ -1,19 +1,19 @@
 import numpy as np
 import pytest
 
-from xfsi_solver.solvers.threeDfsi_iterative import solve
+from xfsi_solver.solvers.threeDfsi_mixed import solve
 
 
 @pytest.mark.parametrize("direct", [True, False], ids=["direct", "iterative"])
-def test_threeDfsi_iterative_solve(output_dirs, direct):
+def test_threeDfsi_mixed_solve(output_dirs, direct):
     dt_val = 0.004
-    qoi_path = output_dirs["qoi"] / "fsi3d_iterative_qoi.txt"
+    qoi_path = output_dirs["qoi"] / "threeDfsi_mixed.txt"
     solve(
         mesh_path="data/meshes/fsi3d/mesh_sec_coarse.xdmf",
         T=2 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "fsi3d_iterative.bp"),
-        output_path_p=str(output_dirs["pv"] / "fsi3d_iterative_p.bp"),
+        output_path=str(output_dirs["pv"] / "threeDfsi_mixed.bp"),
+        output_path_p=str(output_dirs["pv"] / "threeDfsi_mixed_p.bp"),
         qoi_path=str(qoi_path),
         direct_k_c_solve=direct,
         block_preconditioned_k_c_solve=not direct,

@@ -595,7 +595,7 @@ def solve(
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
-            # "snes_monitor": "ascii:output/logs/fsi3d_iterative_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/threeDfsi_mixed_snes_log.txt",
         },
     )
 
@@ -1109,10 +1109,10 @@ def main():
         mesh_path="data/meshes/fsi3d/mesh_sec_medium.xdmf",
         T=10.0,
         dt_val=0.004,
-        output_path="output/pv/fsi3d_iterative_medium.bp",
-        output_path_p="output/pv/fsi3d_iterative_p_medium.bp",
-        qoi_path="output/qoi/fsi3d_iterative_qoi_medium.txt",
-        checkpoint_dir="output/checkpoints/fsi3d_iterative_medium",
+        output_path="output/pv/threeDfsi_mixed_medium.bp",
+        output_path_p="output/pv/threeDfsi_mixed_medium_p.bp",
+        qoi_path="output/qoi/threeDfsi_mixed_medium.txt",
+        checkpoint_dir="output/checkpoints/threeDfsi_mixed_medium",
         checkpoint_every=250,
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.

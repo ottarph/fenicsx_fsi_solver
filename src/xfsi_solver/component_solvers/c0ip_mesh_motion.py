@@ -67,7 +67,7 @@ CASES = {
     },
     "fsi3d": {
         "mesh_path": "data/meshes/fsi3d/mesh_sec_medium.xdmf",
-        "checkpoint_dir": "output/checkpoints/fsi3d_iterative_medium",
+        "checkpoint_dir": "output/checkpoints/threeDfsi_mixed_medium",
         "checkpoint_dt": 0.004,
     },
 }
