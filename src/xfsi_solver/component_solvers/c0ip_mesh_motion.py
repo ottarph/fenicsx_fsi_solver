@@ -208,6 +208,29 @@ def laplacian_and_mass(U, bc, rows):
     return matrices
 
 
+def split_components(ksp, component_names, component_rows, split_options, x_options):
+    """Set up the additive fieldsplit PC of ksp over the components, with the rows of each in
+    component_rows, split_options for every component, x_options for the x component, and the
+    preconditioner of the x component reused for the others. Returns the components' KSPs."""
+    pc = ksp.getPC()
+    pc.setFieldSplitIS(*zip(component_names, component_rows, strict=True))
+    # Set through the options database, since the fieldsplit calls setFromOptions on its
+    # sub-KSPs in PCSetUp, which would override types set directly on them.
+    opts = PETSc.Options()
+    component_ksps = pc.getFieldSplitSubKSP()
+    for name, component_ksp in zip(component_names, component_ksps, strict=True):
+        opts.prefixPush(component_ksp.getOptionsPrefix())
+        for key, value in (split_options | (x_options if name == "x" else {"pc_type": "python"})).items():
+            opts[key] = value
+        opts.prefixPop()
+        component_ksp.setFromOptions()
+    pc_reuse = ReusePC(component_ksps[0].getPC())
+    for component_ksp in component_ksps[1:]:
+        component_ksp.getPC().setType(PETSc.PC.Type.PYTHON)
+        component_ksp.getPC().setPythonContext(pc_reuse)
+    return component_ksps
+
+
 def solver_options(solver, rtol, atol, max_it):
     """Options of the KSP, and of the splits of its components, for one of SOLVERS."""
     if solver == "direct":
@@ -263,7 +286,7 @@ def solve(
     on each component, a_val scales the C0IP penalty. multigrid is the PETSc PC type of the
     solves with the Laplacian in cg_laplacian_squared: "hypre" (a BoomerAMG V-cycle), "gamg" (a
     GAMG V-cycle) or "lu" (MUMPS). With compare_with_direct, the system is also solved with
-    MUMPS Cholesky, to print the error of the solution relative to it, which for this
+    MUMPS Cholesky on each component, to print the error of the solution relative to it, which for this
     fourth-order operator can be much larger than the relative residual. With output_path, the
     displacement is written to a VTX file.
     """
@@ -308,35 +331,20 @@ def solve(
     # The owned dofs are stored interleaved per node, (x, y[, z]), so the rows of a component are
     # every tdim-th owned row. The components are not coupled and have the same matrix.
     component_names = ["x", "y", "z"][:tdim]
+    start, end = problem.A.getOwnershipRange()
+    component_rows = [
+        PETSc.IS().createGeneral(np.arange(start + c, end, tdim, dtype=np.int32), comm=comm) for c in range(tdim)
+    ]
     laplacian_squared = None
     if solver != "direct":
-        start, end = problem.A.getOwnershipRange()
-        component_rows = [
-            PETSc.IS().createGeneral(np.arange(start + c, end, tdim, dtype=np.int32), comm=comm) for c in range(tdim)
-        ]
-        pc = ksp.getPC()
-        pc.setFieldSplitIS(*zip(component_names, component_rows, strict=True))
-        # Set through the options database, since the fieldsplit calls setFromOptions on its
-        # sub-KSPs in PCSetUp, which would override types set directly on them.
-        opts = PETSc.Options()
-        component_ksps = pc.getFieldSplitSubKSP()
-        for name, component_ksp in zip(component_names, component_ksps, strict=True):
-            opts.prefixPush(component_ksp.getOptionsPrefix())
-            for key, value in component_options["split"].items():
-                opts[key] = value
-            for key, value in (component_options["x"] if name == "x" else {"pc_type": "python"}).items():
-                opts[key] = value
-            opts.prefixPop()
-            component_ksp.setFromOptions()
+        component_ksps = split_components(
+            ksp, component_names, component_rows, component_options["split"], component_options["x"]
+        )
         if solver == "cg_laplacian_squared":
             L_x, M_x = laplacian_and_mass(U, bc, component_rows[0])
             laplacian_squared = LaplacianSquaredPC(L_x, M_x, multigrid)
             component_ksps[0].getPC().setType(PETSc.PC.Type.PYTHON)
             component_ksps[0].getPC().setPythonContext(laplacian_squared)
-        pc_reuse = ReusePC(component_ksps[0].getPC())
-        for component_ksp in component_ksps[1:]:
-            component_ksp.getPC().setType(PETSc.PC.Type.PYTHON)
-            component_ksp.getPC().setPythonContext(pc_reuse)
 
     # First solve: assembly, setup of the solver, and the solve. The setup time is the time in
     # PCSetUp and PCSetUpOnBlocks, the slowest rank's: the fieldsplit sets up the preconditioners
@@ -364,12 +372,16 @@ def solve(
     relative_residual = residual.norm() / problem.b.norm()
 
     if compare_with_direct:
-        # The same assembled system, solved with MUMPS Cholesky, which needs less memory than LU.
+        # The same assembled system, solved exactly by MUMPS Cholesky on the x component, reused for
+        # the others, which needs much less memory than a factorization of the whole system.
         ksp_direct = PETSc.KSP().create(comm)
+        ksp_direct.setOptionsPrefix("reference_")
         ksp_direct.setOperators(problem.A)
         ksp_direct.setType("preonly")
-        ksp_direct.getPC().setType("cholesky")
-        ksp_direct.getPC().setFactorSolverType("mumps")
+        ksp_direct.getPC().setType("fieldsplit")
+        ksp_direct.getPC().setFieldSplitType(PETSc.PC.CompositeType.ADDITIVE)
+        _, direct_options = solver_options("direct_component", rtol, atol, max_it)
+        split_components(ksp_direct, component_names, component_rows, direct_options["split"], direct_options["x"])
         x_direct = problem.x.duplicate()
         ksp_direct.solve(problem.b, x_direct)
         x_direct.axpy(-1.0, problem.x)
@@ -418,7 +430,7 @@ def solve(
             print(f"  MUMPS memory: {mumps_memory} MB")
         print(f"  peak memory, summed over the ranks: {peak_memory / 1024**2:.2f} GB")
         if compare_with_direct:
-            print(f"  error relative to MUMPS Cholesky (l2 norm of the dofs): {relative_error:.3e}")
+            print(f"  error relative to MUMPS Cholesky on each component (l2 norm of the dofs): {relative_error:.3e}")
         print(f"L2 norm of the displacement: {u_norm:.10e}")
         print(f"Smallest det(I + grad u) at the cell midpoints: {min_det_F:.4f}")
 
