@@ -9,7 +9,7 @@ The code is licensed under an MIT-license found in ``LICENSE``. Certain function
 of code authored by Jørgen S. Dokken, licensing and copyright information for this code is given in the 
 relevant files.
 
-![Tip y-displacement over time: harmonic vs biharmonic mesh motion, compared against the FSI2 benchmark reference values](output/figures/y-disp.svg)
+![Tip y-displacement over time: harmonic vs biharmonic mesh motion, compared against the FSI2 benchmark reference values](docs/figures/y-disp.svg)
 
 ## Formulation
 
