@@ -87,3 +87,39 @@ Other decisions:
 - Check: all setups were rerun with the renamed code (tag `phase2`). They are bitwise identical to the
   reference, except `fsi2_harmonic_lagrange`, which differs by 1.6e-6, the same as between two identical
   runs.
+
+## Phase 3: VTX output option (2026-10-14)
+
+- Every FSI2 solver, `dfg_2d_3` and the six time-dependent component solvers take `vtx_save_every`, following
+  the pattern the mixed solvers already had:
+  - With None (the default in `solve()`), no VTX writers are opened. Otherwise a snapshot is written every
+    `vtx_save_every` steps.
+  - A local `write_output(t, step)` writes the QoIs and the snapshot.
+  - Each `main()` passes the interval that used to be hard-coded: 4, 8 for lagrange, 10 for DFG, 1 for the
+    component solvers.
+  - The five static component solvers write their single solution as before.
+- The restart check and the solve tests ask for VTX output, and a test checks that none is written by
+  default. QoIs are bitwise identical (tag `phase3`).
+
+## Phase 4: options removed from the mixed solvers (2026-10-14)
+
+- Removed from `fsi2_biharmonic_mixed` and `threeDfsi_mixed`:
+  - Cahouet-Chabard, with `tools/cahouet_chabard.py` and its test;
+  - the full-Schur K_c solve;
+  - the auxiliary A_0 preconditioning matrix.
+
+  The iterative K_c solve is now the block-preconditioned FGMRES with selfp, the only setting of the
+  production runs. Selfp, direct and 3d runs give bitwise identical QoIs and iteration counts (tag
+  `phase4`).
+- SOR damping in 2d: not adopted. ω = 0.5 against undamped SOR on developed flow (`mixed_iterative_dev`,
+  t = 16, 20 steps, 138 Newton iterations in both cases):
+
+  | ranks | Krylov its, ω = 1 | Krylov its, ω = 0.5 | s/step, ω = 1 | s/step, ω = 0.5 |
+  |---|---|---|---|---|
+  | 4 | 2,043 | 2,370 | 0.40 | 0.43 |
+  | 16 | 2,437 | 2,366 | 0.26 | 0.26 |
+  | 28 | 2,137 | 2,280 | 0.235 | 0.247 |
+
+  The Krylov counts are the sums over all fieldsplit solves. Undamped SOR converged on every rank count. In
+  2d, damping costs up to 15% more iterations and 9% more time and does not help robustness, unlike in 3d,
+  where ω = 1 diverged on 26 to 30 ranks. The 2d solver therefore keeps undamped SOR.
