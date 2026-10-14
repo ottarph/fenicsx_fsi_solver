@@ -900,6 +900,7 @@ def main():
         checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_fine",
         checkpoint_every=400,
         vtx_save_every=None,
+        plot_matrices=False,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
         restart=args.restart,
