@@ -83,6 +83,7 @@ def check_restart_reproduces_continuous_run(
     qoi_column_rtol=None,
     first_ranks=1,
     restart_ranks=1,
+    solve_kwargs=None,
 ):
     """Compare a continuous 8-step run with a run stopped after 6 steps and restarted from step 4.
 
@@ -90,7 +91,8 @@ def check_restart_reproduces_continuous_run(
     ``first_ranks`` and ``restart_ranks`` MPI ranks. Each final field must
     agree to ``rtol`` (or ``field_rtol[name]``), and each QoI column to
     ``qoi_rtol`` (or ``qoi_column_rtol[name]``), relative to its largest
-    absolute value in the continuous run.
+    absolute value in the continuous run. ``solve_kwargs`` are passed on to
+    every ``solve`` call.
     """
 
     def run(name, n_steps, restart=False, ranks=1):
@@ -106,6 +108,7 @@ def check_restart_reproduces_continuous_run(
             checkpoint_dir=tmp_path / name,
             checkpoint_every=4,
             restart=restart,
+            **(solve_kwargs or {}),
         )
 
     run("continuous", 8)

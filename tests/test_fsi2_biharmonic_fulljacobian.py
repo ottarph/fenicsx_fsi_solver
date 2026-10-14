@@ -11,7 +11,12 @@ from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian import solve
 ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
 
 
-def test_fsi2_biharmonic_fulljacobian_solve(output_dirs):
+# Without and with the row scaling of the mesh-motion equations in the factorization
+SCALINGS = pytest.mark.parametrize("mesh_motion_scaling", [None, 1.0e-9], ids=["unscaled", "scaled"])
+
+
+@SCALINGS
+def test_fsi2_biharmonic_fulljacobian_solve(output_dirs, mesh_motion_scaling):
     dt_val = 0.0025
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
@@ -21,20 +26,28 @@ def test_fsi2_biharmonic_fulljacobian_solve(output_dirs):
         output_path=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp"),
         output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian_p.bp"),
         qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
+        mesh_motion_scaling=mesh_motion_scaling,
     )
 
     assert (output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt").exists()
 
 
-def test_fsi2_biharmonic_fulljacobian_restart_reproduces_continuous_run(output_dirs, tmp_path):
+@SCALINGS
+def test_fsi2_biharmonic_fulljacobian_restart_reproduces_continuous_run(output_dirs, tmp_path, mesh_motion_scaling):
     check_restart_reproduces_continuous_run(
-        solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", ELEMENTS, output_dirs, tmp_path
+        solve,
+        "data/meshes/fsi2/mesh_sec_coarse.xdmf",
+        ELEMENTS,
+        output_dirs,
+        tmp_path,
+        solve_kwargs={"mesh_motion_scaling": mesh_motion_scaling},
     )
 
 
 @pytest.mark.parametrize("first_ranks,restart_ranks", [(2, 1), (1, 2)], ids=["2to1", "1to2"])
+@SCALINGS
 def test_fsi2_biharmonic_fulljacobian_restart_on_different_number_of_ranks(
-    output_dirs, tmp_path, first_ranks, restart_ranks
+    output_dirs, tmp_path, first_ranks, restart_ranks, mesh_motion_scaling
 ):
     # Not bitwise identical across partitions; QoIs are printed to 6 digits, so the last one may flip
     check_restart_reproduces_continuous_run(
@@ -46,6 +59,7 @@ def test_fsi2_biharmonic_fulljacobian_restart_on_different_number_of_ranks(
         qoi_rtol=1e-5,
         first_ranks=first_ranks,
         restart_ranks=restart_ranks,
+        solve_kwargs={"mesh_motion_scaling": mesh_motion_scaling},
     )
 
 

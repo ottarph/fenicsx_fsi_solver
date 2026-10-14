@@ -1,5 +1,9 @@
 # Solver time of the restricted-test-function FSI2 solver
 
+> The solvers have since been renamed: `fsi2_biharmonic_diffmesh_restricted` is now
+> `fsi2_biharmonic_fulljacobian`, and the scaled variant is its option
+> `mesh_motion_scaling=1e-9`; `fsi2_biharmonic_diffmesh` is now `fsi2_biharmonic_simple`.
+
 The biharmonic FSI2 solver with restricted test functions
 (`src/xfsi_solver/solvers/fsi2_biharmonic_diffmesh_restricted.py`) is about 7%
 slower per time step than the base biharmonic solver

@@ -46,6 +46,7 @@ def solve(
     checkpoint_dir=None,
     checkpoint_every=None,
     restart=False,
+    mesh_motion_scaling=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
@@ -58,6 +59,15 @@ def solve(
     checkpoint time are dropped from ``qoi_path`` before appending, and the
     VTX output is written to new files with a ``_from_t<time>`` suffix, since
     ``VTXWriter`` cannot append.
+
+    With ``mesh_motion_scaling`` (e.g. ``1e-9``), the mesh-motion rows (the z block
+    and the fluid-only u rows) of the Jacobian are scaled by this factor before
+    MUMPS factorizes it. With restricted test functions these rows are decoupled
+    from the interface, so the scaling does not change the Newton step, but it
+    reduces the pivoting in MUMPS, see
+    notes/restricted-test-functions/solver-time.md. The residual and Jacobian
+    seen by SNES stay unscaled, so the convergence tests see the unscaled
+    residual. With ``None``, the Jacobian is factorized as it is.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -325,6 +335,16 @@ def solve(
     atol = 1.0e-7
     rtol = 1.0e-12
 
+    if mesh_motion_scaling is None:
+        pc_options = {
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_icntl_14": 80,
+            "mat_mumps_cntl_1": 1e-4,
+        }
+    else:
+        pc_options = {"pc_type": "none"}  # Replaced by the ScaledLU shell preconditioner below.
+
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
         [u, v, p, z],
@@ -333,10 +353,7 @@ def solve(
         entity_maps=entity_maps,
         petsc_options={
             "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 80,
-            "mat_mumps_cntl_1": 1e-4,
+            **pc_options,
             "snes_linesearch_type": "none",
             "snes_max_it": max_iter,
             "snes_atol": atol,
@@ -463,6 +480,9 @@ def solve(
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
+        if mesh_motion_scaling is not None:
+            J.copy(P, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+            P.diagonalScale(L=d_vec)
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
@@ -494,7 +514,69 @@ def solve(
         fem_residual(snes, x, b, *res_args, **res_kargs)
         post_residual(x, b)  # u is now updated and b assembled (BCs applied)
 
-    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
+    if mesh_motion_scaling is None:
+        solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
+    else:
+        # Row scaling for the mesh-motion equations, used only in the factorization.
+        n_u_own = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
+
+        def unroll(dofs, bs=U.dofmap.index_map_bs):
+            return (bs * dofs[:, None] + np.arange(bs)).ravel()
+
+        u_fluid_rows = unroll(
+            dolfinx.fem.locate_dofs_topological(U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
+        )
+        u_fluid_rows = np.setdiff1d(u_fluid_rows, dofs_d)  # interface rows hold the solid equation
+        for bc in (u_f_bc, u_s_bc):  # Dirichlet rows hold x - g
+            u_fluid_rows = np.setdiff1d(u_fluid_rows, bc.dof_indices()[0])
+        u_fluid_rows = u_fluid_rows[u_fluid_rows < n_u_own]  # owned rows only
+
+        d_vec = problem.b.duplicate()
+        d_vec.set(1.0)
+        d_vec.array_w[off_own[0] + u_fluid_rows] = mesh_motion_scaling
+        d_vec.array_w[off_own[3] : off_own[4]] = mesh_motion_scaling
+
+        class ScaledLU:
+            """Shell preconditioner applying (D*J)^-1 D = J^-1 with LU of D*J."""
+
+            def __init__(self, options_prefix: str):
+                self.lu = PETSc.KSP().create(comm)
+                self.lu.setOptionsPrefix(options_prefix)
+                opts = PETSc.Options(options_prefix)
+                opts["ksp_type"] = "preonly"
+                opts["pc_type"] = "lu"
+                opts["pc_factor_mat_solver_type"] = "mumps"
+                opts["mat_mumps_icntl_14"] = 80
+                self.lu.setFromOptions()
+                self.tmp = d_vec.duplicate()
+
+            def setUp(self, pc: PETSc.PC) -> None:
+                _, P = pc.getOperators()
+                self.lu.setOperators(P)
+                self.lu.setUp()
+
+            def apply(self, pc: PETSc.PC, r: PETSc.Vec, y: PETSc.Vec) -> None:
+                self.tmp.pointwiseMult(r, d_vec)
+                self.lu.solve(self.tmp, y)
+                # Report a failed factorization or solve to the outer KSP, which
+                # otherwise takes y as a valid preconditioned residual
+                if self.lu.getConvergedReason() < 0:
+                    reason = self.lu.getPC().getFailedReason()
+                    pc.setFailedReason(reason if reason != 0 else PETSc.PC.FailedReason.SUBPC_ERROR)
+
+        pc = solver.getKSP().getPC()
+        pc.setType(PETSc.PC.Type.PYTHON)
+        pc.setPythonContext(ScaledLU(f"{solver.getOptionsPrefix()}scaled_lu_"))
+
+        # Preconditioner matrix D*J, factorized by MUMPS instead of J. J is
+        # assembled once first, so that P gets J's final parallel layout and can
+        # be refilled with a same-nonzero-pattern copy in every Newton iteration.
+        dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
+        fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
+        post_jacobian(problem.x, J_mat)
+        P_scaled = J_mat.duplicate(copy=True)
+
+        solver.setJacobian(wrapped_jacobian, J_mat, P_scaled)
     solver.setFunction(wrapped_residual, b_vec)
 
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
@@ -560,6 +642,8 @@ def main():
         checkpoint_dir="output/checkpoints/fsi2_biharmonic_fulljacobian",
         checkpoint_every=100,
         restart=args.restart,
+        mesh_motion_scaling=None,
+        # mesh_motion_scaling=1.0e-9,
     )
 
 
