@@ -22,12 +22,12 @@ def test_fsi2_harmonic_lagrange_solve(output_dirs):
         # save_every=8 in the solver, so run enough steps to save at least 2 snapshots
         T=10 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "fsi2_harm_lg.bp"),
-        output_path_p=str(output_dirs["pv"] / "fsi2_harm_lg_p.bp"),
-        qoi_path=str(output_dirs["qoi"] / "fsi2_harm_lg_qoi.txt"),
+        output_path=str(output_dirs["pv"] / "fsi2_harmonic_lagrange.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_harmonic_lagrange_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "fsi2_harmonic_lagrange.txt"),
     )
 
-    assert (output_dirs["qoi"] / "fsi2_harm_lg_qoi.txt").exists()
+    assert (output_dirs["qoi"] / "fsi2_harmonic_lagrange.txt").exists()
 
 
 def test_fsi2_harmonic_lagrange_restart_reproduces_continuous_run(output_dirs, tmp_path):

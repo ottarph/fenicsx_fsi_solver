@@ -470,7 +470,7 @@ def solve(
         [u_f, v_f, u_s, v_s, p, lambda_u, lambda_v],
         bcs=bcs,
         entity_maps=entity_maps,
-        petsc_options_prefix="fsi2_harm_lg_",
+        petsc_options_prefix="fsi2_harmonic_lagrange_",
         petsc_options={
             "ksp_type": "preonly",
             "pc_type": "lu",
@@ -552,10 +552,10 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=15.0,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_harm_lg.bp",
-        output_path_p="output/pv/fsi2_harm_lg_p.bp",
-        qoi_path="output/qoi/fsi2_harm_lg_qoi.txt",
-        checkpoint_dir="output/checkpoints/fsi2_harm_lg",
+        output_path="output/pv/fsi2_harmonic_lagrange.bp",
+        output_path_p="output/pv/fsi2_harmonic_lagrange_p.bp",
+        qoi_path="output/qoi/fsi2_harmonic_lagrange.txt",
+        checkpoint_dir="output/checkpoints/fsi2_harmonic_lagrange",
         checkpoint_every=100,
         restart=args.restart,
     )
