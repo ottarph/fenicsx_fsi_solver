@@ -33,9 +33,7 @@ def test_fsi2_biharmonic_simple_restart_reproduces_continuous_run(output_dirs, t
 
 
 @pytest.mark.parametrize("first_ranks,restart_ranks", [(2, 1), (1, 2)], ids=["2to1", "1to2"])
-def test_fsi2_biharmonic_simple_restart_on_different_number_of_ranks(
-    output_dirs, tmp_path, first_ranks, restart_ranks
-):
+def test_fsi2_biharmonic_simple_restart_on_different_number_of_ranks(output_dirs, tmp_path, first_ranks, restart_ranks):
     # Not bitwise identical across partitions; QoIs are printed to 6 digits, so the last one may flip
     check_restart_reproduces_continuous_run(
         solve,
