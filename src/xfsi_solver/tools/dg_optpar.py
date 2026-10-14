@@ -34,6 +34,27 @@ def get_dg_penalty_parameters_triangle(mesh: dolfinx.mesh.Mesh, a_val: float, p:
     return sigma, sigma_boundary
 
 
+def get_dg_penalty_parameters_tetrahedron(mesh: dolfinx.mesh.Mesh, a_val: float, p: int, vol, h, area):
+    """Interior and boundary facet penalty parameters on a tetrahedron mesh, for elements of
+    degree p, with the cell volumes vol from compute_cell_volumes and the facet diameters h and
+    areas area from compute_facet_diameters_and_areas.
+
+    Not from the literature: the parameters of get_dg_penalty_parameters_triangle carried over to
+    tetrahedra. On triangles, the facet area h**2 is h * area, so the penalty sigma / h is
+    proportional to area / vol, the ratio in the trace inequality on simplices, and that ratio is
+    kept here. The constant is not tuned for tetrahedra, so check the coercivity by varying a_val.
+    """
+    assert mesh.basix_cell() == basix.CellType.tetrahedron
+
+    alpha_base = dolfinx.fem.Constant(mesh, a_val)
+
+    # Note that h("+") == h("-") and area("+") == area("-"), since both belong to the facet.
+    sigma = 3.0 * alpha_base * p * (p - 1) / 8.0 * h("+") * area("+") * 2 * ufl.avg(1 / vol)
+    sigma_boundary = 3.0 * alpha_base * p * (p - 1) * h * area / 2 * (1 / vol)
+
+    return sigma, sigma_boundary
+
+
 def get_dg_penalty_parameters_quadrilateral(mesh: dolfinx.mesh.Mesh, a_val: float, p: int, vol, h):
     """Interior and boundary facet penalty parameters on a quadrilateral mesh, for elements of
     degree p, with the cell volumes vol and facet areas h from compute_cell_volumes and
@@ -85,3 +106,25 @@ def compute_facet_areas(mesh: dolfinx.mesh.Mesh):
     facet_area_h.x.scatter_forward()
 
     return facet_area_h, entity_map
+
+
+def compute_facet_diameters_and_areas(mesh: dolfinx.mesh.Mesh):
+    """DG0 functions of the facet diameters and the facet areas of mesh on the submesh of all its
+    facets, and the entity map of that submesh, to pass in the entity_maps of the forms using them.
+
+    The diameters are those of compute_facet_areas, which in 2d are also the facet areas. The
+    areas are integrated over the facets, so they follow a curved geometry.
+    """
+    tdim = mesh.topology.dim
+    facets = dolfinx.mesh.locate_entities(mesh, tdim - 1, lambda x: np.full_like(x[0], True, dtype=bool))
+    submesh_facets, entity_map, _, _ = dolfinx.mesh.create_submesh(mesh, tdim - 1, facets)
+
+    Ve = dolfinx.fem.functionspace(submesh_facets, ("DG", 0))
+    facet_diameter = dolfinx.fem.Function(Ve, name="facet_diameter")
+    child_facets = np.arange(facet_diameter.x.array.shape[0], dtype=np.int32)
+    facet_diameter.x.array[:] = submesh_facets.h(submesh_facets.topology.dim, child_facets)
+    facet_diameter.x.scatter_forward()
+
+    facet_area = compute_cell_volumes(submesh_facets)
+
+    return facet_diameter, facet_area, entity_map
