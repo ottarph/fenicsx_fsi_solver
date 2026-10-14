@@ -22,7 +22,7 @@ r_S\\r_v\\r_p\\r_z\\r_I
 \tag{1}
 \]
 
-This is the restricted-test-function **biharmonic** formulation implemented in `src/xfsi_solver/solvers/fsi2_biharmonic_diffmesh_restricted.py`. The ordering is chosen to expose the algebra; it is not the storage order in that file. The harmonic specialization is described near the end.
+This is the restricted-test-function **biharmonic** formulation implemented in `src/xfsi_solver/solvers/fsi2_biharmonic_fulljacobian.py`. The ordering is chosen to expose the algebra; it is not the storage order in that file. The harmonic specialization is described near the end.
 
 The displacement field is still a single continuous finite element function. We only partition its coefficients: \(u_S\) contains every solid-supported degree of freedom, including the shared interface, and \(u_I\) contains the remaining fluid-interior degrees of freedom. Velocity \(v\) remains a global, shared fluid-solid field. Pressure \(p\) and the auxiliary biharmonic field \(z\) live on the fluid submesh. There are no interface multipliers or duplicated interface coefficients.
 
@@ -360,5 +360,7 @@ The same triangular algorithm may also precondition the full Jacobian (1). In th
 Mesh-equation scaling is an algebraic choice once their rows are separated from solid kinematics. Scale right-hand sides consistently and continue monitoring the unscaled mesh residual. A scaling that helps direct-solver pivoting does not necessarily help AMG or the Krylov stopping test.
 
 The expected gain is structural: solid displacement has an exact inexpensive elimination, the effective velocity operator is sparse and directly assemblable, and mesh extension is a subsequent reusable solve. Robust pressure preconditioning and an efficient biharmonic inverse remain numerical tasks to validate rather than guaranteed consequences of the restriction.
+
+**Implementation.** `src/xfsi_solver/solvers/fsi2_biharmonic_mixed.py` implements the condensed, approximate system with the multiplicative fieldsplit, and `threeDfsi_mixed.py` implements it for the 3d benchmark. The physical block is solved by MUMPS or by FGMRES with the upper triangular block preconditioner: one GAMG cycle built from \(A\) for the velocity, and BoomerAMG on the `selfp` approximation \(-B\,\mathrm{diag}(A)^{-1}G\) for the pressure Schur complement. `fsi2_biharmonic_c0ip.py` replaces the mixed biharmonic mesh block by a C0 interior penalty form. The Cahouet–Chabard approximation (14) and the auxiliary operator \(A_0\) were implemented and tested, but were slower than, or not needed with, the setup above. They were removed in the cleanup recorded in `notes/restricted-cleanup/implementation-log.md`; the measurements are in `notes/fsi3d/implementation-log.md`.
 
 **Background.** This reduction follows the combination of solid kinematic condensation and omitted fluid ALE derivatives in Failer and Richter, [A Parallel Newton Multigrid Framework for Monolithic Fluid-Structure Interactions](https://doi.org/10.1007/s10915-019-01113-y). Their geometric multigrid and Vanka smoother are one way to solve the reduced physical problem; the algebra above also supports the field-split and algebraic-multigrid strategy described here. PETSc provides the relevant [multiplicative and Schur field splits](https://petsc.org/release/manualpages/PC/PCFIELDSPLIT/).

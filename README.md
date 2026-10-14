@@ -95,11 +95,44 @@ conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_
 Some solvers expect mesh/reference data to already exist under ``data/`` (generated via the scripts in
 ``src/xfsi_solver/scripts/``) before they can run.
 
+### The coupled FSI solvers
+
+All FSI solvers in ``src/xfsi_solver/solvers/`` define the pressure (and the auxiliary field of the mixed
+biharmonic mesh motion) on a submesh of the fluid domain, with dolfinx's mixed-mesh assembly
+(``entity_maps``).
+
+| Solver | Mesh motion | Linear solve |
+|---|---|---|
+| ``dfg_2d_3`` | none (fluid only, DFG 2D-3 benchmark) | MUMPS LU |
+| ``fsi2_harmonic`` | harmonic | Newton, MUMPS LU |
+| ``fsi2_harmonic_lagrange`` | harmonic, interface coupled by Lagrange multipliers | Newton, MUMPS LU |
+| ``fsi2_biharmonic_simple`` | biharmonic, mixed form | Newton, MUMPS LU |
+| ``fsi2_biharmonic_fulljacobian`` | biharmonic, mixed form, restricted test functions | Newton with the full Jacobian, MUMPS LU (``mesh_motion_scaling`` scales the mesh-motion rows in the factorization) |
+| ``fsi2_biharmonic_mixed`` | biharmonic, mixed form, restricted test functions | approximate Jacobian, fieldsplit; K_c by MUMPS or block-preconditioned FGMRES |
+| ``fsi2_biharmonic_c0ip`` | biharmonic, C0 interior penalty form, restricted test functions | as ``fsi2_biharmonic_mixed`` |
+| ``threeDfsi_mixed`` | as ``fsi2_biharmonic_mixed``, for the 3d benchmark of Failer and Richter (2020) | as ``fsi2_biharmonic_mixed`` |
+
+The restricted-test-function formulation and the iterative solver of ``fsi2_biharmonic_mixed`` are described
+in ``docs/restricted-iterative-solver.md``. The design decisions and measurements behind the solvers are
+logged under ``notes/``.
+
+### Output
+
+A solver's ``main()`` writes its QoIs (time, drag, lift and the tip displacement) to
+``output/qoi/<script>.txt``, its checkpoints to ``output/checkpoints/<script>/`` and its VTX output to
+``output/pv/<script>.bp`` and ``<script>_p.bp``, with a suffix such as ``_fine`` for runs on another mesh.
+VTX output is optional: ``solve(..., vtx_save_every=n)`` writes a snapshot every ``n`` time steps, and with
+the default ``vtx_save_every=None`` no VTX files are written.
+
+``python -m xfsi_solver.scripts.plot_qois`` plots the QoI files, each on its own and in comparisons, into
+``output/figures/qoi/<script>/``. The solvers with ``plot_matrices=True`` save spy and block-norm plots of
+their Jacobians into ``output/figures/matrix_blocks/<script>/``.
+
 ## Checkpointing and restarts
 
 The monolithic FSI2 solvers in ``src/xfsi_solver/solvers/`` (all except ``dfg_2d_3``) save restart checkpoints (via
 [io4dolfinx](https://jsdokken.com/io4dolfinx/)) when ``solve`` is given ``checkpoint_dir`` and ``checkpoint_every``
-(in time steps). Their ``main()`` checkpoints to ``output/checkpoints/<run name>`` every 100 steps. To continue a
+(in time steps). Their ``main()`` checkpoints to ``output/checkpoints/<script>`` every few hundred steps. To continue a
 stopped or crashed run from its latest checkpoint, pass ``restart=True`` or run, for example:
 
 ```bash
@@ -139,9 +172,17 @@ set up:
   ``biharm.py`` instead of the plain harmonic (Laplace) extension used by ``mm``.
 - ``fullmesh``: interface/traction measures between the fluid and solid subdomains are built directly on
   the full parent mesh (using dolfinx's ``entity_maps``), instead of on submesh-transferred facet tags.
-- ``diffmesh``: different fields of the same coupled problem are defined on *different* meshes, instead
-  of all sharing one mesh. For example, in ``fsi2_harmonic.py`` the pressure function space is defined on
-  the whole mesh (like displacement and velocity), whereas in ``fsi2_harmonic_diffmesh.py`` pressure is
-  defined only on a submesh of the fluid domain — since pressure is only physically meaningful there.
-  ``diffmesh`` variants require dolfinx's mixed-mesh assembly (``entity_maps``) to combine forms whose
-  fields live on different meshes.
+
+The coupled FSI solvers are named by the benchmark (``fsi2``, or ``threeDfsi`` for the 3d benchmark), the
+mesh motion (``harmonic``, ``biharmonic``) and how they differ from each other:
+
+- ``lagrange``: separate fluid and solid fields, coupled on the interface by Lagrange multipliers.
+- ``simple``: the standard monolithic formulation, solved by Newton with MUMPS.
+- ``fulljacobian``: restricted test functions on the interface, Newton with the full Jacobian, MUMPS.
+- ``mixed``: restricted test functions, the mixed form of the biharmonic mesh motion, an approximate
+  Jacobian and a fieldsplit solver.
+- ``c0ip``: as ``mixed``, with the biharmonic mesh motion in C0 interior penalty form.
+
+All of them define the pressure on a submesh of the fluid domain. Earlier versions of the solvers had a
+``diffmesh`` suffix for this, which was dropped when it became the only variant
+(``notes/restricted-cleanup/implementation-log.md`` lists the old and new names).
