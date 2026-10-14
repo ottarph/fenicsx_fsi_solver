@@ -1,171 +1,170 @@
-# Copyright (C) 2025 Ottar Hellan
+# Copyright (C) 2023-2025 Jørgen S. Dokken, Ottar Hellan
 #
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: CC-BY-4.0
 
-import sys
+# Code adapted from https://jsdokken.com/dolfinx-tutorial/chapter2/ns_code2.html,
+# by Jørgen S. Dokken under Creative Commons Attribution 4.0 International License
+# https://creativecommons.org/licenses/by/4.0/.
 
+
+import dolfinx.io
 import gmsh
-
-gmsh.initialize(sys.argv)
 import numpy as np
+from mpi4py import MPI
+
+gmsh.initialize()
 
 
-def create_mesh(quads: bool = False):
-    """Generate the classic DFG 2D-1/2-2 benchmark mesh (single fluid
-    domain around a cylindrical obstacle) and write it to
-    ``data/meshes/dfg2d/mesh.xdmf``.
+def create_mesh(
+    quads: bool = True,
+    mesh_order: int = 1,
+    coarse: bool = False,
+    coarse_factor: float = 4.0,
+):
+    """Generate the DFG 2D-1/2-2 benchmark mesh (adapted from the DOLFINx
+    tutorial) and write it to
+    ``data/meshes/dfg2d_alt/mesh_<quad|tri><_coarse>.xdmf``.
 
     Parameters
     ----------
     quads:
         Recombine the mesh into quadrilateral cells.
+    mesh_order:
+        Polynomial order of the mesh geometry.
+    coarse:
+        Deliberately coarser mesh, for fast smoke-testing only (not for
+        demo/production use). Scales the resolution parameters up by
+        ``coarse_factor`` and appends a "_coarse" suffix to the output
+        filename, so it never overwrites the regular meshes.
+    coarse_factor:
+        Factor by which resolutions are scaled up when ``coarse`` is set.
     """
 
-    L, H, r = 2.2, 0.41, 0.05
-    C_x, C_y = 0.2, 0.2
-    gdim = 2
-
-    E_2_left = 0.9
-
-    resolution_far = 0.025
-    resolution_close = resolution_far / 5
-    # resolution_ultra_far = H / 8
-    resolution_ultra_far = resolution_far
-
-    # if quads:
-    #     resolution_far *= 2
-    #     resolution_close *= 2
-    #     resolution_ultra_far *= 2
-
-    obstacle = gmsh.model.occ.addDisk(C_x, C_y, 0.0, r, r)
-
-    gmsh.model.occ.synchronize()
-
-    channel = gmsh.model.occ.addRectangle(0, 0, 0, L, H)
-
-    gmsh.model.occ.synchronize()
-
-    tags = gmsh.model.getEntities(dim=2)
-
-    cylinder_tag = next(
-        filter(
-            lambda x: np.allclose(gmsh.model.occ.getCenterOfMass(*x), [C_x, C_y, 0], atol=1e-3),
-            gmsh.model.getEntities(dim=2),
-        )
-    )
-    tags, _ = gmsh.model.occ.cut(tags, [cylinder_tag])
-
-    gmsh.model.occ.synchronize()
-
-    fluid_tags = []
-    fluid_tags.append(tags[0][1])
-    gmsh.model.addPhysicalGroup(2, fluid_tags, 2, name="fluid")
-
-    inflow_tags = []
-    outflow_tags = []
-    obstacle_tags = []
-    channel_side_tags = []
-
-    line_tags = gmsh.model.getEntities(dim=1)
-    for line_tag in line_tags:
-        com = gmsh.model.occ.getCenterOfMass(1, line_tag[1])
-        if np.allclose(com, [C_x, C_y, 0.0]):
-            obstacle_tags.append(line_tag[1])
-        elif np.isclose(com[0], 0.0):
-            inflow_tags.append(line_tag[1])
-        elif np.isclose(com[0], L):
-            outflow_tags.append(line_tag[1])
-        elif np.isclose(com[1], 0.0) or np.isclose(com[1], H):
-            channel_side_tags.append(line_tag[1])
-
-    gmsh.model.addPhysicalGroup(1, obstacle_tags, 21, name="obstacle")
-    gmsh.model.addPhysicalGroup(1, inflow_tags, 22, name="inflow")
-    gmsh.model.addPhysicalGroup(1, outflow_tags, 23, name="outflow")
-    gmsh.model.addPhysicalGroup(1, channel_side_tags, 24, name="channel_side")
-
-    gmsh.model.occ.synchronize()
-
-    gmsh.model.occ.addPoint(E_2_left, 0.0, 0.0, meshSize=resolution_far)
-    gmsh.model.occ.addPoint(E_2_left, H, 0.0, meshSize=resolution_far)
-
-    gmsh.model.occ.addPoint(C_x, C_y + r, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x, C_y - r, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x + r, C_y, 0.0, meshSize=resolution_close)
-    gmsh.model.occ.addPoint(C_x - r, C_y, 0.0, meshSize=resolution_close)
-
-    gmsh.model.occ.synchronize()
-
-    point_tags = gmsh.model.getEntities(dim=0)
-
-    for point_tag in point_tags:
-        point_x = gmsh.model.getValue(0, point_tag[1], [])
-        if point_x[0] > 0.9 * L:
-            gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_ultra_far)
-        else:
-            if np.isclose(point_x[0], 0.0) or np.isclose(point_x[1], 0.0) or np.isclose(point_x[1], H):
-                gmsh.model.mesh.setSize([(0, point_tag[1])], resolution_far)
-
-    # 1: MeshAdapt
-    # 2: Automatic
-    # 3: Initial mesh only
-    # 5: Delaunay
-    # 6: Frontal-Delaunay (Default)
-    # 7: BAMG
-    # 8: Frontal-Delaunay for Quads
-    # 9: Packing of Parallelograms
-    # 11: Quasi-structured Quad
-
-    # gmsh.option.setNumber("Mesh.Algorithm", 5)
+    L = 2.2
+    H = 0.41
+    c_x = c_y = 0.2
+    r = 0.05
 
     if quads:
-        gmsh.option.setNumber("Mesh.Algorithm", 8)
-        gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
-        gmsh.option.setNumber("Mesh.RecombineAll", 1)
-        # gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)
+        res_min = r / 3
+        res_max = H / 4
+    else:
+        res_min = r / 6
+        res_max = H / 8
 
-    gmsh.model.occ.synchronize()
+    if coarse:
+        res_min *= coarse_factor
+        res_max *= coarse_factor
 
-    gmsh.model.mesh.generate(gdim)
-
-    # Use second order mesh
-    # gmsh.model.mesh.setOrder(2)
-
-    # gmsh.write("test.msh")
-
-    import dolfinx.io
-    from mpi4py import MPI
-
-    gmsh_model_rank = 0
+    gdim = 2
     mesh_comm = MPI.COMM_WORLD
-    out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, gmsh_model_rank, gdim=gdim)
-    domain = out.mesh
-    cell_markers = out.cell_tags
-    facet_markers = out.facet_tags
-    cell_markers.name = "Cell tags"
-    facet_markers.name = "Facet tags"
+    model_rank = 0
+    if mesh_comm.rank == model_rank:
+        rectangle = gmsh.model.occ.addRectangle(0, 0, 0, L, H, tag=1)
+        obstacle = gmsh.model.occ.addDisk(c_x, c_y, 0, r, r)
 
-    domain.topology.create_connectivity(1, 2)
+    if mesh_comm.rank == model_rank:
+        fluid = gmsh.model.occ.cut([(gdim, rectangle)], [(gdim, obstacle)])
+        gmsh.model.occ.synchronize()
 
-    if mesh_comm.rank == gmsh_model_rank:
-        print(f"{domain.geometry.x.shape = }")
+    fluid_marker = 1
+    if mesh_comm.rank == model_rank:
+        volumes = gmsh.model.getEntities(dim=gdim)
+        assert len(volumes) == 1
+        gmsh.model.addPhysicalGroup(volumes[0][0], [volumes[0][1]], fluid_marker)
+        gmsh.model.setPhysicalName(volumes[0][0], fluid_marker, "Fluid")
 
-    from pathlib import Path
+    inlet_marker, outlet_marker, wall_marker, obstacle_marker = 22, 23, 24, 21
+    inflow, outflow, walls, obstacle = [], [], [], []
+    if mesh_comm.rank == model_rank:
+        boundaries = gmsh.model.getBoundary(volumes, oriented=False)
+        for boundary in boundaries:
+            center_of_mass = gmsh.model.occ.getCenterOfMass(boundary[0], boundary[1])
+            if np.allclose(center_of_mass, [0, H / 2, 0]):
+                inflow.append(boundary[1])
+            elif np.allclose(center_of_mass, [L, H / 2, 0]):
+                outflow.append(boundary[1])
+            elif np.allclose(center_of_mass, [L / 2, H, 0]) or np.allclose(center_of_mass, [L / 2, 0, 0]):
+                walls.append(boundary[1])
+            else:
+                obstacle.append(boundary[1])
+        gmsh.model.addPhysicalGroup(1, walls, wall_marker)
+        gmsh.model.setPhysicalName(1, wall_marker, "Walls")
+        gmsh.model.addPhysicalGroup(1, inflow, inlet_marker)
+        gmsh.model.setPhysicalName(1, inlet_marker, "Inlet")
+        gmsh.model.addPhysicalGroup(1, outflow, outlet_marker)
+        gmsh.model.setPhysicalName(1, outlet_marker, "Outlet")
+        gmsh.model.addPhysicalGroup(1, obstacle, obstacle_marker)
+        gmsh.model.setPhysicalName(1, obstacle_marker, "Obstacle")
 
-    mesh_path = Path("data/meshes/dfg2d/mesh.xdmf")
+    # Create distance field from obstacle.
+    # Add threshold of mesh sizes based on the distance field
+    # LcMax -                  /--------
+    #                      /
+    # LcMin -o---------/
+    #        |         |       |
+    #       Point    DistMin DistMax
+    if mesh_comm.rank == model_rank:
+        distance_field = gmsh.model.mesh.field.add("Distance")
+        gmsh.model.mesh.field.setNumbers(distance_field, "EdgesList", obstacle)
+        threshold_field = gmsh.model.mesh.field.add("Threshold")
+        gmsh.model.mesh.field.setNumber(threshold_field, "IField", distance_field)
+        gmsh.model.mesh.field.setNumber(threshold_field, "LcMin", res_min)
+        gmsh.model.mesh.field.setNumber(threshold_field, "LcMax", res_max)
+        gmsh.model.mesh.field.setNumber(threshold_field, "DistMin", r)
+        gmsh.model.mesh.field.setNumber(threshold_field, "DistMax", 2 * H)
+        min_field = gmsh.model.mesh.field.add("Min")
+        gmsh.model.mesh.field.setNumbers(min_field, "FieldsList", [threshold_field])
+        gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
 
-    from dolfinx.io import XDMFFile
+    if mesh_comm.rank == model_rank:
+        # Mesh.Algorithm:
+        # 1: MeshAdapt
+        # 2: Automatic
+        # 3: Initial mesh only
+        # 5: Delaunay
+        # 6: Frontal-Delaunay (Default)
+        # 7: BAMG
+        # 8: Frontal-Delaunay for Quads
+        # 9: Packing of Parallelograms
+        # 11: Quasi-structured Quad
 
-    with XDMFFile(MPI.COMM_WORLD, mesh_path, "w") as xdmf:
-        xdmf.write_mesh(domain)
-        xdmf.write_meshtags(cell_markers, domain.geometry)
-        xdmf.write_meshtags(facet_markers, domain.geometry)
+        gmsh.model.mesh.setOrder(mesh_order)
 
-    # gmsh.fltk.finalize()
-    # gmsh.fltk.run()
+        if quads:
+            gmsh.option.setNumber("Mesh.Algorithm", 8)
+            gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 1)
+        else:
+            gmsh.option.setNumber("Mesh.Algorithm", 6)
+            gmsh.option.setNumber("Mesh.RecombineAll", 0)
+
+        gmsh.model.mesh.generate(gdim)
+        gmsh.model.mesh.optimize("Netgen")
+
+        # gmsh.fltk.finalize()
+        # gmsh.fltk.run()
+
+    out = dolfinx.io.gmsh.model_to_mesh(gmsh.model, mesh_comm, model_rank, gdim=gdim)
+    mesh = out.mesh
+    ft = out.facet_tags
+    ft.name = "Facet tags"
+
+    with dolfinx.io.XDMFFile(
+        mesh_comm, f"data/meshes/dfg2d_alt/mesh_{'quad' if quads else 'tri'}{'_coarse' if coarse else ''}.xdmf", "w"
+    ) as xdmf:
+        xdmf.write_mesh(mesh)
+        xdmf.write_meshtags(ft, mesh.geometry)
 
 
 def main():
-    create_mesh(quads=False)
+    create_mesh(
+        quads=True,
+        mesh_order=1,
+        coarse=False,
+        coarse_factor=4.0,
+    )
 
 
 if __name__ == "__main__":

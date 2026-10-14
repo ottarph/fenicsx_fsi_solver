@@ -4,7 +4,7 @@
 
 import gmsh
 
-from xfsi_solver.scripts.create_mesh_DFG2d_alt import create_mesh as create_dfg2d_alt_mesh
+from xfsi_solver.scripts.create_mesh_DFG2d import create_mesh as create_dfg2d_mesh
 from xfsi_solver.scripts.create_mesh_FSI2 import create_mesh as create_fsi2_mesh
 
 
@@ -34,11 +34,11 @@ def main():
     gmsh.clear()
 
     # data/meshes/dfg2d_alt/mesh_tri_coarse.xdmf
-    create_dfg2d_alt_mesh(quads=False, coarse=True)
+    create_dfg2d_mesh(quads=False, coarse=True)
     gmsh.clear()
 
     # data/meshes/dfg2d_alt/mesh_quad_coarse.xdmf
-    create_dfg2d_alt_mesh(quads=True, coarse=True)
+    create_dfg2d_mesh(quads=True, coarse=True)
 
 
 if __name__ == "__main__":
