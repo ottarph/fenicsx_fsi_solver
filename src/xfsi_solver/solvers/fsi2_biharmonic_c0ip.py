@@ -970,7 +970,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=16.0 + 10 * 0.0025,
+        T=16.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharmonic_c0ip.bp",
         output_path_p="output/pv/fsi2_biharmonic_c0ip_p.bp",
@@ -979,7 +979,7 @@ def main():
         checkpoint_every=400,
         vtx_save_every=None,
         plot_matrices=False,
-        gamma_reassemble=0.5,  # Default 0.2.
+        gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
         c0ip_a_val=2.0,
         restart=args.restart,
