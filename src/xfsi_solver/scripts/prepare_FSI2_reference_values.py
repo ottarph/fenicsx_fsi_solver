@@ -40,6 +40,6 @@ if __name__ == "__main__":
     # plt.xlim([10.0, 10.8])
     plt.title("Reference")
 
-    Path("output/figures").mkdir(parents=True, exist_ok=True)
-    plt.savefig("output/figures/fsi2_referencedrag.pdf")
+    Path("output/figures/qoi/reference").mkdir(parents=True, exist_ok=True)
+    plt.savefig(f"output/figures/qoi/reference/{key}.pdf")
     plt.show()

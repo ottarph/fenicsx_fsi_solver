@@ -46,103 +46,72 @@ _REFERENCE_3D = {
 _REFERENCE_3D_INTERVAL = (9.0, 10.0)
 
 
-def plot_qois(
-    biharmonic_path: str | os.PathLike | None = None,
-    harmonic_path: str | os.PathLike | None = None,
-    reference_path: str | os.PathLike | None = None,
-    output_dir: str | os.PathLike = "output/figures",
+QOI_DIR = Path("output/qoi")
+FIGURE_DIR = Path("output/figures/qoi")
+FSI2_REFERENCE = Path("data/fsi2_reference.txt")
+
+_STYLES = ["k-", "b--", "g-.", "m:"]
+
+
+def solver_script(run: str) -> str:
+    """The solver script that wrote the QoI file ``<run>.txt``: the longest name of a module in
+    xfsi_solver.solvers that ``run`` starts with, as in ``threeDfsi_mixed`` for
+    ``threeDfsi_mixed_medium``."""
+    import pkgutil
+
+    import xfsi_solver.solvers
+
+    scripts = [m.name for m in pkgutil.iter_modules(xfsi_solver.solvers.__path__)]
+    matches = [name for name in scripts if run == name or run.startswith(name + "_")]
+    if not matches:
+        raise ValueError(f"{run!r} does not start with the name of a solver script in xfsi_solver.solvers")
+    return max(matches, key=len)
+
+
+def figure_prefix(runs: list[str], figure_dir: str | os.PathLike = FIGURE_DIR) -> tuple[Path, str]:
+    """The folder and file-name prefix of the QoI figures of ``runs``: the folder of the solver
+    script of the first run, and as prefix the rest of its name (such as the mesh), followed by
+    ``compare_<other runs>_`` when there are other runs."""
+    script = solver_script(runs[0])
+    parts = [runs[0][len(script) + 1 :]] if runs[0] != script else []
+    if runs[1:]:
+        parts.append("compare_" + "_".join(runs[1:]))
+    return Path(figure_dir) / script, "".join(part + "_" for part in parts)
+
+
+def plot_comparison(
+    runs: list[str],
+    reference_path: str | os.PathLike | None = FSI2_REFERENCE,
+    qoi_dir: str | os.PathLike = QOI_DIR,
+    figure_dir: str | os.PathLike = FIGURE_DIR,
 ):
-    """Plot drag, lift, and tip displacement over time for whichever of the
-    biharmonic/harmonic solver QOI files and the FSI2 reference data are
-    given. Any of the three inputs may be omitted (``None``) to plot only
-    the series that are actually available.
+    """Plot drag, lift, and tip displacement over time for the FSI2 runs whose QoI files are
+    ``<qoi_dir>/<run>.txt``, together with the FSI2 reference data, in the folder of the solver
+    script of the first run (see :func:`figure_prefix`). Runs without a QoI file, and the
+    reference with ``reference_path=None``, are left out.
     """
-
     series = []
-
-    if (qois_bih := _load_qois(biharmonic_path)) is not None:
-        series.append(("biharmonic", "k-", qois_bih))
-
-    if (qois_harm := _load_qois(harmonic_path)) is not None:
-        series.append(("harmonic", "b--", qois_harm))
-
+    for run, style in zip(runs, _STYLES, strict=False):
+        if (qois := _load_qois(Path(qoi_dir) / f"{run}.txt")) is not None:
+            series.append((run, style, qois))
     if (reference := _load_reference(reference_path)) is not None:
         series.append(("reference", "r:", reference))
-
-    _plot_series(series, output_dir)
-
-
-def plot_restricted_comparison(
-    biharmonic_path: str | os.PathLike | None = None,
-    restricted_path: str | os.PathLike | None = None,
-    reference_path: str | os.PathLike | None = None,
-    output_dir: str | os.PathLike = "output/figures",
-    filename_prefix: str = "restr_compare_",
-):
-    """Plot drag, lift, and tip displacement over time for the base
-    biharmonic solver and the biharmonic solver with restricted test
-    functions, optionally together with the FSI2 reference data. Any of the
-    three inputs may be omitted (``None``). Figures are written with
-    ``filename_prefix`` prepended so they don't overwrite those from
-    :func:`plot_qois`.
-    """
-
-    series = []
-
-    if (qois_bih := _load_qois(biharmonic_path)) is not None:
-        series.append(("biharmonic", "k-", qois_bih))
-
-    if (qois_restr := _load_qois(restricted_path)) is not None:
-        series.append(("biharmonic, restricted test functions", "b--", qois_restr))
-
-    if (reference := _load_reference(reference_path)) is not None:
-        series.append(("reference", "r:", reference))
-
-    _plot_series(series, output_dir, filename_prefix)
-
-
-def plot_c0ip_comparison(
-    biharmonic_path: str | os.PathLike | None = None,
-    c0ip_path: str | os.PathLike | None = None,
-    reference_path: str | os.PathLike | None = None,
-    output_dir: str | os.PathLike = "output/figures",
-    filename_prefix: str = "c0ip_compare_",
-):
-    """Plot drag, lift, and tip displacement over time for the standard
-    biharmonic solver and the C0 interior penalty (C0IP) biharmonic solver,
-    optionally together with the FSI2 reference data. Any of the three inputs
-    may be omitted (``None``). Figures are written with ``filename_prefix``
-    prepended so they don't overwrite those from :func:`plot_qois`.
-    """
-
-    series = []
-
-    if (qois_bih := _load_qois(biharmonic_path)) is not None:
-        series.append(("biharmonic", "k-", qois_bih))
-
-    if (qois_c0ip := _load_qois(c0ip_path)) is not None:
-        series.append(("biharmonic, C0IP", "b--", qois_c0ip))
-
-    if (reference := _load_reference(reference_path)) is not None:
-        series.append(("reference", "r:", reference))
-
-    _plot_series(series, output_dir, filename_prefix)
+    _plot_series(series, *figure_prefix(runs, figure_dir))
 
 
 def plot_3d_qois(
-    qoi_path: str | os.PathLike | None = None,
-    output_dir: str | os.PathLike = "output/figures",
-    filename_prefix: str = "fsi3d_",
+    run: str,
+    qoi_dir: str | os.PathLike = QOI_DIR,
+    figure_dir: str | os.PathLike = FIGURE_DIR,
 ):
-    """Plot drag, lift, and the displacement of the point B over time for the 3d
-    benchmark, with the reference ranges of Failer & Richter over t in [9, 10]. The
-    qoi file may still be written by a running simulation. Figures are written with
-    ``filename_prefix`` prepended so they don't overwrite the 2d figures.
+    """Plot drag, lift, and the displacement of the point B over time for a run of the 3d
+    benchmark, with the reference ranges of Failer & Richter over t in [9, 10], in the folder of
+    its solver script. The qoi file may still be written by a running simulation.
     """
-    qois = _load_qois(qoi_path)
+    qois = _load_qois(Path(qoi_dir) / f"{run}.txt")
     if qois is None:
         return
-    _plot_series([("3d benchmark", "k-", qois)], output_dir, filename_prefix, _QOI_SPECS_3D, _REFERENCE_3D)
+    _plot_series([(run, "k-", qois)], *figure_prefix([run], figure_dir), _QOI_SPECS_3D, _REFERENCE_3D)
 
 
 def _load_qois(qoi_path: str | os.PathLike | None) -> np.ndarray | None:
@@ -188,23 +157,21 @@ def _load_reference(reference_path: str | os.PathLike | None) -> np.ndarray | No
 
 def _plot_series(
     series: list[tuple[str, str, np.ndarray]],
-    output_dir: str | os.PathLike,
-    filename_prefix: str = "",
+    folder: Path,
+    prefix: str,
     qoi_specs: list[tuple[int, str, str]] = _QOI_SPECS,
     reference_ranges: dict[int, tuple[float, float]] | None = None,
 ):
-    """Write one PDF and one SVG figure per qoi in ``qoi_specs``, each
-    showing every ``(label, style, qois)`` entry in ``series``, and the
-    ``(mean, amplitude)`` of ``reference_ranges`` over
-    ``_REFERENCE_3D_INTERVAL`` as horizontal lines at the minimum and the
-    maximum. Without any series, no figures are written.
+    """Write one PDF and one SVG figure per qoi in ``qoi_specs``, to ``<folder>/<prefix><stem>.pdf``
+    and ``.svg``, each showing every ``(label, style, qois)`` entry in ``series``, and the
+    ``(mean, amplitude)`` of ``reference_ranges`` over ``_REFERENCE_3D_INTERVAL`` as horizontal
+    lines at the minimum and the maximum. Without any series, no figures are written.
     """
     if not series:
-        print(f"Nothing to plot for {Path(output_dir) / filename_prefix}*")
+        print(f"Nothing to plot for {folder}/{prefix}*")
         return
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
 
     for col, ylabel, stem in qoi_specs:
         plt.figure(figsize=(10, 5))
@@ -221,30 +188,30 @@ def _plot_series(
         plt.xlabel("Time [s]")
         plt.ylabel(ylabel)
         plt.legend()
-        plt.savefig(output_dir / f"{filename_prefix}{stem}.pdf")
+        plt.savefig(folder / f"{prefix}{stem}.pdf")
         with matplotlib.rc_context(_SVG_RC):
-            plt.savefig(output_dir / f"{filename_prefix}{stem}.svg")
+            plt.savefig(folder / f"{prefix}{stem}.svg")
         plt.close()
+    print(f"Saved {folder}/{prefix}*.pdf and .svg")
 
 
 def main():
-    plot_qois(
-        biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
-        harmonic_path="output/qoi/fsi2_harm_dm_qoi.txt",
-        reference_path="data/fsi2_reference.txt",
-    )
-    plot_restricted_comparison(
-        biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
-        restricted_path="output/qoi/fsi2_biharm_qoi_restr.txt",
-        reference_path="data/fsi2_reference.txt",
-    )
-    plot_c0ip_comparison(
-        biharmonic_path="output/qoi/fsi2_biharm_qoi.txt",
-        c0ip_path="output/qoi/fsi2_biharm_c0ip.txt",
-        reference_path="data/fsi2_reference.txt",
-    )
-    plot_3d_qois(qoi_path="output/qoi/fsi3d_iterative_qoi_coarse.txt")
-    plot_3d_qois(qoi_path="output/qoi/fsi3d_iterative_qoi_medium.txt", filename_prefix="fsi3d_medium_")
+    # Every FSI2 run on its own, with the reference, and the 3d runs with their reference ranges.
+    for qoi_path in sorted(QOI_DIR.glob("*.txt")):
+        try:
+            script = solver_script(qoi_path.stem)
+        except ValueError:
+            continue  # a QoI file of a solver that no longer exists
+        if script.startswith("fsi2_"):
+            plot_comparison([qoi_path.stem])
+        elif script.startswith("threeDfsi_"):
+            plot_3d_qois(qoi_path.stem)
+
+    # Comparisons between the solvers
+    plot_comparison(["fsi2_biharmonic_simple", "fsi2_harmonic"])
+    plot_comparison(["fsi2_biharmonic_fulljacobian", "fsi2_biharmonic_simple"])
+    plot_comparison(["fsi2_biharmonic_c0ip", "fsi2_biharmonic_simple"])
+    plot_comparison(["fsi2_biharmonic_c0ip", "fsi2_biharmonic_mixed"])
 
 
 if __name__ == "__main__":
