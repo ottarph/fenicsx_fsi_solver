@@ -329,7 +329,7 @@ def solve(
         residual_blocked,
         [u, v, p, z],
         bcs=bcs,
-        petsc_options_prefix="fsi2_biharmonic_diffmesh_restr_",
+        petsc_options_prefix="fsi2_biharmonic_fulljacobian_",
         entity_maps=entity_maps,
         petsc_options={
             "ksp_type": "preonly",
@@ -343,7 +343,7 @@ def solve(
             "snes_rtol": rtol,
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharm_restr_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_fulljacobian_snes_log.txt",
             "snes_monitor": None,
         },
     )
@@ -554,10 +554,10 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=15.5,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharm_dm_restr.bp",
-        output_path_p="output/pv/fsi2_biharm_p_dm_restr.bp",
-        qoi_path="output/qoi/fsi2_biharm_qoi_restr.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharm_dm_restr",
+        output_path="output/pv/fsi2_biharmonic_fulljacobian.bp",
+        output_path_p="output/pv/fsi2_biharmonic_fulljacobian_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_fulljacobian.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_fulljacobian",
         checkpoint_every=100,
         restart=args.restart,
     )
