@@ -306,7 +306,7 @@ def solve(
         residual_blocked,
         [u, v, p],
         bcs=bcs,
-        petsc_options_prefix="fsi2_harmonic_diffmesh_",
+        petsc_options_prefix="fsi2_harmonic_",
         entity_maps=entity_maps,
         petsc_options={
             "ksp_type": "preonly",
@@ -319,7 +319,7 @@ def solve(
             "snes_rtol": rtol,
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
-            # "snes_monitor": "ascii:output/logs/fsi2_harm_dm_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_harmonic_snes_log.txt",
             "snes_monitor": None,
         },
     )
@@ -434,10 +434,10 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=15.0,  # Will fail at around t=7s
         dt_val=0.0025,
-        output_path="output/pv/fsi2_harm_dm.bp",
-        output_path_p="output/pv/fsi2_harm_p_dm.bp",
-        qoi_path="output/qoi/fsi2_harm_dm_qoi.txt",
-        checkpoint_dir="output/checkpoints/fsi2_harm_dm",
+        output_path="output/pv/fsi2_harmonic.bp",
+        output_path_p="output/pv/fsi2_harmonic_p.bp",
+        qoi_path="output/qoi/fsi2_harmonic.txt",
+        checkpoint_dir="output/checkpoints/fsi2_harmonic",
         checkpoint_every=100,
         restart=args.restart,
     )
