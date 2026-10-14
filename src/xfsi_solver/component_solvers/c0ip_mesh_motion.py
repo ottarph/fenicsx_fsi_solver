@@ -62,7 +62,7 @@ SOLVERS = ("direct", "direct_component", "cg_gamg", "cg_laplacian_squared", "cg_
 CASES = {
     "fsi2": {
         "mesh_path": "data/meshes/fsi2/mesh_sec.xdmf",
-        "checkpoint_dir": "output/checkpoints/fsi2_biharm_c0ip",
+        "checkpoint_dir": "output/checkpoints/fsi2_biharmonic_c0ip",
         "checkpoint_dt": 0.0025,
     },
     "fsi3d": {

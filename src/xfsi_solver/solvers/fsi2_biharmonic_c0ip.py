@@ -545,7 +545,7 @@ def solve(
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharm_restr_split_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_c0ip_snes_log.txt",
         },
     )
 
@@ -988,10 +988,10 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
         T=16.0 + 10 * 0.0025,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharm_c0ip.bp",
-        output_path_p="output/pv/fsi2_biharm_p_c0ip.bp",
-        qoi_path="output/qoi/fsi2_biharm_c0ip.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharm_c0ip",
+        output_path="output/pv/fsi2_biharmonic_c0ip.bp",
+        output_path_p="output/pv/fsi2_biharmonic_c0ip_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_c0ip.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_c0ip",
         checkpoint_every=400,
         vtx_write_every=None,
         plot_matrices=False,
