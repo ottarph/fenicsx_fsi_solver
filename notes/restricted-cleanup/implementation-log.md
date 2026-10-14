@@ -123,3 +123,64 @@ Other decisions:
   The Krylov counts are the sums over all fieldsplit solves. Undamped SOR converged on every rank count. In
   2d, damping costs up to 15% more iterations and 9% more time and does not help robustness, unlike in 3d,
   where ω = 1 diverged on 26 to 30 ranks. The 2d solver therefore keeps undamped SOR.
+
+## Phase 5: C0IP on the mixed solver (2026-10-14)
+
+- `fsi2_biharmonic_c0ip` is now `fsi2_biharmonic_mixed` with only the mesh motion replaced:
+  - the C0IP form and its facet measures, with penalty `c0ip_a_val`, now an option;
+  - no z;
+  - MUMPS Cholesky on K_m.
+
+  It was a copy of the restricted split solver: direct solve of (u_S, v, p), solid stress in terms of u.
+  It gets the condensation, the iterative K_c option, `vtx_save_every` and `plot_matrices` from the mixed
+  solver. The CG option for K_m and the separate first-solve timing were for comparing CG with Cholesky,
+  and are removed.
+- Check against the old solver, 20 steps on 4 ranks, `mesh_sec`:
+  - From rest: QoIs within 6e-8 relative, with the direct K_c solve.
+  - From the developed flow at t = 16: identical in all printed digits, with the same 138 Newton iterations
+    and 21 Jacobian assemblies.
+  - The iterative K_c solve agrees to 7e-7 from rest and to all printed digits from t = 16.
+- `component_solvers/c0ip_mesh_motion.py` keeps `direct_component`, `cg_gamg` and `cg_laplacian_squared`
+  (BoomerAMG or LU). Brenner-Sung, the full LU and the GAMG V-cycles in `LaplacianSquaredPC` are removed.
+- Tests for `fsi2_biharmonic_mixed` and `fsi2_biharmonic_c0ip`:
+  - direct and iterative K_c;
+  - restart checks, with a tolerance of 1e-6. A restart assembles the approximate Jacobian where the
+    continuous run reuses it, so the states differ by about 1e-8 relative.
+
+## Phase 6: plots, tests and docs (2026-10-14)
+
+- `tools/matrix_blocks.py` holds the spy and block-norm plots, gathered on rank 0. `fsi2_biharmonic_mixed`
+  and `fsi2_biharmonic_c0ip` use it with `plot_matrices=True`, and save to
+  `output/figures/matrix_blocks/<script>/`. The 3d solver does not plot matrices, since gathering the
+  Jacobian on one rank is too large there.
+- `plot_qois.plot_comparison(runs)` replaces the three comparison functions:
+  - A run is named by its QoI file. The folder is `output/figures/qoi/<script>/`, where the script is the
+    longest solver module name the run starts with. The rest of the name, such as `fine_` or
+    `scaled_T10_`, prefixes the file names, then `compare_<other runs>_`.
+  - `dfg_2d_3` saves to `output/figures/qoi/dfg_2d_3/`, and the reference plot to
+    `output/figures/qoi/reference/`.
+- `create_test_meshes` also makes the coarse 3d mesh. It restores gmsh's default options first, since
+  `gmsh.clear()` keeps the quad recombination of the DFG quad mesh, which fails on the periodic surfaces
+  of the 3d mesh.
+- The README figure moved from `output/figures/` to `docs/figures/`.
+
+## Old and new names
+
+| Old | New |
+|---|---|
+| `solvers/fsi2_harmonic.py` (single mesh) | removed |
+| `solvers/fsi2_harmonic_diffmesh.py` | `solvers/fsi2_harmonic.py` |
+| `solvers/fsi2_biharmonic_diffmesh.py` | `solvers/fsi2_biharmonic_simple.py` |
+| `solvers/fsi2_biharmonic_diffmesh_restricted.py` | `solvers/fsi2_biharmonic_fulljacobian.py` |
+| `solvers/fsi2_biharmonic_diffmesh_restricted_scaled.py` | `fsi2_biharmonic_fulljacobian`, `mesh_motion_scaling=1e-9` |
+| `solvers/fsi2_biharmonic_diffmesh_restricted_split.py` | removed |
+| `solvers/fsi2_biharmonic_diffmesh_restricted_split_condensed.py` | `solvers/fsi2_biharmonic_mixed.py` |
+| `solvers/fsi2_biharmonic_diffmesh_restricted_split_condensed_cahouet_chabard.py` | removed (on `3d`) |
+| `solvers/threeDfsi_iterative.py` | `solvers/threeDfsi_mixed.py` |
+| `scripts/create_mesh_DFG2d.py` | removed |
+| `scripts/create_mesh_DFG2d_alt.py` | `scripts/create_mesh_DFG2d.py` |
+| `component_solvers/restricted_test_function_*_mwe.py` | `examples/` |
+| `tools/cahouet_chabard.py` | removed |
+| `restricted-test-functions-solver-time.md` | `notes/restricted-test-functions/solver-time.md` |
+| `output/figures/y-disp.svg` | `docs/figures/y-disp.svg` |
+| QoI files `fsi2_harm_dm_qoi.txt`, `fsi2_biharm_qoi.txt`, `fsi2_biharm_qoi_restr*.txt`, `fsi2_biharm_c0ip.txt`, `fsi3d_iterative_qoi_*.txt` | `<script>[_<mesh or variant>].txt` |
