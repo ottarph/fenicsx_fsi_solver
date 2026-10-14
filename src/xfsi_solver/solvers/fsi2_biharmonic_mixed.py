@@ -47,6 +47,7 @@ def solve(
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
+    plot_matrices=False,
     restart=False,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
@@ -92,6 +93,12 @@ def solve(
     checkpoint time are dropped from ``qoi_path`` before appending, and the
     VTX output is written to new files with a ``_from_t<time>`` suffix, since
     ``VTXWriter`` cannot append.
+
+    With ``plot_matrices=True``, spy plots and block norm plots of the full Jacobian and
+    the approximate Jacobian J_0 at the final state are saved in
+    ``output/figures/matrix_blocks/fsi2_biharmonic_mixed/``, with the dofs ordered by the
+    storage blocks [u, v, p, z] and by the blocks of eq. (1) of
+    docs/restricted-iterative-solver.md. The matrices are gathered on rank 0.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -838,6 +845,35 @@ def solve(
 
     for writer in writers:
         writer.close()
+
+    if plot_matrices:
+        from xfsi_solver.tools.matrix_blocks import matrix_blocks_dir, plot_matrix_blocks
+
+        # The full Jacobian, and J_0, at the final state, assembled into new matrices with the
+        # sparsity pattern of the full Jacobian, which contains that of J_0. J_mat has no room for
+        # the full Jacobian, since it is created from the forms of J_0.
+        jacobian_full_base = dolfinx.fem.form(jacobian_full_base_ufl, entity_maps=entity_maps)
+        dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
+        partitions = {
+            "storage": ([rows_u, rows_v, rows_p, rows_z], ["$u$", "$v$", "$p$", "$z$"]),
+            "eq1": ([rows_u_S, rows_v, rows_p, rows_z, rows_u[~u_solid]], ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"]),
+        }
+        for label, title, jacobian_forms in [
+            ("", "Jacobian", jacobian_full_base),
+            ("approximate_", "Approximate Jacobian", jac_kargs["jacobian"]),
+        ]:
+            J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
+            J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
+            fem_jacobian(solver, problem.x, J, P_mat, *jac_args, **(jac_kargs | {"jacobian": jacobian_forms}))
+            post_jacobian(problem.x, J)
+            plot_matrix_blocks(
+                J,
+                {label + name: partition for name, partition in partitions.items()},
+                title,
+                matrix_blocks_dir(__file__),
+                t,
+            )
+            J.destroy()
 
     # Destroying the MUMPS factorization and the AMG hierarchies is collective, so destroy them on
     # all ranks here instead of leaving it to garbage collection, which can run at different points
