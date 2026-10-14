@@ -16,8 +16,6 @@ def test_threeDfsi_mixed_solve(output_dirs, direct):
         output_path_p=str(output_dirs["pv"] / "threeDfsi_mixed_p.bp"),
         qoi_path=str(qoi_path),
         direct_k_c_solve=direct,
-        block_preconditioned_k_c_solve=not direct,
-        cahouet_chabard_schur_preconditioner=not direct,
     )
 
     # The initial state and two time steps, with t, drag, lift and the displacement of B.

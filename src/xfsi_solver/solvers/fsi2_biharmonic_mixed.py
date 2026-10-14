@@ -14,7 +14,6 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.tools.cahouet_chabard import CahouetChabard, outflow_pressure_dofs
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.petsc_reuse import ReusePC
 from xfsi_solver.tools.qoi import (
@@ -51,9 +50,6 @@ def solve(
     restart=False,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
-    block_preconditioned_k_c_solve=False,
-    auxiliary_vv_preconditioner=False,
-    cahouet_chabard_schur_preconditioner=True,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -75,34 +71,11 @@ def solve(
     MUMPS factorization of the x component reused for the y component.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
-    LU. Otherwise, it is solved with a full Schur complement factorization over v and p:
-    GMRES with GAMG on the velocity block A, with the rigid body modes as near-nullspace
-    and SOR smoothing, and GMRES on the pressure Schur complement S = -B A^{-1} G,
-    preconditioned by BoomerAMG on its approximation -B diag(A)^{-1} G. A is solved to a
-    tighter tolerance than S, since every application of S solves with A. With
-    ``block_preconditioned_k_c_solve=True``, K_c is instead solved by FGMRES, preconditioned
-    by the block upper triangular factor of the Schur factorization, with one GAMG V-cycle
-    for A^{-1} and one BoomerAMG V-cycle on -B diag(A)^{-1} G for S^{-1}.
-
-    With ``auxiliary_vv_preconditioner=True``, which requires an iterative K_c solve, the
-    GAMG hierarchy for A is built from the symmetric positive definite auxiliary operator
-    A_0 of docs/restricted-iterative-solver.md instead of from A: A without fluid
-    transport, and with a linear elastic solid. A_0 is the velocity block of a separate
-    preconditioning matrix, assembled in addition to the Jacobian at every reassembly.
-    GAMG's finest smoother iterates with the velocity KSP's operator. In the
-    block-preconditioned solve, the velocity KSP only applies the V-cycle, so its operator
-    is A_0 as well, smoothed by Chebyshev with Jacobi. In the full Schur solve, the
-    velocity GMRES must solve with A, so the finest smoother iterates with the
-    nonsymmetric A, and SOR smoothing is used. Without the auxiliary operator, GAMG is
-    built from A with SOR smoothing in both solves.
-
-    With ``cahouet_chabard_schur_preconditioner=True``, which requires an iterative K_c
-    solve, S^{-1} is approximated by Cahouet-Chabard instead of BoomerAMG on
-    -B diag(A)^{-1} G: rho_f / dt * L_p^{-1} + theta * rho_f * nu_f * M_p^{-1}, with the
-    pressure Laplacian L_p (p = 0 on the outflow) and the pressure mass matrix M_p on the
-    reference fluid mesh, applied with one BoomerAMG V-cycle on L_p and Jacobi on M_p. It
-    accounts for both the inertia and the viscous term of A, while -B diag(A)^{-1} G only
-    approximates S well while inertia dominates.
+    LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
+    factor of the Schur complement factorization over v and p: one GAMG V-cycle on the
+    velocity block A, with the rigid body modes as near-nullspace and SOR smoothing, for
+    A^{-1}, and one BoomerAMG V-cycle on the approximation -B diag(A)^{-1} G (selfp) of
+    the pressure Schur complement S = -B A^{-1} G, for S^{-1}.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -122,11 +95,6 @@ def solve(
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
-    if auxiliary_vv_preconditioner and direct_k_c_solve:
-        # MUMPS would factorize the preconditioning matrix, a copy of the Jacobian here.
-        raise ValueError("auxiliary_vv_preconditioner=True requires an iterative K_c solve")
-    if cahouet_chabard_schur_preconditioner and direct_k_c_solve:
-        raise ValueError("cahouet_chabard_schur_preconditioner=True requires an iterative K_c solve")
     if checkpoint_every is not None and checkpoint_dir is None:
         raise ValueError("checkpoint_every requires checkpoint_dir")
 
@@ -453,41 +421,6 @@ def solve(
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
     # Therefore, we make only the one jacobian_post-form.
 
-    jacobian_preconditioner_base_ufl = [
-        [jacobian_full_base_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
-    ]
-
-    # Neglect the terms depending on u_f in v and p.
-    # The neglecting is really in terms of fluid interior
-    # and fluid interface dofs of u, but we don't have that distinction here,
-    # so we do it by hand.
-
-    # Neglect the terms for v w.r.t. u. E_S is no longer dependent on u because of the condensation.
-    jacobian_preconditioner_base_ufl[1][0] = None
-
-    # Neglect terms for p w.r.t. u.
-    jacobian_preconditioner_base_ufl[2][0] = None
-
-    # Switch the preconditioner's v-v block to A_0 as in docs/restricted-iterative-solver.md.
-    # A_0 is designed to contain enough terms to be a good preconditioner while still being SPD.
-
-    w = ufl.TrialFunction(V)
-
-    a0_mass = ufl.derivative(A_T_mass(u, u_old, v, v_old), v, w)
-
-    a0_viscous = theta * ufl.derivative(A_E_fluid_viscous(u, v), v, w)
-
-    # Linear elasticity term
-    a0_solid = (
-        theta**2
-        * dt
-        * (2 * mu_s * ufl.inner(ufl.sym(ufl.grad(w)), ufl.sym(ufl.grad(dv))) + lambda_s * ufl.div(w) * ufl.div(dv))
-        * dx_solid
-    )
-
-    a0 = a0_mass + a0_viscous + a0_solid
-    jacobian_preconditioner_base_ufl[1][1] = a0
-
     # Set up output, checkpointing, and qoi tracking.
 
     from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path
@@ -541,14 +474,10 @@ def solve(
         lift = assemble_force(lift_forms, comm)
         append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
 
-    # Without a separate preconditioning matrix, PETSc uses the Jacobian for both.
-    preconditioner = jacobian_preconditioner_base_ufl if auxiliary_vv_preconditioner else None
-
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_base_ufl,
         [u, v, p, z],
         J=jacobian_approximate_base_ufl,
-        P=preconditioner,
         bcs=bcs,
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
@@ -585,8 +514,6 @@ def solve(
 
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
-    if auxiliary_vv_preconditioner:
-        problem.P_mat.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
     # Global rows of the interface u-dofs owned by this rank, for zeroing with zeroRows.
     # Each rank stores its owned dofs as [u | v | p | z], starting at its first global row.
@@ -610,15 +537,6 @@ def solve(
         J.zeroRows(rows_d, diag=0.0)
         dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
         J.assemble()
-
-    def post_jacobian_preconditioned(x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
-        J.zeroRows(rows_d, diag=0.0)
-        dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
-        J.assemble()
-
-        P.zeroRows(rows_d, diag=0.0)
-        dolfinx.fem.petsc.assemble_matrix(P, jacobian_post, bcs=[u_s_bc, *bcs])
-        P.assemble()
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
@@ -651,7 +569,6 @@ def solve(
         "assembled": False,
         "previous_norm": None,
         "num_assemblies": 0,
-        "num_preconditioner_assemblies": 0,
     }
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
@@ -669,29 +586,12 @@ def solve(
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
-    def wrapped_jacobian_preconditioned(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
-        norm = snes.getFunctionNorm()  # residual norm at the current iterate x
-        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
-        jacobian_state["previous_norm"] = norm
-        # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
-        # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
-        # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
-            return
-        pre_jacobian(x, J)
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
-        post_jacobian_preconditioned(x, J, P)
-        jacobian_state["assembled"] = True
-        jacobian_state["num_assemblies"] += 1
-        jacobian_state["num_preconditioner_assemblies"] += 1
-
     def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
         pre_residual(x, b)  # x is not yet assigned to u here
         fem_residual(snes, x, b, *res_args, **res_kargs)
         post_residual(x, b)  # u is now updated and b assembled (BCs applied)
 
-    jacobian_callback = wrapped_jacobian_preconditioned if auxiliary_vv_preconditioner else wrapped_jacobian
-    solver.setJacobian(jacobian_callback, J_mat, P_mat)
+    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
     # Helper function to retrieve the dofs that are supported on solid cells. Don't know
@@ -701,9 +601,6 @@ def solve(
         bs = space.dofmap.index_map_bs
         dofs = dolfinx.fem.locate_dofs_topological(space, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
         return np.isin(np.arange(num_dofs), (bs * dofs[:, None] + np.arange(bs)).ravel())
-
-    first_row = J_mat.getOwnershipRange()[0]
-    offsets_owned, _ = problem.b.getAttr("_blocks")
 
     def owned_rows(k):
         """Global rows of the owned dofs of block k in [u, v, p, z]."""
@@ -773,82 +670,38 @@ def solve(
         }
 
     else:
+        # FGMRES on K_c, preconditioned by the block upper triangular [[A, G], [0, S]], with one GAMG
+        # V-cycle for A^{-1} and one BoomerAMG V-cycle on \hat S for S^{-1}. Each iteration costs two
+        # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
+        # FGMRES matters.
         velocity_pressure_solve_options = {
+            "ksp_converged_reason": None,
+            "ksp_type": "fgmres",
+            "ksp_rtol": 1e-5,
+            "ksp_max_it": 200,
             "pc_type": "fieldsplit",
             "pc_fieldsplit_type": "schur",
-            # GAMG on v, with the near-nullspace and block size attached to is_v.
+            "pc_fieldsplit_schur_fact_type": "upper",
+            # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
+            # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
+            # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
+            # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
+            # inertia term rho_f / dt dominates diag(A) at small time steps.
+            "pc_fieldsplit_schur_precondition": "selfp",
+            # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
+            "fieldsplit_v_ksp_type": "preonly",
             "fieldsplit_v_pc_type": "gamg",
             "fieldsplit_v_pc_gamg_threshold": 0.01,
             "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+            "fieldsplit_v_mg_levels_ksp_type": "richardson",
+            "fieldsplit_v_mg_levels_pc_type": "sor",
+            # "fieldsplit_v_ksp_converged_reason": None,
+            # One BoomerAMG V-cycle on \hat S.
+            "fieldsplit_p_ksp_type": "preonly",
+            "fieldsplit_p_pc_type": "hypre",
+            "fieldsplit_p_pc_hypre_type": "boomeramg",
+            # "fieldsplit_p_ksp_converged_reason": None,
         }
-        if cahouet_chabard_schur_preconditioner:
-            velocity_pressure_solve_options |= {
-                # The Cahouet-Chabard python PC set up below approximates S^{-1} without a preconditioning
-                # matrix, so take the (empty) A11 block instead of assembling selfp.
-                "pc_fieldsplit_schur_precondition": "a11",
-                "fieldsplit_p_pc_type": "python",
-            }
-        else:
-            velocity_pressure_solve_options |= {
-                # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
-                # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
-                # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
-                # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
-                # inertia term rho_f / dt dominates diag(A) at small time steps.
-                "pc_fieldsplit_schur_precondition": "selfp",
-                # BoomerAMG on \hat S.
-                "fieldsplit_p_pc_type": "hypre",
-                "fieldsplit_p_pc_hypre_type": "boomeramg",
-            }
-        if block_preconditioned_k_c_solve:
-            # FGMRES on K_c, preconditioned by the block upper triangular [[A, G], [0, S]], with one GAMG
-            # V-cycle for A^{-1} and one BoomerAMG V-cycle on \hat S for S^{-1}. Each iteration costs two
-            # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
-            # FGMRES matters.
-            velocity_pressure_solve_options |= {
-                "ksp_converged_reason": None,
-                "ksp_type": "fgmres",
-                "ksp_rtol": 1e-5,
-                "ksp_max_it": 200,
-                "pc_fieldsplit_schur_fact_type": "upper",
-                # The velocity KSP is preonly, so its operator is only used by the finest GAMG smoother.
-                # Use the SPD auxiliary operator A_0 there too, so that the whole V-cycle approximates
-                # A_0^{-1}, which Chebyshev with Jacobi requires. FGMRES on K_c still uses the Jacobian.
-                # This applies only if auxiliary_vv_preconditioner == True.
-                "pc_fieldsplit_diag_use_amat": False,
-                "pc_fieldsplit_off_diag_use_amat": True,
-                "fieldsplit_v_ksp_type": "preonly",
-                "fieldsplit_v_mg_levels_ksp_type": "chebyshev" if auxiliary_vv_preconditioner else "richardson",
-                "fieldsplit_v_mg_levels_pc_type": "jacobi" if auxiliary_vv_preconditioner else "sor",
-                # "fieldsplit_v_ksp_converged_reason": None,
-                "fieldsplit_p_ksp_type": "preonly",
-                # "fieldsplit_p_ksp_converged_reason": None,
-            }
-        else:
-            # Full Schur complement factorization, applied once: A is solved by GMRES in each application of
-            # S, so it is solved to a tighter tolerance than S, which is solved by GMRES.
-            velocity_pressure_solve_options |= {
-                "ksp_converged_reason": None,
-                "ksp_type": "preonly",
-                "pc_fieldsplit_schur_fact_type": "full",
-                # The velocity GMRES solves with its operator inside every application of S, so the
-                # operator must be the Jacobian block A. A_0 remains the preconditioning matrix, from
-                # which GAMG builds its hierarchy. The finest smoother then iterates with the
-                # nonsymmetric A, which Richardson with SOR tolerates and Chebyshev does not.
-                # This applies only if auxiliary_vv_preconditioner == True.
-                "pc_fieldsplit_diag_use_amat": True,
-                "pc_fieldsplit_off_diag_use_amat": True,
-                "fieldsplit_v_ksp_type": "gmres",
-                "fieldsplit_v_ksp_rtol": 1e-7,
-                "fieldsplit_v_ksp_max_it": 100,
-                "fieldsplit_v_mg_levels_ksp_type": "richardson",
-                "fieldsplit_v_mg_levels_pc_type": "sor",
-                "fieldsplit_v_ksp_converged_reason": None,
-                "fieldsplit_p_ksp_type": "gmres",
-                "fieldsplit_p_ksp_rtol": 1e-5,
-                "fieldsplit_p_ksp_max_it": 100,
-                "fieldsplit_p_ksp_converged_reason": None,
-            }
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
     # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
@@ -910,39 +763,6 @@ def solve(
         ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
         ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
 
-    if cahouet_chabard_schur_preconditioner:
-        # The pressure operators are assembled on the reference fluid mesh, so they, and their
-        # preconditioners, are constant for the whole run. The velocity block is
-        # A ~ rho_f / dt * M + theta * rho_f * nu_f * K: the inertia term, and the viscous term,
-        # which enters the residual with the factor theta.
-        cahouet_chabard = CahouetChabard(
-            P,
-            dx_fluid,
-            entity_maps,
-            outflow_pressure_dofs(P, mesh, facet_tags.find(PHYSICAL_MARKERS["outflow"]), fluid_vertex_map),
-            alpha=rho_f.value / dt_val,
-            mu=theta.value * rho_f.value * nu_f.value,
-            iterative=True,
-        )
-
-        # The Schur complement KSP is only created when the q_c fieldsplit is set up, which needs
-        # an assembled Jacobian. Assemble it once here and set up the KSPs, then set the context
-        # on the Schur complement PC. The assembly copies problem.x into u, v, p, z, so problem.x
-        # must hold the current state first. The context persists when the fieldsplit is set up
-        # again after reassembly, since the options database keeps the PC type python.
-        dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
-        jacobian_callback(solver, problem.x, J_mat, P_mat)
-        solver.getKSP().setUp()
-        ksp_q_c.setUp()
-        _, ksp_schur = ksp_q_c.getPC().getFieldSplitSubKSP()
-        ksp_schur.getPC().setPythonContext(cahouet_chabard)
-
-        # The Jacobian assembled above used u_old and v_old before the time loop sets them, so
-        # make the first Newton iteration assemble it again instead of reusing it.
-        jacobian_state["assembled"] = False
-        jacobian_state["num_assemblies"] = 0
-        jacobian_state["num_preconditioner_assemblies"] = 0
-
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
     ksp_check = KSPConvCheck(solver.getKSP())
@@ -989,29 +809,18 @@ def solve(
             k_c_solve_description = "MUMPS LU\n"
         else:
             options = velocity_pressure_solve_options
-            if cahouet_chabard_schur_preconditioner:
-                schur_description = cahouet_chabard.description()
-            else:
-                schur_description = "BoomerAMG on -B diag(A)^{-1} G (selfp)"
-            hierarchy = "the auxiliary SPD operator A_0" if auxiliary_vv_preconditioner else "A"
             gamg_description = (
-                f"GAMG built from {hierarchy} (rigid body modes as near-nullspace),\n"
+                "GAMG built from A (rigid body modes as near-nullspace),\n"
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
                 f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
             )
-            if block_preconditioned_k_c_solve:
-                k_c_solve_description = (
-                    f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
-                    f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
-                    f"    one application of {schur_description}, for S^{{-1}}\n"
-                )
-            else:
-                k_c_solve_description = (
-                    "full Schur complement factorization over v and p,\n"
-                    f"    GMRES on A (rtol {options['fieldsplit_v_ksp_rtol']:g}) with {gamg_description},\n"
-                    f"    GMRES on S (rtol {options['fieldsplit_p_ksp_rtol']:g}) preconditioned by\n"
-                    f"      {schur_description}\n"
-                )
+            if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+                gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
+            k_c_solve_description = (
+                f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
+                f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
+                "    one V-cycle of BoomerAMG on -B diag(A)^{-1} G (selfp), for S^{-1}\n"
+            )
         print(
             "\nSolver setup:\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
@@ -1025,8 +834,6 @@ def solve(
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
-            f"  Separate preconditioning matrix assemblies (A_0): {jacobian_state['num_preconditioner_assemblies']}"
-            "\n"
         )
 
     for writer in writers:
@@ -1035,8 +842,6 @@ def solve(
     # Destroying the MUMPS factorization and the AMG hierarchies is collective, so destroy them on
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
-    if cahouet_chabard_schur_preconditioner:
-        cahouet_chabard.destroy_solvers()
     solver.destroy()
 
     return
@@ -1061,9 +866,6 @@ def main():
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
-        block_preconditioned_k_c_solve=True,
-        auxiliary_vv_preconditioner=False,
-        cahouet_chabard_schur_preconditioner=True,
         restart=args.restart,
     )
 
