@@ -15,7 +15,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.petsc_reuse import ReusePC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
@@ -47,16 +47,47 @@ def solve(
     qoi_path,
     checkpoint_dir=None,
     checkpoint_every=None,
-    vtx_write_every=None,
+    vtx_save_every=None,
     plot_matrices=False,
     restart=False,
     gamma_reassemble=0.2,
-    mesh_motion_direct_solver=True,
+    direct_k_c_solve=False,
+    c0ip_a_val=2.0,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
-    steps, writing the initial state at ``t0`` as the first QoI row and VTX snapshot.
+    steps, writing the initial state at ``t0`` as the first QoI row and, with
+    ``vtx_save_every``, as the first VTX snapshot. With ``vtx_save_every=None``, no VTX
+    output is written; otherwise a snapshot is written every ``vtx_save_every`` steps.
 
-    The approximate Jacobian is only reassembled, and the physical block K_q only
+    The solid stress in the momentum equation is written in terms of the velocity, with
+    the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
+    + (1 - theta) * v_old) (Failer & Richter, J. Sci. Comput. 82:28, 2020, eq. (5)). The
+    momentum equation then no longer depends on the solid displacement u_S, and its
+    derivative with respect to v contains the solid stiffness. The approximate Jacobian
+    J_0 drops the remaining derivatives of the momentum and continuity equations with
+    respect to u, which are the fluid ALE derivatives, and is block lower triangular in
+    (v, p), u_S, u_I. Each Newton step is solved by a multiplicative fieldsplit in that
+    order, with MUMPS Cholesky on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
+    K_m (the mesh motion) are constant, so their preconditioners are set up once for the
+    whole run. K_m does not couple the x and y components, and the components have the
+    same matrix, so it is solved by an additive fieldsplit over the components, with the
+    MUMPS factorization of the x component reused for the y component.
+
+    This is fsi2_biharmonic_mixed.py with the biharmonic mesh motion in C0 interior penalty
+    (C0IP) form instead of the mixed form: the fluid displacement is the only mesh-motion
+    unknown, without the auxiliary field z, and K_m is symmetric positive definite. The
+    zero normal derivative on the fluid boundary is imposed by Nitsche's method, as the
+    mixed form imposes it naturally. The penalty parameters are those of
+    tools/dg_optpar.py with ``a_val = c0ip_a_val``.
+
+    With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
+    LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
+    factor of the Schur complement factorization over v and p: one GAMG V-cycle on the
+    velocity block A, with the rigid body modes as near-nullspace and SOR smoothing, for
+    A^{-1}, and one BoomerAMG V-cycle on the approximation -B diag(A)^{-1} G (selfp) of
+    the pressure Schur complement S = -B A^{-1} G, for S^{-1}.
+
+    The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
     ``gamma_reassemble`` in the last iteration (Failer & Richter, J. Sci. Comput. 82:28,
     2020, Sec. 5.3), and is otherwise reused, also across time steps. With
@@ -72,19 +103,11 @@ def solve(
     VTX output is written to new files with a ``_from_t<time>`` suffix, since
     ``VTXWriter`` cannot append.
 
-    Each Newton step is solved by a multiplicative fieldsplit over q = (u_S, v, p) and
-    m = u_I, with MUMPS LU on K_q. K_m (the C0IP mesh motion) is assembled on the
-    reference fluid mesh, so it is the same matrix for the whole run. It does not couple
-    the x and y components, and the components have the same matrix, so it is solved by
-    an additive fieldsplit over the components, and the preconditioner of the x component
-    is set up once and reused for the y component (``ReusePC``). With
-    ``mesh_motion_direct_solver=True``, this is a MUMPS Cholesky factorization. Otherwise,
-    each component is solved by CG preconditioned by GAMG, to a relative tolerance of 1e-5
-    and an absolute tolerance of 1e-7 in the unpreconditioned residual norm.
-
-    With ``plot_matrices=True``, spy plots and block norm plots of the Jacobian and the
-    approximate Jacobian at the final state are saved to ``spy_*.png`` and
-    ``block_norms_*.png`` in the working directory.
+    With ``plot_matrices=True``, spy plots and block norm plots of the full Jacobian and
+    the approximate Jacobian J_0 at the final state are saved in
+    ``output/figures/matrix_blocks/fsi2_biharmonic_c0ip/``, with the dofs ordered by the
+    storage blocks [u, v, p] and by the blocks of eq. (1) of
+    docs/restricted-iterative-solver.md. The matrices are gathered on rank 0.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -192,12 +215,10 @@ def solve(
 
     theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
 
-    save_every = 4
-
     num_steps = round((T - t0) / dt_val)
-    if num_steps < save_every:
+    if vtx_save_every is not None and num_steps < vtx_save_every:
         warnings.warn(
-            f"save_every ({save_every}) is larger than the total number of time "
+            f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
             f"steps ({num_steps}); at most one VTX snapshot will be written to "
             f"{output_path!r} or {output_path_p!r}, which is not a usable time "
             f"series in ParaView.",
@@ -234,7 +255,6 @@ def solve(
     # The cell volumes and facet areas are computed as DG0 functions, since ufl.CellVolume
     # and ufl.FacetArea are not supported on the curved mesh. The facet areas live on a
     # submesh of the facets, so its entity map is needed in the forms.
-    c0ip_a_val = 2.0
     mm_element_order = U.element.basix_element.degree
     cell_volume = compute_cell_volumes(mesh)
     h_facet, facet_entity_map = compute_facet_areas(mesh)
@@ -336,9 +356,17 @@ def solve(
 
     from xfsi_solver.fsi.materials import Fluid, Solid
 
-    # create residual form
+    # create residual form with u condensed out.
 
-    def A_T(u, u_old, v, v_old):
+    def A_T_mesh_transport(u, u_old, v, v_old):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
+
+        return residual
+
+    def A_T_mass(u, u_old, v, v_old):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
         F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_old)
@@ -347,11 +375,12 @@ def solve(
 
         residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
 
-        residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
-
         residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
 
         return residual
+
+    def A_T(u, u_old, v, v_old):
+        return A_T_mass(u, u_old, v, v_old) + A_T_mesh_transport(u, u_old, v, v_old)
 
     def A_I(u, v):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
@@ -376,16 +405,31 @@ def solve(
 
         return residual
 
-    def A_E(u, v):
+    def A_E_fluid_viscous(u, v):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+
+        return residual
+
+    def A_E_fluid_transport(u, v):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
         residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
 
-        residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+        return residual
 
-        # This one stays because the test function is dv, not du.
-        residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
+    def A_E_fluid(u, v):
+
+        return A_E_fluid_viscous(u, v) + A_E_fluid_transport(u, v)
+
+    def A_E_solid(u):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
 
         return residual
 
@@ -400,8 +444,12 @@ def solve(
     residual = A_T(u, u_old, v, v_old)
     residual += A_I(u, v)
     residual += A_P(u, p)
-    residual += theta * A_E(u, v)
-    residual += (1.0 - theta) * A_E(u_old, v_old)
+    residual += theta * A_E_fluid(u, v)
+    residual += (1.0 - theta) * A_E_fluid(u_old, v_old)
+
+    u_condensed = u_old + dt * ((1.0 - theta) * v_old + theta * v)
+    residual += theta * A_E_solid(u_condensed)
+    residual += (1.0 - theta) * A_E_solid(u_old)
 
     # Add in u_s with zero constants for correct sparsity patterns
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
@@ -414,8 +462,6 @@ def solve(
 
     residual_base_ufl = ufl.extract_blocks(residual)
     jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, [u, v, p])
-
-    jacobian_full_base = dolfinx.fem.form(jacobian_full_base_ufl, entity_maps=entity_maps)
 
     # One block per unknown in [u, v, p], since blocked assembly places forms by
     # position. Not built with ufl.extract_blocks, which drops the zero blocks. The
@@ -447,22 +493,14 @@ def solve(
     # and fluid interface dofs of u, but we don't have that distinction here,
     # so we do it by hand.
 
-    def solid_stress(u):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        return ufl.inner(ufl.det(F) * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-    # After neglecting terms for v w.r.t. u, we are left with E_S from docs/restricted-iterative-solver.md.
-    solid_stress_term = theta * solid_stress(u)
-    E_S = ufl.derivative(solid_stress_term, u, trials[0])
-    jacobian_approximate_base_ufl[1][0] = E_S
+    # Neglect the terms for v w.r.t. u. E_S is no longer dependent on u because of the condensation.
+    jacobian_approximate_base_ufl[1][0] = None
 
     # Neglect terms for p w.r.t. u.
     jacobian_approximate_base_ufl[2][0] = None
 
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
     # Therefore, we make only the one jacobian_post-form.
-
-    jacobian_approximate_base = dolfinx.fem.form(jacobian_approximate_base_ufl, entity_maps=entity_maps)
 
     # Set up output, checkpointing, and qoi tracking.
 
@@ -483,19 +521,14 @@ def solve(
             )
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
-        if comm.rank == 0:
-            print(
-                f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }), "
-                f"writing VTX output to {output_path} and {output_path_p}"
-            )
+        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
+        PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
 
-    writers = (
-        [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
-        if vtx_write_every is not None
-        else []
-    )
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
 
     # Quantities of interest: the displacement at the tip of the structure, and the drag and
     # lift on the obstacle and on the fluid side of the solid-fluid interface.
@@ -511,10 +544,11 @@ def solve(
         entity_maps,
     )
 
-    def write_output(t, step, writers):
-        """Write the QoI row, and every save_every steps the VTX snapshot, of the state at time t."""
-        if vtx_write_every is not None and step % save_every == 0:
-            [writer.write(t) for writer in writers]
+    def write_output(t, step):
+        """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
 
         u_spot = point_value(u, spot_dof)
         drag = assemble_force(drag_forms, comm)
@@ -539,13 +573,16 @@ def solve(
             "ksp_type": "preonly",
             "pc_type": "fieldsplit",
             "pc_fieldsplit_type": "multiplicative",
+            # Run the fieldsplit on the approximated Jacobian instead of the supplied preconditioner.
+            "pc_fieldsplit_diag_use_amat": True,
+            "pc_fieldsplit_off_diag_use_amat": True,
             # Turn off errors, catch manually instead.
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
-            # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_c0ip_snes_log.txt",
+            # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_mixed_snes_log.txt",
         },
     )
 
@@ -555,14 +592,6 @@ def solve(
     solver = problem.solver
     b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
-
-    # Use this to assemble the approximate jacobian using fem_jacobian.
-    jac_kargs_approximate = {key: jac_kargs[key] for key in jac_kargs}
-    jac_kargs_approximate["jacobian"] = jacobian_approximate_base
-
-    # Use this to assemble the full jacobian using fem_jacobian.
-    jac_kargs_full = {key: jac_kargs[key] for key in jac_kargs}
-    jac_kargs_full["jacobian"] = jacobian_full_base
 
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
@@ -595,7 +624,7 @@ def solve(
 
     def post_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
 
-        dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], [], []], alpha=0.0)  # zero restricted rows
+        dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], []], alpha=0.0)  # zero restricted rows
 
         with b.localForm() as bl:
             # Remove ghost-entries.
@@ -615,26 +644,25 @@ def solve(
 
         pass
 
-    def wrapped_jacobian_full(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
-        pre_jacobian(x, J)
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_full)
-        post_jacobian(x, J)
-
     # State of the Jacobian reuse in wrapped_jacobian_approximate. previous_norm is the
     # residual norm at the previous Newton iterate of the current time step.
-    jacobian_state = {"assembled": False, "previous_norm": None, "num_assemblies": 0}
+    jacobian_state = {
+        "assembled": False,
+        "previous_norm": None,
+        "num_assemblies": 0,
+    }
 
-    def wrapped_jacobian_approximate(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
+    def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         norm = snes.getFunctionNorm()  # residual norm at the current iterate x
         previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
         jacobian_state["previous_norm"] = norm
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
-        # PCSetUp, so the fieldsplit submatrices and the factorization of K_q are reused too.
+        # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
         if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         pre_jacobian(x, J)
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_approximate)
+        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
@@ -644,7 +672,7 @@ def solve(
         fem_residual(snes, x, b, *res_args, **res_kargs)
         post_residual(x, b)  # u is now updated and b assembled (BCs applied)
 
-    solver.setJacobian(wrapped_jacobian_approximate, J_mat, P_mat)
+    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
     # Helper function to retrieve the dofs that are supported on solid cells. Don't know
@@ -655,30 +683,30 @@ def solve(
         dofs = dolfinx.fem.locate_dofs_topological(space, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
         return np.isin(np.arange(num_dofs), (bs * dofs[:, None] + np.arange(bs)).ravel())
 
-    first_row = J_mat.getOwnershipRange()[0]
-    offsets_owned, _ = problem.b.getAttr("_blocks")
-
     def owned_rows(k):
         """Global rows of the owned dofs of block k in [u, v, p]."""
         return first_row + np.arange(offsets_owned[k], offsets_owned[k + 1])
 
-    rows_u, rows_v, rows_p = (owned_rows(k) for k in range(len([u, v, p])))
+    rows_u, rows_v, rows_p = (owned_rows(k) for k in range(3))
     u_solid = solid_supported(U, len(rows_u))  # mask over owned unrolled u dofs
-    rows_q = np.concatenate([rows_u[u_solid], rows_v, rows_p])
-    rows_m = np.concatenate([rows_u[~u_solid]])
+    rows_q_c = np.concatenate([rows_v, rows_p])
+    rows_u_S = rows_u[u_solid]
+    rows_m = rows_u[~u_solid]
 
-    if not len(rows_q) + len(rows_m) == J_mat.getLocalSize()[0]:
+    if not len(rows_q_c) + len(rows_u_S) + len(rows_m) == J_mat.getLocalSize()[0]:
         raise RuntimeError()
 
     def make_is(rows):
         return PETSc.IS().createGeneral(np.sort(rows).astype(PETSc.IntType), comm=comm)
 
-    is_q, is_m = make_is(rows_q), make_is(rows_m)
+    start = comm.exscan(len(rows_q_c)) or 0  # first row of this rank in the q_c submatrix
+    is_v = make_is(start + np.arange(len(rows_v)))
+    is_p = make_is(start + len(rows_v) + np.arange(len(rows_p)))
 
     # Rows of each displacement component in the m submatrix, for solving K_m component by
-    # component. The owned u dofs are stored interleaved per node, (x, y), so the component of
-    # a dof is its position in its block modulo block_size. The m submatrix holds the rows of
-    # rows_m in sorted order.
+    # component. The owned u dofs are stored interleaved per node, (x, y), so the
+    # component of a dof is its position in its block modulo block_size. The m submatrix holds the
+    # rows of rows_m in sorted order.
     component_names = ["x", "y"]
     block_size = U.dofmap.bs
     component_u_I = (np.arange(len(rows_u)) % block_size)[~u_solid]
@@ -686,82 +714,130 @@ def solve(
     start_m = comm.exscan(len(rows_m)) or 0  # first row of this rank in the m submatrix
     is_m_components = [make_is(start_m + np.flatnonzero(components_m == c)) for c in range(block_size)]
 
-    pc = solver.getKSP().getPC()
-    pc.setFieldSplitIS(("q", is_q), ("m", is_m))
+    # The owned v dofs are stored interleaved per node, (x, y), so A has block size 2, which
+    # BoomerAMG uses for its systems coarsening and GAMG for its aggregates.
+    is_v.setBlockSize(V.dofmap.index_map_bs)
 
-    fluid_solid_solve_options = {
-        "ksp_type": "preonly",
-        "pc_type": "lu",
-        "pc_factor_mat_solver_type": "mumps",
-        "mat_mumps_cntl_1": 1e-4,
+    def rigid_body_modes(space):
+        """Orthonormal rigid body modes of a 2D vector space: two translations and a rotation."""
+        index_map, bs = space.dofmap.index_map, space.dofmap.index_map_bs
+        num_dofs = index_map.size_local + index_map.num_ghosts
+        x = space.tabulate_dof_coordinates()[:num_dofs]
+        basis = [dolfinx.la.vector(index_map, bs=bs, dtype=PETSc.ScalarType) for _ in range(3)]
+        b = [w.array.reshape(-1, bs) for w in basis]
+        b[0][:, 0] = 1.0
+        b[1][:, 1] = 1.0
+        b[2][:, 0], b[2][:, 1] = -x[:, 1], x[:, 0]
+        dolfinx.la.orthonormalize(basis)
+        return PETSc.NullSpace().create(vectors=[dolfinx.la.petsc.create_vector_wrap(w) for w in basis])
+
+    # PCFIELDSPLIT attaches this to the velocity block A when it extracts it.
+    is_v.compose("nearnullspace", rigid_body_modes(V))
+
+    # The multiplicative fieldsplit solves the splits in the order they are set here,
+    # independent of the storage order [u | v | p]: first K_c for (v, p), then A_S for
+    # u_S with the right-hand side updated by C delta v, then K_m for u_I with the
+    # right-hand side updated by L delta u_S.
+    pc = solver.getKSP().getPC()
+    pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
+
+    if direct_k_c_solve:
+        velocity_pressure_solve_options = {
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_cntl_1": 1e-4,
+        }
+
+    else:
+        # FGMRES on K_c, preconditioned by the block upper triangular [[A, G], [0, S]], with one GAMG
+        # V-cycle for A^{-1} and one BoomerAMG V-cycle on \hat S for S^{-1}. Each iteration costs two
+        # V-cycles, instead of solving with A in every application of S. Only the tolerance of the outer
+        # FGMRES matters.
+        velocity_pressure_solve_options = {
+            "ksp_converged_reason": None,
+            "ksp_type": "fgmres",
+            "ksp_rtol": 1e-5,
+            "ksp_max_it": 200,
+            "pc_type": "fieldsplit",
+            "pc_fieldsplit_type": "schur",
+            "pc_fieldsplit_schur_fact_type": "upper",
+            # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
+            # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
+            # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
+            # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
+            # inertia term rho_f / dt dominates diag(A) at small time steps.
+            "pc_fieldsplit_schur_precondition": "selfp",
+            # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
+            "fieldsplit_v_ksp_type": "preonly",
+            "fieldsplit_v_pc_type": "gamg",
+            "fieldsplit_v_pc_gamg_threshold": 0.01,
+            "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+            "fieldsplit_v_mg_levels_ksp_type": "richardson",
+            "fieldsplit_v_mg_levels_pc_type": "sor",
+            # "fieldsplit_v_ksp_converged_reason": None,
+            # One BoomerAMG V-cycle on \hat S.
+            "fieldsplit_p_ksp_type": "preonly",
+            "fieldsplit_p_pc_type": "hypre",
+            "fieldsplit_p_pc_hypre_type": "boomeramg",
+            # "fieldsplit_p_ksp_converged_reason": None,
+        }
+
+    # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
+    # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
+    # A_S is the same matrix in every Newton iteration and time step, so its preconditioner
+    # is set up only once.
+    mass_solve_options = {
+        "ksp_type": "cg",
+        "pc_type": "jacobi",
+        "ksp_rtol": 1e-12,
+        "ksp_atol": 1e-50,
+        "ksp_reuse_preconditioner": True,
     }
 
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
-    # rows, so it is the same matrix in every Newton iteration and time step: set up its
-    # preconditioner only once. The components have the same matrix, so only the x component
-    # sets up a preconditioner, which the y component applies through a ReusePC.
+    # rows, so it is the same matrix in every Newton iteration and time step: factorize it
+    # only once. K_m does not couple the x and y components, and the components have the same
+    # matrix, so the additive fieldsplit over the components solves it exactly with the MUMPS
+    # factorization of the x component only, which the y component applies through a ReusePC.
+    # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky, which was
+    # about 30 times faster per solve than CG with GAMG or a Laplacian-squared preconditioner
+    # (notes/c0ip-mesh-motion/implementation-log.md).
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
         "pc_type": "fieldsplit",
         "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
+        "fieldsplit_x_ksp_type": "preonly",
+        "fieldsplit_x_pc_type": "cholesky",
+        "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
+        # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+        "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
     }
-    if mesh_motion_direct_solver:
+    for name in component_names[1:]:
         mesh_motion_solve_options |= {
-            "fieldsplit_x_ksp_type": "preonly",
-            "fieldsplit_x_pc_type": "cholesky",
-            "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
-            # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
-            "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
+            f"fieldsplit_{name}_ksp_type": "preonly",
+            f"fieldsplit_{name}_pc_type": "python",
         }
-        for name in component_names[1:]:
-            mesh_motion_solve_options |= {
-                f"fieldsplit_{name}_ksp_type": "preonly",
-                f"fieldsplit_{name}_pc_type": "python",
-            }
-    else:
-        for name in component_names:
-            mesh_motion_solve_options |= {
-                f"fieldsplit_{name}_ksp_type": "cg",
-                f"fieldsplit_{name}_ksp_norm_type": "unpreconditioned",
-                # atol well below snes_atol, or Newton stalls at about atol. rtol 1e-5 follows the
-                # Newton iterations of the direct solve. rtol 1e-3 halves the CG iterations for about the
-                # same Newton iterations in total, with the Jacobian reassembled about twice as often;
-                # rtol 1e-2 needs 1.7 times the Newton iterations.
-                f"fieldsplit_{name}_ksp_rtol": 1e-5,
-                f"fieldsplit_{name}_ksp_atol": 1e-9,
-                f"fieldsplit_{name}_ksp_max_it": 200,
-                # f"fieldsplit_{name}_ksp_monitor_true_residual": None,
-                # f"fieldsplit_{name}_ksp_converged_reason": None,
-            }
-        mesh_motion_solve_options |= {
-            "fieldsplit_x_pc_type": "gamg",
-            "fieldsplit_x_pc_gamg_type": "agg",
-            "fieldsplit_x_pc_gamg_threshold": 0.2,
-            "fieldsplit_x_pc_gamg_reuse_interpolation": True,
-        }
-        for name in component_names[1:]:
-            mesh_motion_solve_options |= {
-                f"fieldsplit_{name}_pc_type": "python",
-            }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
-    split_options = {"q": fluid_solid_solve_options, "m": mesh_motion_solve_options}
+    split_options = {"q_c": velocity_pressure_solve_options, "u_S": mass_solve_options, "m": mesh_motion_solve_options}
     opts = PETSc.Options()
     # List the options that were set but never used when PETSc finalizes, which catches misspelled
     # option names. A global option without a prefix, so not in a petsc_options dict, whose options
     # dolfinx prefixes and deletes after setting up the solver.
     opts["options_left"] = None
-    # opts["log_view"] = None
     for options, sub_ksp in zip(split_options.values(), pc.getFieldSplitSubKSP(), strict=True):
-        opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_ / _m_
+        opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_c_ / _u_S_ / _m_
         for key, value in options.items():
             opts[key] = value
         opts.prefixPop()
         sub_ksp.setFromOptions()
 
-    ksp_q, ksp_m = pc.getFieldSplitSubKSP()
+    ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
+    if not direct_k_c_solve:
+        ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
     ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
     ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
@@ -770,20 +846,21 @@ def solve(
         ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
         ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
 
+    # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
+    # iteration limit, which neither PETSc nor the SNES converged reason report.
+    ksp_check = KSPConvCheck(solver.getKSP())
+
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
 
     if not restart:
-        write_output(t, step, writers)
+        write_output(t, step)
 
-    if mesh.comm.rank == 0:
-        print("", flush=True)
+    PETSc.Sys.Print()
     mesh.comm.barrier()
 
     first_step = step
     num_newton_iterations = 0
-    first_solve_start = timer()
-    first_solve_end = first_solve_start  # kept if no time step runs
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
@@ -793,185 +870,92 @@ def solve(
         u_old.x.array[:] = u.x.array[:]
         v_old.x.array[:] = v.x.array[:]
 
-        if comm.rank == 0:
-            print(f"\n{t = :.3f}", flush=True)
+        PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
+        ksp_check.clear()
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
-        check_converged(problem, f"t = {t:.4f}", writers=writers)
-
-        if step == first_step:
-            first_solve_end = timer()
+        check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=ksp_check)
 
         step += 1
-        write_output(t, step, writers)
+        write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p], t, step, dt_val)
 
     end = timer()
-    first_solve_runtime = first_solve_end - first_solve_start
-    runtime = (end - start) - first_solve_runtime
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
-        print(f"Elapsed time first solve: {first_solve_runtime:.3f} s")
-        print(f"Elapsed time subsequent solves: {runtime:.3f} s")
-        print(f"Time per subsequent step: {(runtime) / max(step - first_step - 1, 1):.3f} s")
-        if mesh_motion_direct_solver:
-            mesh_motion_description = "MUMPS Cholesky"
+        print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if direct_k_c_solve:
+            k_c_solve_description = "MUMPS LU\n"
         else:
-            options = mesh_motion_solve_options
-            mesh_motion_description = (
-                f"CG (rtol {options['fieldsplit_x_ksp_rtol']:g}, atol {options['fieldsplit_x_ksp_atol']:g}) "
-                f"with GAMG (agg, threshold {options['fieldsplit_x_pc_gamg_threshold']:g})"
+            options = velocity_pressure_solve_options
+            gamg_description = (
+                "GAMG built from A (rigid body modes as near-nullspace),\n"
+                f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
+                f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+            )
+            if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+                gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
+            k_c_solve_description = (
+                f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
+                f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
+                "    one V-cycle of BoomerAMG on -B diag(A)^{-1} G (selfp), for S^{-1}\n"
             )
         print(
             "\nSolver setup:\n"
+            "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
-            "  Linear solve: multiplicative fieldsplit over q = (u_S, v, p) and m = u_I,\n"
-            "    MUMPS LU on K_q\n"
-            "  K_m solve: additive fieldsplit over the x and y components,\n"
-            f"    {mesh_motion_description}, with the preconditioner of the x\n"
-            "    component reused for the y component and for the whole run\n"
+            "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = u_I,\n"
+            "    MUMPS Cholesky on the x component of the C0IP K_m, reused for the y component and for\n"
+            "    the whole run,\n"
+            "    CG with Jacobi on A_S\n"
+            f"  K_c solve: {k_c_solve_description}"
+            f"  C0IP penalty: a_val = {c0ip_a_val}\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
-            f"over {step - first_step} time steps"
-            "\n"
+            f"over {step - first_step} time steps\n"
         )
 
-    [writer.close() for writer in writers]
+    for writer in writers:
+        writer.close()
 
     if plot_matrices:
-        import matplotlib.pyplot as plt
+        from xfsi_solver.tools.matrix_blocks import matrix_blocks_dir, plot_matrix_blocks
 
-        # Spy plots and block norms of the Jacobian and the approximate Jacobian at the
-        # current state, with the dofs reordered block by block (the global numbering is
-        # [u, v, p] per rank).
+        # The full Jacobian, and J_0, at the final state, assembled into new matrices with the
+        # sparsity pattern of the full Jacobian, which contains that of J_0. J_mat has no room for
+        # the full Jacobian, since it is created from the forms of J_0.
+        jacobian_full_base = dolfinx.fem.form(jacobian_full_base_ufl, entity_maps=entity_maps)
         dolfinx.fem.petsc.assign([u, v, p], problem.x)
-
-        # gather_jacobian assembles into new matrices, so make wrapped_jacobian_approximate
-        # assemble instead of reusing J_mat.
-        jacobian_state["assembled"] = False
-
-        def gather_dofs(dofs):
-            """Global dofs of all ranks on rank 0, in rank order."""
-            dofs = comm.gather(dofs, root=0)
-            return np.concatenate(dofs) if comm.rank == 0 else None
-
-        # Owned global dofs of the storage blocks [u, v, p]. As in eq. (1) of
-        # docs/restricted-iterative-solver.md, u is split into the solid-supported dofs
-        # u_S (including the interface) and the remaining fluid-interior dofs u_I.
-        row_start = J_mat.getOwnershipRange()[0]
-        u_dofs, v_dofs, p_dofs = (
-            row_start + np.arange(offsets_owned[k], offsets_owned[k + 1]) for k in range(len(offsets_owned) - 1)
-        )
-        u_solid = solid_supported(U, len(u_dofs))
-        dofs_u_S = gather_dofs(u_dofs[u_solid])
-        dofs_u_I = gather_dofs(u_dofs[~u_solid])
-        dofs_u = gather_dofs(u_dofs)
-        dofs_v = gather_dofs(v_dofs)
-        dofs_p = gather_dofs(p_dofs)
-
-        # Make spy plots and block norm plots with the different partitionings.
-
-        def gather_jacobian(assemble_jacobian):
-            """Assemble a Jacobian with assemble_jacobian, and return its nonzero global rows,
-            columns and values on rank 0.
-
-            Assembles into a new matrix with the full Jacobian sparsity pattern, which contains
-            the approximate one. J_mat cannot be used: it is created from the approximate
-            Jacobian forms, and PETSc also drops the preallocated entries that its first
-            assembly does not set, so it has no room for the full Jacobian.
-            """
+        partitions = {
+            "storage": ([rows_u, rows_v, rows_p], ["$u$", "$v$", "$p$"]),
+            "eq1": ([rows_u_S, rows_v, rows_p, rows_u[~u_solid]], ["$u_S$", "$v$", "$p$", "$u_I$"]),
+        }
+        for label, title, jacobian_forms in [
+            ("", "Jacobian", jacobian_full_base),
+            ("approximate_", "Approximate Jacobian", jac_kargs["jacobian"]),
+        ]:
             J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
             J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
-            assemble_jacobian(solver, problem.x, J, P_mat)
-            indptr, cols, vals = J.getValuesCSR()
+            fem_jacobian(solver, problem.x, J, P_mat, *jac_args, **(jac_kargs | {"jacobian": jacobian_forms}))
+            post_jacobian(problem.x, J)
+            plot_matrix_blocks(
+                J,
+                {label + name: partition for name, partition in partitions.items()},
+                title,
+                matrix_blocks_dir(__file__),
+                t,
+            )
             J.destroy()
-            rows = row_start + np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
-            nonzero = vals != 0.0
-            gathered = [comm.gather(a[nonzero], root=0) for a in (rows, cols, vals)]
-            return [np.concatenate(a) for a in gathered] if comm.rank == 0 else (None, None, None)
 
-        rows_full, cols_full, vals_full = gather_jacobian(wrapped_jacobian_full)
-        rows_approximate, cols_approximate, vals_approximate = gather_jacobian(wrapped_jacobian_approximate)
-
-        def plot_blocks(J, blocks, names, title, label):
-            """Save spy_{label}.png and block_norms_{label}.png of the scipy sparse matrix J,
-            reordered by the global dofs in blocks."""
-            import matplotlib.colors
-
-            perm = np.concatenate(blocks)
-            J_spy = J.tocsr()[perm][:, perm].tocoo()
-            J_spy.eliminate_zeros()
-            n = J_spy.shape[0]
-
-            fig, ax = plt.subplots(figsize=(10, 10))
-            ax.spy(J_spy, markersize=0.05, color="black")
-            bounds = np.cumsum([0] + [len(b) for b in blocks])
-            for b in bounds[1:-1]:
-                ax.axhline(b - 0.5, color="tab:red", linewidth=0.8)
-                ax.axvline(b - 0.5, color="tab:red", linewidth=0.8)
-            centers = 0.5 * (bounds[:-1] + bounds[1:])
-            ax.set_xticks(centers, names)
-            ax.set_yticks(centers, names)
-            ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-            ax.set_xlabel(f"{title} nonzeros at t = {t:.4f} ({J_spy.nnz} entries, {n} dofs)", fontsize="large")
-            fig.savefig(f"spy_{label}.png", dpi=200, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved spy plot to spy_{label}.png ({J_spy.nnz} nonzeros, {n} dofs)")
-
-            # Frobenius norms of the blocks, with blocks without nonzeros left blank
-            row_blocks = np.searchsorted(bounds, J_spy.row, side="right") - 1
-            col_blocks = np.searchsorted(bounds, J_spy.col, side="right") - 1
-            sq_norms = np.zeros((len(blocks), len(blocks)))
-            np.add.at(sq_norms, (row_blocks, col_blocks), J_spy.data**2)
-            block_norms = np.ma.masked_equal(np.sqrt(sq_norms), 0.0)
-
-            cmap = plt.get_cmap("viridis").copy()
-            cmap.set_bad("white")
-            fig, ax = plt.subplots()
-            im = ax.matshow(block_norms, cmap=cmap, norm=matplotlib.colors.LogNorm())
-            fig.colorbar(im, ax=ax, label="Frobenius norm")
-            for (i, j), norm in np.ndenumerate(block_norms):
-                if norm is not np.ma.masked:
-                    ax.text(j, i, f"{norm:.2e}", ha="center", va="center", color="white", fontsize="small")
-            ax.set_xticks(range(len(blocks)), names)
-            ax.set_yticks(range(len(blocks)), names)
-            ax.set_xlabel(f"{title} block norms at t = {t:.4f}", fontsize="large")
-            fig.savefig(f"block_norms_{label}.png", dpi=200, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved block norm plot to block_norms_{label}.png")
-
-        if comm.rank == 0:
-            import scipy.sparse
-
-            n = J_mat.getSize()[0]
-            J_full = scipy.sparse.coo_matrix((vals_full, (rows_full, cols_full)), shape=(n, n))
-
-            names_eq1 = ["$u_S$", "$v$", "$p$", "$u_I$"]
-            blocks_eq1 = [dofs_u_S, dofs_v, dofs_p, dofs_u_I]
-            plot_blocks(J_full, [dofs_u, dofs_v, dofs_p], ["u", "v", "p"], "Jacobian C0IP", "storage_c0ip")
-            plot_blocks(J_full, blocks_eq1, names_eq1, "Jacobian C0IP", "eq1_c0ip")
-
-            J_approximate = scipy.sparse.coo_matrix(
-                (vals_approximate, (rows_approximate, cols_approximate)), shape=(n, n)
-            )
-            plot_blocks(
-                J_approximate,
-                [dofs_u, dofs_v, dofs_p],
-                ["u", "v", "p"],
-                "Approximate Jacobian C0IP",
-                "approximate_storage_c0ip",
-            )
-            plot_blocks(J_approximate, blocks_eq1, names_eq1, "Approximate Jacobian C0IP", "approximate_eq1_c0ip")
-
-    # Destroying the MUMPS factorization is collective, so destroy the solver on all
-    # ranks here instead of leaving it to garbage collection, which can run at
-    # different points on rank 0 after the plotting.
+    # Destroying the MUMPS factorization and the AMG hierarchies is collective, so destroy them on
+    # all ranks here instead of leaving it to garbage collection, which can run at different points
+    # on different ranks.
     solver.destroy()
 
     return
@@ -993,10 +977,11 @@ def main():
         qoi_path="output/qoi/fsi2_biharmonic_c0ip.txt",
         checkpoint_dir="output/checkpoints/fsi2_biharmonic_c0ip",
         checkpoint_every=400,
-        vtx_write_every=None,
+        vtx_save_every=None,
         plot_matrices=False,
         gamma_reassemble=0.5,  # Default 0.2.
-        mesh_motion_direct_solver=True,
+        direct_k_c_solve=True,
+        c0ip_a_val=2.0,
         restart=args.restart,
     )
 
