@@ -33,6 +33,14 @@ _QOI_SPECS_3D = [
     (5, "$B$ $z$-displacement [m]", "z-disp"),
 ]
 
+# The FSI2i benchmark, with an incompressible solid, has the violation of det(F) = 1 in the solid
+# in columns 5 to 7.
+_QOI_SPECS_INCOMPRESSIBLE = _QOI_SPECS + [
+    (5, "Relative solid area change", "solid-area-change"),
+    (6, r"RMS of $\det F - 1$ in the solid", "det-F-rms"),
+    (7, r"Maximum of $|\det F - 1|$ in the solid", "det-F-max"),
+]
+
 # Reference values of the 3d benchmark, as (mean, amplitude) over t in [9, 10], on mesh
 # level 3 with k = 0.001 (Failer & Richter, J. Sci. Comput. 82:28, 2020, Fig. 3), by
 # column of the qoi files.
@@ -112,6 +120,23 @@ def plot_3d_qois(
     if qois is None:
         return
     _plot_series([(run, "k-", qois)], *figure_prefix([run], figure_dir), _QOI_SPECS_3D, _REFERENCE_3D)
+
+
+def plot_incompressible_qois(
+    run: str,
+    qoi_dir: str | os.PathLike = QOI_DIR,
+    figure_dir: str | os.PathLike = FIGURE_DIR,
+):
+    """Plot drag, lift, tip displacement and the violation of det(F) = 1 in the solid over time for
+    a run of the FSI2i benchmark, with an incompressible solid, in the folder of its solver script.
+    There is no reference data for FSI2i. The violation is left out for QoI files written before
+    it was measured. The qoi file may still be written by a running simulation.
+    """
+    qois = _load_qois(Path(qoi_dir) / f"{run}.txt")
+    if qois is None:
+        return
+    specs = [spec for spec in _QOI_SPECS_INCOMPRESSIBLE if spec[0] < qois.shape[1]]
+    _plot_series([(run, "k-", qois)], *figure_prefix([run], figure_dir), specs)
 
 
 def _load_qois(qoi_path: str | os.PathLike | None) -> np.ndarray | None:
@@ -196,13 +221,16 @@ def _plot_series(
 
 
 def main():
-    # Every FSI2 run on its own, with the reference, and the 3d runs with their reference ranges.
+    # Every FSI2 run on its own, with the reference, the FSI2i runs on their own, and the 3d runs
+    # with their reference ranges.
     for qoi_path in sorted(QOI_DIR.glob("*.txt")):
         try:
             script = solver_script(qoi_path.stem)
         except ValueError:
             continue  # a QoI file of a solver that no longer exists
-        if script.startswith("fsi2_"):
+        if script == "fsi2_biharmonic_mixed_incompressible":
+            plot_incompressible_qois(qoi_path.stem)
+        elif script.startswith("fsi2_"):
             plot_comparison([qoi_path.stem])
         elif script.startswith("threeDfsi_"):
             plot_3d_qois(qoi_path.stem)
