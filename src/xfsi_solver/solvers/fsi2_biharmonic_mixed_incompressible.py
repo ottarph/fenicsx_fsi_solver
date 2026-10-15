@@ -17,10 +17,12 @@ from petsc4py import PETSc
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.petsc_reuse import ReusePC
 from xfsi_solver.tools.qoi import (
+    INCOMPRESSIBLE_QOI_HEADER,
     append_qoi_row,
     assemble_force,
     drag_lift_forms,
     find_point_dof,
+    incompressibility_violation,
     init_qoi_file,
     point_value,
 )
@@ -510,8 +512,10 @@ def solve(
     if vtx_save_every is not None:
         writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
 
-    # Quantities of interest: the displacement at the tip of the structure, and the drag and
-    # lift on the obstacle and on the fluid side of the solid-fluid interface.
+    # Quantities of interest: the displacement at the tip of the structure, the drag and
+    # lift on the obstacle and on the fluid side of the solid-fluid interface, and the violation
+    # of det(F) = 1 in the solid. At convergence, u on the solid equals the u_condensed that the
+    # constraint is imposed on.
     spot_dof = find_point_dof(U, np.array([0.6, 0.2, 0.0], dtype=np.float64))
     drag_forms, lift_forms = drag_lift_forms(
         mesh,
@@ -523,6 +527,7 @@ def solve(
         [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
         entity_maps,
     )
+    measure_incompressibility = incompressibility_violation(u, dx_solid, cell_tags.find(PHYSICAL_MARKERS["solid"]))
 
     def write_output(t, step):
         """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
@@ -533,7 +538,7 @@ def solve(
         u_spot = point_value(u, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *measure_incompressibility())
 
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_base_ufl,
@@ -862,7 +867,7 @@ def solve(
     ksp_check = KSPConvCheck(solver.getKSP())
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=INCOMPRESSIBLE_QOI_HEADER)
 
     if not restart:
         write_output(t, step)

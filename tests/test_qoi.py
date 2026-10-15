@@ -12,6 +12,7 @@ from xfsi_solver.tools.qoi import (
     assemble_gap_norm,
     drag_lift_forms,
     find_point_dof,
+    incompressibility_violation,
     init_qoi_file,
     point_value,
 )
@@ -89,6 +90,21 @@ def test_qoi_file_with_the_interface_gap_columns(tmp_path):
     lines = path.read_text().splitlines()
     assert lines[0].split()[1:] == ["t", "drag", "lift", "A_x", "A_y", "interface_u_gap", "interface_v_gap"]
     assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_incompressibility_violation_of_a_stretch():
+    # u = (x^2 / 2, 0) has det(F) - 1 = x, whose mean over the unit square is 1/2, root mean square
+    # (1/3)^(1/2), and maximum 1, at the vertices on x = 1.
+    mesh = dolfinx.mesh.create_unit_square(COMM, 4, 4)
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))))
+    u.interpolate(lambda x: np.stack([x[0] ** 2 / 2, np.zeros_like(x[0])]))
+    cell_map = mesh.topology.index_map(mesh.topology.dim)
+    cells = np.arange(cell_map.size_local + cell_map.num_ghosts, dtype=np.int32)
+    change, rms, maximum = incompressibility_violation(u, ufl.dx(domain=mesh), cells)()
+    if COMM.rank == 0:
+        assert change == pytest.approx(0.5)
+        assert rms == pytest.approx(np.sqrt(1 / 3))
+        assert maximum == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("gdim", [2, 3])
