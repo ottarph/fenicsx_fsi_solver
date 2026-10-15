@@ -17,6 +17,7 @@ def create_mesh(
     quads: bool = True,
     semi_structured_quad: bool = True,
     second_order: bool = True,
+    solid_refinement: float = 1.0,
 ):
     """Generate the FSI2 benchmark mesh (solid flag + ALE fluid domain) and
     write it to ``data/meshes/fsi2/mesh<suffix>.xdmf``.
@@ -40,6 +41,10 @@ def create_mesh(
         is set.
     second_order:
         Use a second order (curved) mesh.
+    solid_refinement:
+        Divide the element size in the solid, and on its boundary, by this factor, keeping the
+        sizes elsewhere. The fluid cells grade from the solid boundary to their usual size. With a
+        factor other than 1, "_solid<factor>x" is appended to the output filename.
     """
 
     L, H, r = 2.5, 0.41, 0.05
@@ -202,6 +207,14 @@ def create_mesh(
 
     gmsh.model.occ.synchronize()
 
+    if solid_refinement != 1.0:
+        # A size field on the solid and its boundary, instead of point sizes, which would also
+        # refine the left obstacle arc, since its end points are corners of the solid.
+        solid_size_field = gmsh.model.mesh.field.add("Constant")
+        gmsh.model.mesh.field.setNumbers(solid_size_field, "SurfacesList", solid_tags)
+        gmsh.model.mesh.field.setNumber(solid_size_field, "VIn", resolution_close / solid_refinement)
+        gmsh.model.mesh.field.setAsBackgroundMesh(solid_size_field)
+
     gmsh.model.occ.addPoint(E_2_left, 0.0, 0.0, meshSize=resolution_far)
     gmsh.model.occ.addPoint(E_2_left, H, 0.0, meshSize=resolution_far)
 
@@ -278,7 +291,7 @@ def create_mesh(
     from pathlib import Path
 
     mesh_path = Path(
-        f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}.xdmf"
+        f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}{f'_solid{solid_refinement:g}x' if solid_refinement != 1.0 else ''}.xdmf"
     )
 
     from dolfinx.io import XDMFFile
