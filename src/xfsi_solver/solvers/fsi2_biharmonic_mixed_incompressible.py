@@ -562,7 +562,7 @@ def solve(
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
-            "ksp_converged_reason": None,
+            # "ksp_converged_reason": None,
             # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_mixed_snes_log.txt",
         }
         if not full_direct_solve
@@ -999,13 +999,13 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=0.0 + 10 * 0.0025,
+        T=16.0,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
         output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
         qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible.txt",
         checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible",
-        checkpoint_every=None,
+        checkpoint_every=400,
         vtx_save_every=None,
         plot_matrices=False,
         gamma_reassemble=0.2,  # Default 0.2.
