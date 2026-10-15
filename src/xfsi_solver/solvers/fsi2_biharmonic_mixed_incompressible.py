@@ -116,7 +116,7 @@ def solve(
     ``output/figures/matrix_blocks/fsi2_biharmonic_mixed_incompressible/``, with the dofs ordered by the
     storage blocks [u, v, p, p_S, z] and by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md. The matrices are gathered on rank 0. With
-    ``full_direct_solve=True``, the "approximate" plots also show the full Jacobian.
+    ``full_direct_solve=True``, only the full Jacobian is plotted.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -965,10 +965,10 @@ def solve(
                 ["$u_S$", "$v$", "$p$", "$p_S$", "$z$", "$u_I$"],
             ),
         }
-        for label, title, jacobian_forms in [
-            ("", "Jacobian", jacobian_full_base),
-            ("approximate_", "Approximate Jacobian", jac_kargs["jacobian"]),
-        ]:
+        plotted_jacobians = [("", "Jacobian", jacobian_full_base)]
+        if not full_direct_solve:  # otherwise the solver's Jacobian is the full one
+            plotted_jacobians.append(("approximate_", "Approximate Jacobian", jac_kargs["jacobian"]))
+        for label, title, jacobian_forms in plotted_jacobians:
             J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)
             J.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
             fem_jacobian(solver, problem.x, J, P_mat, *jac_args, **(jac_kargs | {"jacobian": jacobian_forms}))
