@@ -9,7 +9,6 @@ import dolfinx
 import dolfinx.fem.petsc
 import numpy as np
 import ufl
-from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
@@ -52,6 +51,7 @@ def solve(
     theta_value=None,
     max_steps=None,
     pseudo_transient=False,
+    static_rtol=1e-7,
     restart=False,
 ):
     if restart and checkpoint_dir is None:
@@ -203,7 +203,29 @@ def solve(
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
 
     # Add body force
-    residual -= ufl.inner(rho_s * dolfinx.fem.Constant(mesh, (0.0, -csm_parameters["g"])), dv) * dx_solid
+    gravity = dolfinx.fem.Constant(mesh, (0.0, -csm_parameters["g"]))
+    residual -= ufl.inner(rho_s * gravity, dv) * dx_solid
+
+    # Residual of the static problem at the current displacement, for the stopping test of the pseudo-transient
+    # runs, relative to that at zero displacement (the gravity load). The residual of the time step is not used for
+    # this: at its start, u_condensed is u_old + dt * v_old, not u_old.
+    w = ufl.TestFunction(U)
+    F_static = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+    load_form = ufl.inner(rho_s * gravity, w) * dx_solid
+    stress_form = ufl.inner(ufl.det(F_static) * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F_static).T, ufl.grad(w))
+    static_residual_form = dolfinx.fem.form(stress_form * dx_solid - load_form, entity_maps=entity_maps)
+    load_form = dolfinx.fem.form(load_form, entity_maps=entity_maps)
+
+    def residual_norm(form):
+        """Norm of the vector assembled from form, with the rows of the clamped dofs set to zero."""
+        b = dolfinx.fem.petsc.assemble_vector(form)
+        b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        dolfinx.fem.petsc.set_bc(b, [u_s_bc])
+        norm = b.norm()
+        b.destroy()
+        return norm
+
+    load_norm = residual_norm(load_form)
 
     # --------------------------------------------
 
@@ -293,8 +315,6 @@ def solve(
     PETSc.Sys.Print()
     mesh.comm.barrier()
 
-    u_spot_last = np.ones(2, dtype=np.float64) * 1e9
-
     first_step = step
     num_newton_iterations = 0
     start = timer()
@@ -320,13 +340,13 @@ def solve(
         u_spot = comm.bcast(point_value(u, spot_dof), root=0)
         PETSc.Sys.Print(f"\tu_x = {u_spot[0]:3e}, u_y = {u_spot[1]:3e}")
 
-        if np.linalg.norm(u_spot - u_spot_last) < 5e-6 and pseudo_transient:
-            PETSc.Sys.Print(f"{np.linalg.norm(u_spot - u_spot_last) < 5e-6 = }, breaking")
-            break
-
-        u_spot_last = u_spot
-
         if pseudo_transient:
+            relative_static_residual = residual_norm(static_residual_form) / load_norm
+            PETSc.Sys.Print(f"\trelative static residual = {relative_static_residual:.3e}")
+            if relative_static_residual < static_rtol:
+                PETSc.Sys.Print(f"Static residual below {static_rtol = :.1e}, stopping")
+                break
+
             dt.value *= 2.0
             theta.value = 0.5 + dt.value * relative_theta_shift
             if theta_value is not None:
@@ -391,7 +411,7 @@ def main():
     solve(
         mesh_path="data/meshes/fsi2/mesh_fine_sec.xdmf",
         T=10.0,
-        dt_val=0.01,
+        dt_val=0.005,
         csm_parameters=CSM_parameters["CSM3"],
         solver_prefix="csm3_",
         output_path="output/pv/component_benchmarks/csm_3.bp",
