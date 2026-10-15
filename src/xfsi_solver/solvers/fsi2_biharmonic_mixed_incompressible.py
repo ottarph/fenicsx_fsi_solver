@@ -47,6 +47,7 @@ def solve(
     dt_val,
     output_path,
     output_path_p,
+    output_path_p_S,
     qoi_path,
     checkpoint_dir=None,
     checkpoint_every=None,
@@ -206,7 +207,7 @@ def solve(
         warnings.warn(
             f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
             f"steps ({num_steps}); at most one VTX snapshot will be written to "
-            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
+            f"{output_path!r}, {output_path_p_S!r}, or {output_path_p_S!r}, which is not a usable time "
             f"series in ParaView.",
             stacklevel=2,
         )
@@ -507,14 +508,25 @@ def solve(
             )
         output_path = restart_output_path(output_path, t)
         output_path_p = restart_output_path(output_path_p, t)
-        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
+        output_path_p_S = restart_output_path(output_path_p_S, t)
+        vtx_message = (
+            ""
+            if vtx_save_every is None
+            else f", writing VTX output to {output_path}, {output_path_p}, and {output_path_p_S}"
+        )
         PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
 
     writers = []
     if vtx_save_every is not None:
-        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
+        writers = [
+            dolfinx.io.VTXWriter(comm, output_path, [u, v], mesh_policy=dolfinx.io.VTXMeshPolicy.reuse, engine="BP4"),
+            dolfinx.io.VTXWriter(comm, output_path_p, [p], mesh_policy=dolfinx.io.VTXMeshPolicy.update, engine="BP4"),
+            dolfinx.io.VTXWriter(
+                comm, output_path_p_S, [p_S], mesh_policy=dolfinx.io.VTXMeshPolicy.update, engine="BP4"
+            ),
+        ]
 
     # Quantities of interest: the displacement at the tip of the structure, the drag and
     # lift on the obstacle and on the fluid side of the solid-fluid interface, and the violation
@@ -1013,16 +1025,18 @@ def main():
         mesh_path="data/meshes/fsi2/mesh_sec_solid2x.xdmf",
         T=15.0,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_mixed_incompressible_solid2x.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible_solid2x.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible_solid2x.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible_solid2x",
-        checkpoint_every=400,
+        output_path="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible_p.bp",
+        output_path_p_S="output/pv/fsi2_biharmonic_mixed_incompressible_p_S.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible",
+        checkpoint_every=100,
         vtx_save_every=None,
         plot_matrices=False,
         gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
         full_direct_solve=False,
+        relative_theta_shift=2.0,
         restart=args.restart,
     )
 
