@@ -20,7 +20,7 @@ nu_f in 10^-3 m^2/s). Keys follow the naming of the solvers:
 """
 
 # CFD tests: the flag is rigid, either by setting rho_s = 1e6 and mu_s = 1e12, or by solving the flow only with no-slip
-# conditions on the flag interface. CFD1 is steady, CFD2 and CFD3 are periodic. (Table 4)
+# conditions on the flag interface. CFD1 and CFD2 are steady, CFD3 is periodic. (Table 4, results in Tables 5 to 7)
 CFD_parameters = {
     "CFD1": {"rho_f": 1.0e3, "nu_f": 1.0e-3, "U_bar": 0.2, "Re": 20},
     "CFD2": {"rho_f": 1.0e3, "nu_f": 1.0e-3, "U_bar": 1.0, "Re": 100},
