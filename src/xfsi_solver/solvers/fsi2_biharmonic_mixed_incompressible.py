@@ -55,38 +55,52 @@ def solve(
     direct_k_c_solve=False,
     full_direct_solve=False,
 ):
-    """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
-    steps, writing the initial state at ``t0`` as the first QoI row and, with
-    ``vtx_save_every``, as the first VTX snapshot. With ``vtx_save_every=None``, no VTX
-    output is written; otherwise a snapshot is written every ``vtx_save_every`` steps.
+    """Solve the FSI2i benchmark, FSI2 with an incompressible solid, up to time ``T``, in
+    ``round((T - t0) / dt_val)`` time steps, writing the initial state at ``t0`` as the
+    first QoI row and, with ``vtx_save_every``, as the first VTX snapshot. With
+    ``vtx_save_every=None``, no VTX output is written; otherwise a snapshot is written
+    every ``vtx_save_every`` steps.
+
+    The solid is an incompressible Mooney-Rivlin material with c1 = 0 and c2 = 2.5e5
+    (Wichrowski et al., Int. J. Numer. Methods Eng. 124 (2023), Sec. 2.3.2 and Table 4).
+    The constraint det(F) = 1 is imposed by a solid pressure p_S, P1 on the solid
+    submesh, in addition to the P1 fluid pressure p on the fluid submesh. The elastic
+    stress, shifted by its value 2 (c1 - c2) I in the reference configuration, is
+    theta-averaged in time, while the pressure stress -p_S I and the constraint are
+    fully implicit.
 
     The solid stress in the momentum equation is written in terms of the velocity, with
     the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
-    + (1 - theta) * v_old) (Failer & Richter, J. Sci. Comput. 82:28, 2020, eq. (5)). The
-    momentum equation then no longer depends on the solid displacement u_S, and its
-    derivative with respect to v contains the solid stiffness. The approximate Jacobian
+    + (1 - theta) * v_old) (Failer & Richter, J. Sci. Comput. 82:28, 2020, eq. (5)),
+    which is also used in the incompressibility constraint. The momentum equation and
+    the constraint then no longer depend on the solid displacement u_S, and their
+    derivatives with respect to v contain the solid stiffness. The approximate Jacobian
     J_0 drops the remaining derivatives of the momentum and continuity equations with
     respect to u, which are the fluid ALE derivatives, and is block lower triangular in
-    (v, p), u_S, (z, u_I). Each Newton step is solved by a multiplicative fieldsplit in
-    that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
-    K_m (the mesh motion) are constant, so their preconditioners are set up once for the
-    whole run. K_m does not couple the x and y components, and the components have the
-    same matrix, so it is solved by an additive fieldsplit over the components, with the
-    MUMPS factorization of the x component reused for the y component.
+    (v, p, p_S), u_S, (z, u_I). Each Newton step is solved by a multiplicative fieldsplit
+    in that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass)
+    and K_m (the mesh motion) are constant, so their preconditioners are set up once for
+    the whole run. K_m does not couple the x and y components, and the components have
+    the same matrix, so it is solved by an additive fieldsplit over the components, with
+    the MUMPS factorization of the x component reused for the y component.
 
-    With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
-    LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
-    factor of the Schur complement factorization over v and p: one GAMG V-cycle on the
-    velocity block A, with the rigid body modes as near-nullspace and SOR smoothing, for
-    A^{-1}, and one BoomerAMG V-cycle on the approximation -B diag(A)^{-1} G (selfp) of
-    the pressure Schur complement S = -B A^{-1} G, for S^{-1}.
+    With ``direct_k_c_solve=True``, the velocity-pressure block K_c over (v, p, p_S) is
+    solved with MUMPS LU. Otherwise, it is solved by FGMRES, preconditioned by the block
+    upper triangular factor of the Schur complement factorization over v and the
+    combined pressure (p, p_S): one GAMG V-cycle on the velocity block A, with the rigid
+    body modes as near-nullspace and SOR smoothing, for A^{-1}, and one BoomerAMG V-cycle
+    on the approximation -B diag(A)^{-1} G (selfp) of the pressure Schur complement
+    S = -B A^{-1} G, for S^{-1}.
 
-    The approximate Jacobian is only reassembled, and the physical block K_c only
-    refactorized, when the Newton residual norm decreased by less than a factor
-    ``gamma_reassemble`` in the last iteration (Failer & Richter, J. Sci. Comput. 82:28,
-    2020, Sec. 5.3), and is otherwise reused, also across time steps. With
-    ``gamma_reassemble=0``, it is reassembled in every Newton iteration except the
-    first of each time step.
+    With ``full_direct_solve=True``, the fieldsplit is not used: Newton uses the full
+    Jacobian, including the fluid ALE derivatives, and each Newton step is solved with
+    MUMPS LU on the whole system. ``direct_k_c_solve`` is then ignored.
+
+    The (approximate or full) Jacobian is only reassembled, and refactorized, when the
+    Newton residual norm decreased by less than a factor ``gamma_reassemble`` in the last
+    iteration (Failer & Richter, J. Sci. Comput. 82:28, 2020, Sec. 5.3), and is otherwise
+    reused, also across time steps. With ``gamma_reassemble=0``, it is reassembled in
+    every Newton iteration except the first of each time step.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -99,9 +113,10 @@ def solve(
 
     With ``plot_matrices=True``, spy plots and block norm plots of the full Jacobian and
     the approximate Jacobian J_0 at the final state are saved in
-    ``output/figures/matrix_blocks/fsi2_biharmonic_mixed/``, with the dofs ordered by the
+    ``output/figures/matrix_blocks/fsi2_biharmonic_mixed_incompressible/``, with the dofs ordered by the
     storage blocks [u, v, p, p_S, z] and by the blocks of eq. (1) of
-    docs/restricted-iterative-solver.md. The matrices are gathered on rank 0.
+    docs/restricted-iterative-solver.md. The matrices are gathered on rank 0. With
+    ``full_direct_solve=True``, the "approximate" plots also show the full Jacobian.
     """
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -854,9 +869,6 @@ def solve(
     PETSc.Sys.Print()
     mesh.comm.barrier()
 
-    p_S.x.array[:] = 2.0 * (c1.value - c2.value)
-    p_S.x.scatter_forward()
-
     first_step = step
     num_newton_iterations = 0
     start = timer()
@@ -887,8 +899,25 @@ def solve(
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
+        solid_description = (
+            f"  Solid: incompressible Mooney-Rivlin, c1 = {c1.value:g}, c2 = {c2.value:g}, with solid pressure p_S\n"
+            "    for det(F) = 1, elastic stress theta-averaged, pressure and constraint fully implicit\n"
+            "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
+        )
+        reuse_description = (
+            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
+            f"with {gamma_reassemble = }\n"
+            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
+            f"over {step - first_step} time steps\n"
+        )
         if full_direct_solve:
-            print("Full direct solver\n")
+            print(
+                "\nSolver setup:\n"
+                f"{solid_description}"
+                "  Jacobian: full, including the fluid ALE derivatives\n"
+                "  Linear solve: MUMPS LU on the whole system\n"
+                f"{reuse_description}"
+            )
         else:
             if direct_k_c_solve:
                 k_c_solve_description = "MUMPS LU\n"
@@ -903,22 +932,19 @@ def solve(
                     gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
                 k_c_solve_description = (
                     f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
-                    f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
+                    f"    factor over v and (p, p_S), one V-cycle of {gamg_description}, for A^{{-1}},\n"
                     "    one V-cycle of BoomerAMG on -B diag(A)^{-1} G (selfp), for S^{-1}\n"
                 )
             print(
                 "\nSolver setup:\n"
-                "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
+                f"{solid_description}"
                 "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
                 "    docs/restricted-iterative-solver.md)\n"
-                "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
+                "  Linear solve: multiplicative fieldsplit over q_c = (v, p, p_S), u_S and m = (z, u_I),\n"
                 "    MUMPS LU on the x component of K_m, reused for the y component and for the whole run,\n"
                 "    CG with Jacobi on A_S\n"
                 f"  K_c solve: {k_c_solve_description}"
-                f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
-                f"with {gamma_reassemble = }\n"
-                f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
-                f"over {step - first_step} time steps\n"
+                f"{reuse_description}"
             )
 
     for writer in writers:
