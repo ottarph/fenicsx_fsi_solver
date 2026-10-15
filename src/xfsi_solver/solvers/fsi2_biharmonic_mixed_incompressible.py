@@ -1004,13 +1004,14 @@ def main():
     args = parser.parse_args()
 
     solve(
-        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
+        # mesh_sec with the element size halved in the solid, from create_mesh_FSI2.py with solid_refinement=2
+        mesh_path="data/meshes/fsi2/mesh_sec_solid2x.xdmf",
         T=15.0,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible",
+        output_path="output/pv/fsi2_biharmonic_mixed_incompressible_solid2x.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible_solid2x.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible_solid2x.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible_solid2x",
         checkpoint_every=400,
         vtx_save_every=None,
         plot_matrices=False,
