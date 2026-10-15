@@ -352,10 +352,6 @@ def solve(
 
         return residual
 
-    def A_I(u, v, z):
-
-        return A_I_fluid(u, v, z) + A_I_solid(u)
-
     def A_E_fluid_viscous(u, v):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
@@ -401,22 +397,17 @@ def solve(
 
         return residual
 
-    def A_P(u, p, p_S):
-
-        return A_P_fluid(u, p) + A_P_solid(u, p_S)
-
     residual = A_T(u, u_old, v, v_old)
     residual += A_I_fluid(u, v, z)
     residual += A_P_fluid(u, p)
     residual += theta * A_E_fluid(u, v)
     residual += (1.0 - theta) * A_E_fluid(u_old, v_old)
 
-    u_condensed_theta = u_old + dt * ((1.0 - theta) * v_old + theta * v)
-    u_condensed_impl = u_old + dt * v
-    residual += theta * A_E_solid(u_condensed_theta)
+    u_condensed = u_old + dt * ((1.0 - theta) * v_old + theta * v)
+    residual += theta * A_E_solid(u_condensed)
     residual += (1.0 - theta) * A_E_solid(u_old)
-    residual += A_P_solid(u_condensed_theta, p_S)
-    residual += A_I_solid(u_condensed_theta)
+    residual += A_P_solid(u_condensed, p_S)
+    residual += A_I_solid(u_condensed)
 
     # Add in u_s with zero constants for correct sparsity patterns
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
@@ -466,9 +457,7 @@ def solve(
     # so we do it by hand.
 
     # Neglect the terms for v w.r.t. u. E_S is no longer dependent on u because of the condensation.
-    # jacobian_approximate_base_ufl[1][0] = None
-    # jacobian_approximate_base_ufl[1][0] = ufl.derivative(solid_pressure_term, u, trial_u)
-    jacobian_approximate_base_ufl[1][0] = ufl.derivative(A_P_solid(u_condensed_impl, p_S), u, trial_u)
+    jacobian_approximate_base_ufl[1][0] = None
 
     # Neglect terms for p w.r.t. u.
     jacobian_approximate_base_ufl[2][0] = None
@@ -558,6 +547,7 @@ def solve(
             # Print to console.
             # "snes_monitor": None,
             "snes_converged_reason": None,
+            "ksp_converged_reason": None,
             # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_mixed_snes_log.txt",
         }
         if not full_direct_solve
@@ -656,12 +646,9 @@ def solve(
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
         # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if (
-            jacobian_state["assembled"]
-            and (previous_norm is None or norm <= gamma_reassemble * previous_norm)
-            and False
-        ):
+        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
+        PETSc.Sys.Print("\tJacobian reassembly")
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
@@ -690,21 +677,21 @@ def solve(
 
     rows_u, rows_v, rows_p, rows_p_S, rows_z = (owned_rows(k) for k in range(len(fields)))
     u_solid = solid_supported(U, len(rows_u))  # mask over owned unrolled u dofs
+    rows_q_c = np.concatenate([rows_v, rows_p, rows_p_S])
     rows_u_S = rows_u[u_solid]
-    rows_q = np.concatenate([rows_u[u_solid], rows_v, rows_p, rows_p_S])
     rows_m = np.concatenate([rows_z, rows_u[~u_solid]])
 
-    if not len(rows_q) + len(rows_m) == J_mat.getLocalSize()[0]:
+    if not rows_q_c.size + rows_u_S.size + rows_m.size == J_mat.getLocalSize()[0]:
         raise RuntimeError()
 
     def make_is(rows):
         return PETSc.IS().createGeneral(np.sort(rows).astype(PETSc.IntType), comm=comm)
 
-    start = comm.exscan(rows_q.size) or 0  # first row of this rank in the q submatrix
-    is_u_S = make_is(start + np.arange(rows_u_S.size))
-    is_v = make_is(start + rows_u_S.size + np.arange(rows_v.size))
-    is_p = make_is(start + rows_u_S.size + rows_v.size + np.arange(rows_p.size))
-    is_p_S = make_is(start + rows_u_S.size + rows_v.size + rows_p.size + np.arange(rows_p_S.size))
+    start = comm.exscan(rows_q_c.size) or 0  # first row of this rank in the q submatrix
+    is_v = make_is(start + np.arange(rows_v.size))
+    # is_p = make_is(start + rows_v.size + np.arange(rows_p.size))
+    # is_p_S = make_is(start + rows_v.size + rows_p.size + np.arange(rows_p_S.size))
+    is_p_FS = make_is(start + rows_v.size + np.arange(rows_p.size + rows_p_S.size))
 
     # Rows of each displacement component in the m submatrix, for solving K_m component by
     # component. The owned z and u dofs are stored interleaved per node, (x, y), so the
@@ -721,7 +708,6 @@ def solve(
     # The owned v dofs are stored interleaved per node, (x, y), so A has block size 2, which
     # BoomerAMG uses for its systems coarsening and GAMG for its aggregates.
     is_v.setBlockSize(V.dofmap.index_map_bs)
-    is_u_S.setBlockSize(U.dofmap.index_map_bs)
 
     def rigid_body_modes(space):
         """Orthonormal rigid body modes of a 2D vector space: two translations and a rotation."""
@@ -740,14 +726,14 @@ def solve(
     is_v.compose("nearnullspace", rigid_body_modes(V))
 
     if not full_direct_solve:
-        raise NotImplementedError()
+        # raise NotImplementedError()
 
         # The multiplicative fieldsplit solves the splits in the order they are set here,
         # independent of the storage order [u | v | p | p_S | z]: first K_c for (v, p), then A_S for
         # solid with the right-hand side updated by C delta v, then K_m for (z, u_I) with the
         # right-hand side updated by L delta u_S.
         pc = solver.getKSP().getPC()
-        pc.setFieldSplitIS(("q", make_is(rows_q)), ("m", make_is(rows_m)))
+        pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
 
         if direct_k_c_solve:
             velocity_pressure_solve_options = {
@@ -788,18 +774,8 @@ def solve(
                 "fieldsplit_p_ksp_type": "preonly",
                 "fieldsplit_p_pc_type": "hypre",
                 "fieldsplit_p_pc_hypre_type": "boomeramg",
-                # "fieldsplit_p_ksp_converged_reason": None,
+                "fieldsplit_p_ksp_converged_reason": None,
             }
-
-        # if direct_solid_solve:
-        #     solid_solve_options = {
-        #         "ksp_type": "preonly",
-        #         "pc_type": "lu",
-        #         "pc_factor_mat_solver_type": "mumps",
-        #         "mat_mumps_cntl_1": 1e-4,
-        #     }
-        # else:
-        #     raise NotImplementedError()
 
         # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
         # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
@@ -839,6 +815,7 @@ def solve(
         # sub-KSPs in PCSetUp, which would override types set directly on them.
         split_options = {
             "q_c": velocity_pressure_solve_options,
+            "u_S": mass_solve_options,
             "m": mesh_motion_solve_options,
         }
         opts = PETSc.Options()
@@ -847,15 +824,15 @@ def solve(
         # dolfinx prefixes and deletes after setting up the solver.
         opts["options_left"] = None
         for options, sub_ksp in zip(split_options.values(), pc.getFieldSplitSubKSP(), strict=True):
-            opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_c_ / _solid_ / _m_
+            opts.prefixPush(sub_ksp.getOptionsPrefix())  # <prefix>fieldsplit_q_c_ / _u_S_ / _m_
             for key, value in options.items():
                 opts[key] = value
             opts.prefixPop()
             sub_ksp.setFromOptions()
 
-        ksp_q, ksp_m = pc.getFieldSplitSubKSP()
+        ksp_q_c, ksp_u_S, ksp_m = pc.getFieldSplitSubKSP()
         if not direct_k_c_solve:
-            ksp_q.getPC().setFieldSplitIS(("u_S", is_u_S), ("v", is_v), ("p", is_p), ("p_S", is_p_S))
+            ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p_FS", is_p_FS))
 
         ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
         ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
@@ -977,28 +954,6 @@ def solve(
                 matrix_blocks_dir(__file__),
                 t,
             )
-            # # The solid block [u_S, p_S] as its own parallel matrix, with the rows numbered by the
-            # # position in rows_solid, which is sorted since the u block precedes the p_S block.
-            # is_solid = make_is(rows_solid)
-            # J_solid = J.createSubMatrix(is_solid, is_solid)
-            # start_solid = comm.exscan(len(rows_solid)) or 0
-            # plot_matrix_blocks(
-            #     J_solid,
-            #     {
-            #         label + "solid": (
-            #             [
-            #                 start_solid + np.arange(len(rows_u_S)),
-            #                 start_solid + len(rows_u_S) + np.arange(len(rows_p_S)),
-            #             ],
-            #             ["$u_S$", "$p_S$"],
-            #         )
-            #     },
-            #     title + " solid block",
-            #     matrix_blocks_dir(__file__),
-            #     t,
-            # )
-            # J_solid.destroy()
-            # is_solid.destroy()
             J.destroy()
 
     # Destroying the MUMPS factorization and the AMG hierarchies is collective, so destroy them on
@@ -1018,7 +973,7 @@ def main():
 
     solve(
         mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=0.0 + 40 * 0.0025,
+        T=0.0 + 10 * 0.0025,
         dt_val=0.0025,
         output_path="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
         output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
@@ -1026,10 +981,10 @@ def main():
         checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible",
         checkpoint_every=None,
         vtx_save_every=None,
-        plot_matrices=True,
-        gamma_reassemble=0.0,  # Default 0.2.
+        plot_matrices=False,
+        gamma_reassemble=0.2,  # Default 0.2.
         direct_k_c_solve=True,
-        full_direct_solve=True,
+        full_direct_solve=False,
         restart=args.restart,
     )
 
