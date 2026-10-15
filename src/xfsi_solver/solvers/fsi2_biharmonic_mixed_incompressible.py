@@ -56,6 +56,7 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     full_direct_solve=False,
+    theta_val=None,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, up to time ``T``, in
     ``round((T - t0) / dt_val)`` time steps, writing the initial state at ``t0`` as the
@@ -69,7 +70,8 @@ def solve(
     submesh, in addition to the P1 fluid pressure p on the fluid submesh. The elastic
     stress, shifted by its value 2 (c1 - c2) I in the reference configuration, is
     theta-averaged in time, while the pressure stress -p_S I and the constraint are
-    fully implicit.
+    fully implicit. The theta of the time stepping is ``theta_val``, by default the shifted
+    Crank-Nicolson value 0.5 + ``dt_val``.
 
     The solid stress in the momentum equation is written in terms of the velocity, with
     the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
@@ -195,7 +197,7 @@ def solve(
     t0 = 0.0
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value if theta_val is None else theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
@@ -906,6 +908,7 @@ def solve(
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
         solid_description = (
+            f"  Time stepping: theta = {theta.value:g}\n"
             f"  Solid: incompressible Mooney-Rivlin, c1 = {c1.value:g}, c2 = {c2.value:g}, with solid pressure p_S\n"
             "    for det(F) = 1, elastic stress theta-averaged, pressure and constraint fully implicit\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
