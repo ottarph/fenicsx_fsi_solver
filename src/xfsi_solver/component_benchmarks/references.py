@@ -8,7 +8,7 @@
 TUREK_HRON_2006 = (
     "S. Turek and J. Hron. Proposal for numerical benchmarking of fluid-structure interaction between an elastic "
     "object and laminar incompressible flow. In H.-J. Bungartz and M. Schäfer (eds.), Fluid-Structure Interaction: "
-    "Modelling, Simulation, Optimisation, LNCSE 53. Springer, 2006."
+    "Modelling, Simulation, Optimisation, LNCSE 53, pp. 371-385. Springer, 2006. doi:10.1007/3-540-34596-5_15"
 )
 TUREK_HRON_2006_SHORT = "Turek & Hron (2006)"
 
