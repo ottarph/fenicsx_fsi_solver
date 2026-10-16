@@ -40,6 +40,28 @@ def relative_difference(computed, reference):
     return 100.0 * (computed - reference) / reference
 
 
+def print_table(column_names, rows, name_width=24, column_width=12):
+    """Print rows of (name, values) under column_names: numbers with 4 decimals, strings as they are, None as "-"."""
+
+    def cell(value):
+        if value is None:
+            return f"{'-':>{column_width}s}"
+        if isinstance(value, str):
+            return f"{value:>{column_width}s}"
+        return f"{value:{column_width}.4f}"
+
+    print(f"  {'':{name_width}s}" + "".join(f" {name:>{column_width}s}" for name in column_names))
+    for name, values in rows:
+        print(f"  {name:{name_width}s}" + "".join(f" {cell(value)}" for value in values))
+
+
+def difference_cell(computed, reference):
+    """The relative difference of computed to reference as a table cell, or None without a reference."""
+    if computed is None or reference is None or reference == 0:
+        return None
+    return f"{relative_difference(computed, reference):+.2f} %"
+
+
 def print_header():
     print(f"  {'':24s} {'computed':>12s} {'reference':>12s} {'difference':>13s}")
 
