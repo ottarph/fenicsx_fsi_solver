@@ -91,13 +91,10 @@ def compare_periodic(test, path):
     print_row("frequency [Hz]", frequency, reference["frequency"])
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
-    args = parser.parse_args()
-
+def compare_all(suffix=""):
+    """Print the comparison of every CFD test whose QoI file cfd_<n><suffix>.txt exists."""
     for test in TESTS:
-        path = qoi_path(test, args.suffix)
+        path = qoi_path(test, suffix)
         if not path.is_file():
             print(f"{test}: no QoI file at {path}\n")
             continue
@@ -106,6 +103,12 @@ def main():
         else:
             compare_steady(test, path)
         print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
+    compare_all(parser.parse_args().suffix)
 
 
 if __name__ == "__main__":

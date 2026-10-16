@@ -76,22 +76,25 @@ def plot_periodic(test, path, suffix, t_start=None, name_suffix=""):
     save(fig, f"{test.lower()}_forces{suffix}{name_suffix}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
-    args = parser.parse_args()
-
+def plot_all(suffix=""):
+    """Plot every CFD test whose QoI file cfd_<n><suffix>.txt exists."""
     for test in TESTS:
-        path = qoi_path(test, args.suffix)
+        path = qoi_path(test, suffix)
         if not path.is_file():
             print(f"{test}: no QoI file at {path}")
             continue
         if test == "CFD3":
             t_end = load_qois(path)[0][-1]
-            plot_periodic(test, path, args.suffix)
-            plot_periodic(test, path, args.suffix, t_start=t_end - 1.0, name_suffix="_last_1s")
+            plot_periodic(test, path, suffix)
+            plot_periodic(test, path, suffix, t_start=t_end - 1.0, name_suffix="_last_1s")
         else:
-            plot_steady(test, path, args.suffix)
+            plot_steady(test, path, suffix)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
+    plot_all(parser.parse_args().suffix)
 
 
 if __name__ == "__main__":
