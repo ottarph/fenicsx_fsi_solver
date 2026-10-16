@@ -25,12 +25,14 @@ from pathlib import Path
 import numpy as np
 
 from xfsi_solver.component_benchmarks.qoi_analysis import last_period, mean_and_amplitude, print_header, print_row
+from xfsi_solver.component_benchmarks.references import TUREK_HRON_2006_SHORT, print_references
 
 QOI_DIR = Path("output/qoi/component_benchmarks")
 
 TESTS = ("CFD1", "CFD2", "CFD3")
 
-# Reference values ("ref." rows of Tables 5, 6 and 7), forces per unit depth and Hz.
+# Reference values of Turek & Hron (2006), see references.py: the "ref." rows of Tables 5, 6 and 7, forces per unit
+# depth and Hz.
 REFERENCE = {
     "CFD1": {"drag": 14.29, "lift": 1.119},
     "CFD2": {"drag": 136.7, "lift": 10.53},
@@ -42,6 +44,9 @@ REFERENCE = {
         "frequency": 4.3956,
     },
 }
+
+# The table of Turek & Hron (2006) with the results of each test.
+REFERENCE_TABLE = {"CFD1": 5, "CFD2": 6, "CFD3": 7}
 
 
 def qoi_path(test, suffix=""):
@@ -67,6 +72,7 @@ def compare_steady(test, path):
     last_change = np.hypot(drag[-1] - drag[-2], lift[-1] - lift[-2])
 
     print(f"{test}: steady, last of {len(t)} rows ({path})")
+    print(f"  Compared with the reference values of {TUREK_HRON_2006_SHORT}, Table {REFERENCE_TABLE[test]}.")
     print_header()
     print_row("drag", drag[-1], reference["drag"])
     print_row("lift", lift[-1], reference["lift"])
@@ -83,6 +89,7 @@ def compare_periodic(test, path):
     frequency = 1.0 / (end - start)
 
     print(f"{test}: last full period, t = {start:.3f} s to {end:.3f} s (run ends at t = {t[-1]:g} s, {path})")
+    print(f"  Compared with the reference values of {TUREK_HRON_2006_SHORT}, Table {REFERENCE_TABLE[test]}.")
     print_header()
     print_row("drag, mean", drag_mean, reference["drag_mean"])
     print_row("drag, amplitude", drag_amplitude, reference["drag_amplitude"])
@@ -109,6 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
     compare_all(parser.parse_args().suffix)
+    print_references()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from xfsi_solver.component_benchmarks.compare_csm_qois import QOI_FILES, REFERENCE, load_qois
+from xfsi_solver.component_benchmarks.references import TUREK_HRON_2006_SHORT
 
 FIGURE_DIR = Path("output/figures/component_benchmarks")
 
@@ -41,7 +42,7 @@ def plot_static(test, path):
     fig, (ax_x, ax_y) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, layout="constrained")
     for ax, u, component in ((ax_x, ux, "x"), (ax_y, uy, "y")):
         ax.plot(steps, u, "ko-", label="computed")
-        ax.axhline(reference[f"u{component}"], color="r", linestyle="--", label="reference")
+        ax.axhline(reference[f"u{component}"], color="r", linestyle="--", label=TUREK_HRON_2006_SHORT)
         ax.set_ylabel(f"$u_{component}$ of A [$10^{{-3}}$ m]")
         ax.grid()
     ax_y.set_xlabel("Pseudo-time step")
@@ -63,7 +64,7 @@ def plot_periodic(test, path, t_start=None, name_suffix=""):
         mean = reference[f"u{component}_mean"]
         amplitude = reference[f"u{component}_amplitude"]
         ax.plot(t, u, "k-", label="computed")
-        ax.axhline(mean + amplitude, color="r", linestyle="--", label="reference min and max")
+        ax.axhline(mean + amplitude, color="r", linestyle="--", label=f"{TUREK_HRON_2006_SHORT}, min and max")
         ax.axhline(mean - amplitude, color="r", linestyle="--")
         ax.set_ylabel(f"$u_{component}$ of A [$10^{{-3}}$ m]")
         ax.grid()

@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from xfsi_solver.component_benchmarks.qoi_analysis import last_period, mean_and_amplitude, print_header, print_row
+from xfsi_solver.component_benchmarks.references import TUREK_HRON_2006_SHORT, print_references
 
 QOI_DIR = Path("output/qoi/component_benchmarks")
 
@@ -31,7 +32,8 @@ QOI_FILES = {
     "CSM3": QOI_DIR / "csm_3.txt",
 }
 
-# Reference values ("ref." rows of Tables 9, 10 and 11), in 10^-3 m and Hz.
+# Reference values of Turek & Hron (2006), see references.py: the "ref." rows of Tables 9, 10 and 11, in 10^-3 m and
+# Hz.
 REFERENCE = {
     "CSM1": {"ux": -7.187, "uy": -66.10},
     "CSM2": {"ux": -0.4690, "uy": -16.97},
@@ -43,6 +45,9 @@ REFERENCE = {
         "frequency": 1.0995,
     },
 }
+
+# The table of Turek & Hron (2006) with the results of each test.
+REFERENCE_TABLE = {"CSM1": 9, "CSM2": 10, "CSM3": 11}
 
 
 def load_qois(path):
@@ -63,6 +68,7 @@ def compare_static(test, path):
     last_change = np.hypot(ux[-1] - ux[-2], uy[-1] - uy[-2])
 
     print(f"{test}: static, last of {len(t)} rows (t = {t[-1]:g} s)")
+    print(f"  Compared with the reference values of {TUREK_HRON_2006_SHORT}, Table {REFERENCE_TABLE[test]}.")
     print_header()
     print_row("ux of A [1e-3 m]", ux[-1], reference["ux"])
     print_row("uy of A [1e-3 m]", uy[-1], reference["uy"])
@@ -79,6 +85,7 @@ def compare_periodic(test, path):
     frequency = 1.0 / (end - start)
 
     print(f"{test}: last full period, t = {start:.3f} s to {end:.3f} s (run ends at t = {t[-1]:g} s)")
+    print(f"  Compared with the reference values of {TUREK_HRON_2006_SHORT}, Table {REFERENCE_TABLE[test]}.")
     print_header()
     print_row("ux of A, mean [1e-3 m]", ux_mean, reference["ux_mean"])
     print_row("ux of A, amplitude", ux_amplitude, reference["ux_amplitude"])
@@ -87,7 +94,8 @@ def compare_periodic(test, path):
     print_row("frequency [Hz]", frequency, reference["frequency"])
 
 
-def main():
+def compare_all():
+    """Print the comparison of every CSM test whose QoI file exists."""
     for test, path in QOI_FILES.items():
         if not path.is_file():
             print(f"{test}: no QoI file at {path}\n")
@@ -97,6 +105,11 @@ def main():
         else:
             compare_static(test, path)
         print()
+
+
+def main():
+    compare_all()
+    print_references()
 
 
 if __name__ == "__main__":

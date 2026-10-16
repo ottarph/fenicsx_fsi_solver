@@ -23,6 +23,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from xfsi_solver.component_benchmarks.compare_cfd_qois import REFERENCE, TESTS, load_qois, qoi_path
+from xfsi_solver.component_benchmarks.references import TUREK_HRON_2006_SHORT
 
 FIGURE_DIR = Path("output/figures/component_benchmarks")
 
@@ -44,7 +45,7 @@ def plot_steady(test, path, suffix):
     fig, (ax_drag, ax_lift) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, layout="constrained")
     for ax, force, name in ((ax_drag, drag, "drag"), (ax_lift, lift, "lift")):
         ax.plot(steps, force, "ko-", label="computed")
-        ax.axhline(reference[name], color="r", linestyle="--", label="reference")
+        ax.axhline(reference[name], color="r", linestyle="--", label=TUREK_HRON_2006_SHORT)
         ax.set_ylabel(name.capitalize())
         ax.grid()
     ax_lift.set_xlabel("Pseudo-time step")
@@ -66,7 +67,7 @@ def plot_periodic(test, path, suffix, t_start=None, name_suffix=""):
         mean = reference[f"{name}_mean"]
         amplitude = reference[f"{name}_amplitude"]
         ax.plot(t, force, "k-", label="computed")
-        ax.axhline(mean + amplitude, color="r", linestyle="--", label="reference min and max")
+        ax.axhline(mean + amplitude, color="r", linestyle="--", label=f"{TUREK_HRON_2006_SHORT}, min and max")
         ax.axhline(mean - amplitude, color="r", linestyle="--")
         ax.set_ylabel(name.capitalize())
         ax.grid()

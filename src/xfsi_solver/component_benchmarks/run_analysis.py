@@ -4,8 +4,9 @@
 
 """Print the comparison with the reference values and write the plots for the CSM, CFD and FSI benchmarks.
 
-Runs compare_*_qois.py and plot_*.py for each benchmark, skipping the tests that have no QoI file. The CFD and FSI
-QoI files can carry a suffix, such as _fine for cfd_1_fine.txt. Run from the repository root:
+Runs compare_*_qois.py and plot_*.py for each benchmark, skipping the tests that have no QoI file, and lists the
+publications the values are compared with (see references.py). The CFD and FSI QoI files can carry a suffix, such as
+_fine for cfd_1_fine.txt. Run from the repository root:
 
     python -m xfsi_solver.component_benchmarks.run_analysis
     python -m xfsi_solver.component_benchmarks.run_analysis --cfd-suffix _fine_T20
@@ -21,6 +22,7 @@ from xfsi_solver.component_benchmarks import (
     plot_csm_displacement,
     plot_fsi_qois,
 )
+from xfsi_solver.component_benchmarks.references import print_references
 
 
 def print_title(title):
@@ -34,7 +36,7 @@ def main():
     args = parser.parse_args()
 
     print_title("CSM: elastic beam alone")
-    compare_csm_qois.main()
+    compare_csm_qois.compare_all()
     plot_csm_displacement.main()
 
     print_title(f"CFD: rigid flag (QoI files cfd_<n>{args.cfd_suffix}.txt)")
@@ -44,6 +46,9 @@ def main():
     print_title(f"FSI: elastic flag (QoI files fsi_<n>{args.fsi_suffix}.txt)")
     compare_fsi_qois.compare_all(args.fsi_suffix)
     plot_fsi_qois.plot_all(args.fsi_suffix)
+
+    print()
+    print_references()
 
 
 if __name__ == "__main__":
