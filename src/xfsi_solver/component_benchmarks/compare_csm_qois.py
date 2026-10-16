@@ -20,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+from xfsi_solver.component_benchmarks.qoi_analysis import last_period, mean_and_amplitude, print_header, print_row
+
 QOI_DIR = Path("output/qoi/component_benchmarks")
 
 # The QoI file of each test, as written by csm_benchmark.py.
@@ -53,43 +55,6 @@ def load_qois(path):
     ux = data[:, 3] * 1e3
     uy = data[:, 4] * 1e3
     return t, ux, uy
-
-
-def times_of_minima(t, y):
-    """Times of the local minima of y, each refined by fitting a parabola through it and its two neighbours."""
-    dt = t[1] - t[0]
-    times = []
-    for i in range(1, len(y) - 1):
-        if y[i] < y[i - 1] and y[i] <= y[i + 1]:
-            before, at, after = y[i - 1], y[i], y[i + 1]
-            shift = 0.5 * (before - after) / (before - 2 * at + after)
-            times.append(t[i] + shift * dt)
-    return np.array(times)
-
-
-def last_period(t, uy):
-    """Start and end time of the last full period of the oscillation, from one minimum of uy to the next."""
-    minima = times_of_minima(t, uy)
-    if len(minima) < 2:
-        raise ValueError("Fewer than two minima of uy: the run does not cover a full period yet")
-    return minima[-2], minima[-1]
-
-
-def mean_and_amplitude(y):
-    return 0.5 * (y.max() + y.min()), 0.5 * (y.max() - y.min())
-
-
-def relative_difference(computed, reference):
-    """Difference in percent of the reference, negative when computed is smaller in magnitude than reference."""
-    return 100.0 * (computed - reference) / reference
-
-
-def print_row(name, computed, reference):
-    print(f"  {name:22s} {computed:12.4f} {reference:12.4f} {relative_difference(computed, reference):+11.2f} %")
-
-
-def print_header():
-    print(f"  {'':22s} {'computed':>12s} {'reference':>12s} {'difference':>13s}")
 
 
 def compare_static(test, path):
