@@ -896,10 +896,11 @@ def solve(
     # mixed K_m as a whole and 7 GB for one component. IdenticalBlocksPC solves for the three
     # components at once with MatMatSolve, which reads the factor once instead of three times.
     # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky
-    # (notes/c0ip-mesh-motion/implementation-log.md). The PC type is set below, with the context.
+    # (notes/c0ip-mesh-motion/implementation-log.md). The context is attached below.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
         "ksp_reuse_preconditioner": True,
+        "pc_type": "python",  # IdenticalBlocksPC
         "block_pc_type": "cholesky",
         "block_pc_factor_mat_solver_type": "mumps",
         # "block_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
@@ -927,7 +928,6 @@ def solve(
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
     mesh_motion_pc = IdenticalBlocksPC(is_m_components)
-    ksp_m.getPC().setType(PETSc.PC.Type.PYTHON)
     ksp_m.getPC().setPythonContext(mesh_motion_pc)
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
