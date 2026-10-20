@@ -46,11 +46,17 @@ Compared with the local workstation (Threadripper 3970X, 32 cores, 4 DDR4 channe
 
 ## Storage and environment
 
-- Home: `miniforge3` with the conda env and code checkouts.
-- `~/D1 -> /global/D1/homes/hellanottar`: shared global storage (BeeGFS, ~1 PB), visible from all nodes.
-  Put meshes, VTX `.bp` output, QoIs and Slurm logs here, one directory per run. Not backed up and
-  not for long-term storage: copy results off afterwards.
-- Use full paths (`/global/D1/homes/hellanottar/...`) in `#SBATCH` lines; `~` may not be expanded.
+- Home (`/home/hellanottar`, NFS `master:/home`, 313 TB, 16% used on 2026-10-19), visible from all
+  nodes: `miniforge3` with the conda env and code checkouts. For now, also put meshes, VTX `.bp`
+  output, QoIs, checkpoints and Slurm logs here, one directory per run: runs in
+  `/home/hellanottar/xfsi/runs/<run>`, logs in `/home/hellanottar/xfsi/logs`.
+- Do not use D1 for now. `~/D1 -> /global/D1/homes/hellanottar` is shared global storage (BeeGFS,
+  ~1 PB, 97% full on 2026-10-19). On 2026-10-19, appends to an existing file there failed from n003
+  with `Remote I/O error` while new files could still be written. PETSc then recursed in its error
+  handler, writing the error to the same failing stdout, and the job hung with growing memory.
+  Move outputs back to D1 only once the eX3 admins have fixed that. D1 is not backed up
+  and not for long-term storage.
+- Use full paths (`/home/hellanottar/...`) in `#SBATCH` lines; `~` may not be expanded.
 - The conda env uses conda-forge MPICH 5.0.1 (libfabric). Across nodes, check it uses InfiniBand, not
   TCP; alternatively use the cluster MPI via conda-forge's `external` MPI builds. If `srun` cannot
   wire up the ranks, try `srun --mpi=pmi2` or `mpirun` inside the job.
@@ -77,7 +83,7 @@ sbatch --test-only job.sh                   # estimated start time
 #SBATCH --ntasks-per-node=112
 #SBATCH --hint=nomultithread
 #SBATCH -t 2-00:00:00
-#SBATCH -o /global/D1/homes/hellanottar/xfsi/logs/%j.txt
+#SBATCH -o /home/hellanottar/xfsi/logs/%j.txt
 ##SBATCH --exclusive              # timing runs or very large meshes
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
