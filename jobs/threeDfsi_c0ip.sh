@@ -21,22 +21,23 @@
 # FEniCSx and PETSc come from the Spack environment fenicsx-v011
 # (https://github.com/finsberg/ex3-spack-envs/tree/main/fenicsx-v0.11): OpenMPI with UCX for
 # InfiniBand and Slurm support, PETSc 3.24 with MUMPS and hypre. xfsi_solver is not installed
-# there; it is imported from the checkout through PYTHONPATH. Check once on the login node,
-# after activating the environment as below, that everything it needs imports:
+# there; it is imported from the checkout through PYTHONPATH. The environment is built for
+# x86_64_v3 (AVX2), which srl-login3 lacks, so check once on srl-login1 or on a compute node
+# (srun), after activating the environment as below, that everything it needs imports:
 #   PYTHONPATH=/home/hellanottar/code/xfsi_solver/src python -c \
 #       "import xfsi_solver.solvers.threeDfsi_c0ip, xfsi_solver.scripts.plot_qois, io4dolfinx, scifem"
 #
-# milanq has no time limit. The fine mesh has about 3.0M unknowns, 27k per rank on 112 ranks;
-# estimated 6 to 8 h for the 2000 steps to t = 8 on a Milan node, not yet measured. The ranks
-# are split evenly over the two sockets, since the solve is bound by memory bandwidth. The
-# Milan nodes also host GPU jobs, which hold a few cores, so the job does not take all 128.
+# The job takes a whole defq node (2 x 32 cores, 2 TB), with a rank on every core, split evenly
+# over the two sockets, since the solve is bound by memory bandwidth; --exclusive keeps other
+# jobs off its bandwidth. The fine mesh has about 3.0M unknowns, 47k per rank on 64 ranks;
+# estimated 8 to 12 h for the 2000 steps to t = 8, not yet measured.
 #SBATCH -J fsi3d-c0ip
-#SBATCH -p milanq
+#SBATCH -p defq
 #SBATCH -N 1
-#SBATCH --ntasks=112
-#SBATCH --ntasks-per-socket=56
+#SBATCH --ntasks=64
+#SBATCH --ntasks-per-socket=32
 #SBATCH --hint=nomultithread
-##SBATCH --exclusive              # for timing runs, so that other jobs do not share the bandwidth
+#SBATCH --exclusive
 #SBATCH -t 2-00:00:00
 #SBATCH -o /home/hellanottar/xfsi/logs/%x_%j.txt
 
