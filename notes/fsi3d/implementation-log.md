@@ -480,3 +480,132 @@ so peak RSS is the better measure there.
   against "split") and 0.34 GB (7%). Over a full 2d run, the gain is the per-step
   part; the per-step gain against "whole" comes mostly from the smaller
   component solves, without the zero couplings between the components.
+
+## C0IP mesh motion assembled once (2026-10-20)
+
+`threeDfsi_c0ip` (Phase 7 of `notes/restricted-cleanup/implementation-log.md`)
+took 3.2 times as long per step as `threeDfsi_mixed` on the coarse mesh, with
+a residual evaluation of 0.94 s. Timing the assembly calls showed that the
+residual forms take 0.035 s of that; the rest is the lifting by the boundary
+conditions in dolfinx's `assemble_residual`, which integrates the Jacobian
+forms, including the C0IP facet terms of the u-u block, in every residual
+evaluation. Removing the C0IP terms from the residual forms alone changed
+nothing.
+
+The C0IP mesh motion is linear in u and integrated on the reference mesh, so
+it is now assembled once, as B_m, the u-u block of a matrix with the layout of
+the Jacobian (rows and columns of `u_f_bc` zeroed, zero diagonal there):
+
+- Residual: the residual forms and the lifting get a zero form in the u-u
+  block, and `post_residual` adds B_m x on the u rows that no boundary
+  condition or test function restriction sets. `u_f_bc` is homogeneous, so the
+  zeroed columns hold its lifting.
+- Jacobian: the first assembly integrates the full forms, since the matrix
+  only keeps the entries of its first assembly and the facet couplings are in
+  no other block. Reassemblies use the zero form and add B_m by `MatAXPY`
+  (`SUBSET_NONZERO_PATTERN`).
+
+Coarse mesh, 14 ranks, iterative K_c, against the committed version and
+`threeDfsi_mixed` in the same session:
+
+| case | before | B_m | mixed |
+|---|---|---|---|
+| from rest, 20 steps (s/step) | 3.82 | 1.07–1.14 | 1.13 |
+| from t = 10 (mixed checkpoint), 10 steps (s/step) | 4.95 | 1.50–1.59 | 1.47 |
+| from t = 10, `gamma_reassemble=0`, 24 Jacobian assemblies (s/step) | 8.26 | 2.35 | |
+| residual evaluation (s) | 0.94 | 0.155 | 0.172 |
+| Jacobian reassembly (s) | 1.32 | 0.23 | 0.36 |
+
+- Exact up to round-off: the same Newton iterations and Jacobian assemblies,
+  the residual norms agree to 7 to 10 digits where they are above 1e-6, and
+  the QoI files are identical, in all three cases.
+- The C0IP solver now costs the same per step as the mixed one, slightly less
+  in the residual and the Jacobian, which have no auxiliary field.
+- B_m is a second copy of the u-u block's nonzeros: about 0.9 GB summed over
+  the ranks on the medium mesh, estimated from 185 nonzeros per row. On the
+  medium mesh the peak memory went down instead (below).
+- The remaining lifting (0.12 of the 0.155 s per residual) is by the velocity
+  boundary conditions, with the Jacobian blocks of the v columns. The mixed
+  solver lifts the same way; not changed here.
+
+### Medium mesh
+
+28 ranks, 10 steps from the medium mixed checkpoint at t = 10 (scratch copies,
+so the checkpoint did not change), with the beam oscillating:
+
+| | before | B_m | mixed |
+|---|---|---|---|
+| s/step | 38.1 | 18.9 | 21.1 |
+| residual evaluation (s) | 2.28 | 0.41 | 0.45 |
+| Jacobian assembly (s, 11 assemblies) | 4.27 | 1.06 | 1.16 |
+| K_m factorization (s) | 1.3 | 1.4 | 9.9 |
+| MatSolve, all calls (s) | 8.8 | 9.1 | 16.6 |
+| peak RSS, summed over the ranks (GB) | 21.5 | 19.9 | 26.3 |
+
+- All three: 74 Newton iterations and 11 Jacobian assemblies, 32.4 FGMRES
+  iterations per K_c solve on average.
+- B_m against before: the QoI files are identical, and the residual norms
+  agree to 1.3e-6 relative where they are above 1e-6. The mixed QoIs differ
+  by up to 2e-4 relative, since the mesh motion differs.
+- The Jacobian assembly with B_m is an average over the first assembly, which
+  still integrates the C0IP forms (about 4.3 s), and 10 reassemblies (about
+  0.74 s each).
+- The C0IP solver is now 10% faster per step than the mixed one, and uses
+  6.4 GB (24%) less memory: the K_m Cholesky factor of one component is
+  smaller than the LU factor of the mixed form, and the auxiliary field is
+  gone. MatSolve also includes GAMG's coarse grid solves, which are the same
+  in both.
+- Peak memory dropped by 1.6 GB against before, despite the extra B_m;
+  probably the coefficient packing of the C0IP facet forms in every lifting,
+  not checked.
+- MatMult took 34.2 s with B_m, against 28.4 s before and 27.5 s mixed. The
+  B_m products (84, one per residual) are part of it; not split up further.
+
+## K_m components solved at once by MatMatSolve (2026-10-20)
+
+`threeDfsi_c0ip` solved the three components of K_m one after the other with
+the same MUMPS factorization (`ReusePC`), and each triangular solve reads the
+whole factor. `tools/petsc_reuse.py:IdenticalBlocksPC` now factorizes the x
+component and solves for all three at once: it copies the components of the
+right-hand side into the columns of a dense matrix and calls `MatMatSolve`,
+which reads the factor once for the three columns. The components of the owned
+dofs on a rank are the same nodes in the same order, so the copies are local.
+The m split is a PCPYTHON with this context instead of the additive fieldsplit
+over the components; the factorization is set up from the options with the
+prefix `<m prefix>block_`.
+
+10 steps from the mixed checkpoint at t = 10, against the B_m version above:
+
+| mesh, ranks | | K_m solves per Newton iteration | s/step | peak RSS (GB) |
+|---|---|---|---|---|
+| coarse, 14 | 3 MatSolve | 14.8 ms | 1.48 | |
+| | MatMatSolve | 8.5 ms | 1.47 | |
+| medium, 28 | 3 MatSolve | 123 ms | 18.9 | 19.9 |
+| | MatMatSolve | 51 ms | 18.4 | 19.6 |
+
+- The same Newton iterations and Jacobian assemblies, identical QoI files,
+  and residual norms agreeing to 1.3e-6 relative where they are above 1e-6.
+- 43% (coarse) and 58% (medium) less time in the K_m solves, against the 67%
+  of reading the factor a third as often; the rest is per-solve overhead,
+  which weighs more on the small coarse factor.
+- 3% per step on the medium mesh, since K_m solves were 5% of it. The share
+  grows with the factor, about N^(4/3), so the gain is larger on finer meshes.
+- `tests/test_petsc_reuse.py` checks the context on three interleaved 1d
+  Laplacians, in serial and on 3 ranks.
+- Generalized afterwards: the context applies the PC of the first block by
+  `PCMatApply` instead of calling `MatMatSolve` on its factor, so it takes any
+  PC. For Cholesky that is the same single `MatMatSolve` (checked: the same
+  event counts and identical QoIs on the coarse mesh); GAMG runs one V-cycle
+  on all columns, with a `MatMatSolve` on its coarse grid; PCs without their
+  own `PCMatApply`, such as Jacobi, are applied column by column. The test also
+  covers a PCKSP with CG and Jacobi.
+- All solvers that split K_m into components now use `IdenticalBlocksPC`:
+  `fsi2_biharmonic_c0ip` (Cholesky), `fsi2_biharmonic_mixed`,
+  `fsi2_biharmonic_mixed_incompressible`, `component_benchmarks/fsi2D_benchmark`
+  and `threeDfsi_mixed` (LU). Checked against the previous version on the
+  coarse meshes (6 steps in 2d, 3 in 3d): the same Newton iterations, residual
+  norms agreeing to 1e-7 relative or better, and identical QoIs, apart from the
+  round-off (1e-17) of the incompressible solver's solid area change, which is
+  itself about 3e-16. `component_solvers/c0ip_mesh_motion.py` keeps the
+  fieldsplit with `ReusePC`: its CG variants run a Krylov method per
+  component, and its logged timings were measured with it.

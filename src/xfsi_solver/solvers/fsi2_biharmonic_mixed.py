@@ -15,7 +15,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
-from xfsi_solver.tools.petsc_reuse import ReusePC
+from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -68,8 +68,8 @@ def solve(
     that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
     whole run. K_m does not couple the x and y components, and the components have the
-    same matrix, so it is solved by an additive fieldsplit over the components, with the
-    MUMPS factorization of the x component reused for the y component.
+    same matrix, so only the x component is factorized, and both components are solved with
+    that factorization at once, by one MatMatSolve with two right-hand sides.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
@@ -633,7 +633,6 @@ def solve(
     # component. The owned z and u dofs are stored interleaved per node, (x, y), so the
     # component of a dof is its position in its block modulo block_size. The m submatrix holds the
     # rows of rows_m in sorted order.
-    component_names = ["x", "y"]
     block_size = U.dofmap.bs
     component_z = np.arange(len(rows_z)) % block_size
     component_u_I = (np.arange(len(rows_u)) % block_size)[~u_solid]
@@ -725,24 +724,18 @@ def solve(
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
     # rows, so it is the same matrix in every Newton iteration and time step: factorize it
     # only once. K_m does not couple the x and y components, and the components have the same
-    # matrix, so the additive fieldsplit over the components solves it exactly with the MUMPS
-    # factorization of the x component only, which the y component applies through a ReusePC.
+    # matrix, so only the x component is factorized. IdenticalBlocksPC solves for both
+    # components at once with that factorization, by MatMatSolve, which reads the factor once
+    # instead of twice.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
-        "fieldsplit_x_ksp_type": "preonly",
-        "fieldsplit_x_pc_type": "lu",
-        "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
-        # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
-        "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
+        "pc_type": "python",  # IdenticalBlocksPC
+        "block_pc_type": "lu",
+        "block_pc_factor_mat_solver_type": "mumps",
+        # "block_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+        "block_mat_mumps_cntl_1": 1e-4,
     }
-    for name in component_names[1:]:
-        mesh_motion_solve_options |= {
-            f"fieldsplit_{name}_ksp_type": "preonly",
-            f"fieldsplit_{name}_pc_type": "python",
-        }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
@@ -763,12 +756,8 @@ def solve(
     if not direct_k_c_solve:
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
-    ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
-    ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
-    pc_mesh_motion_reuse = ReusePC(ksp_m_components[0].getPC())
-    for ksp_m_i in ksp_m_components[1:]:
-        ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
-        ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
+    mesh_motion_pc = IdenticalBlocksPC(is_m_components)
+    ksp_m.getPC().setPythonContext(mesh_motion_pc)
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
@@ -834,7 +823,8 @@ def solve(
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
-            "    MUMPS LU on the x component of K_m, reused for the y component and for the whole run,\n"
+            "    MUMPS LU on the x component of K_m, for the whole run and for both components at once\n"
+            "    by MatMatSolve,\n"
             "    CG with Jacobi on A_S\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
@@ -879,6 +869,7 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
+    mesh_motion_pc.destroy_solvers()
 
     return
 

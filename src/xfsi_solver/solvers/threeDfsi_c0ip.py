@@ -17,7 +17,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
-from xfsi_solver.tools.petsc_reuse import ReusePC
+from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
     append_qoi_row,
@@ -70,7 +70,10 @@ def solve(
     symmetric positive definite. The zero normal derivative on the fluid boundary is imposed by
     Nitsche's method. The penalty parameters are those of
     tools/dg_optpar.py:get_dg_penalty_parameters_tetrahedron with ``a_val = c0ip_a_val``: the
-    triangle parameters carried over to tetrahedra, neither tuned nor proven coercive. The QoIs
+    triangle parameters carried over to tetrahedra, neither tuned nor proven coercive. The mesh
+    motion forms are linear in u and integrated on the reference mesh, so they are assembled once,
+    as a matrix B_m, which the residual (as B_m u) and the Jacobian reassemblies add instead of
+    integrating them again. The QoIs
     are the drag and the lift on the cylinder and the beam, and the displacement of the point
     B = (0.9, 0.2, 0.3) on the back face of the beam.
 
@@ -84,10 +87,10 @@ def solve(
     (v, p), u_S, u_I. Each Newton step is solved by a multiplicative fieldsplit in that
     order, with MUMPS Cholesky on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
-    whole run. K_m does not couple the x, y and z components, so it is solved by an
-    additive fieldsplit over the components, which leaves out the zero couplings between
-    the components that the blocked matrix stores. The components have the same matrix,
-    so the MUMPS factorization of the x component is reused for the y and z components.
+    whole run. K_m does not couple the x, y and z components, and the components have the
+    same matrix, so only the x component is factorized, which leaves out the zero couplings
+    between the components that the blocked matrix stores. The three components are solved
+    with that factorization at once, by one MatMatSolve with three right-hand sides.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
@@ -390,9 +393,7 @@ def solve(
     def A_T(u, u_old, v, v_old):
         return A_T_mass(u, u_old, v, v_old) + A_T_mesh_transport(u, u_old, v, v_old)
 
-    def A_I(u, v):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
+    def A_mesh_motion(u, du):
         n = ufl.FacetNormal(mesh)
 
         # C0IP biharmonic mesh motion, with the zero normal derivative on the fluid
@@ -409,7 +410,13 @@ def solve(
         residual -= ufl.inner(ufl.div(ufl.grad(du)), ufl.grad(u) * n) * ds_boundary_fluid
         residual += beta_boundary / h_facet * ufl.inner(ufl.grad(u) * n, ufl.grad(du) * n) * ds_boundary_fluid
 
-        residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
+        return residual
+
+    def A_I(u, v):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
         return residual
 
@@ -468,9 +475,21 @@ def solve(
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
+    # The mesh motion is linear in u and integrated on the reference mesh, so it is assembled
+    # only once, as the matrix B_m below, which the residual and Jacobian callbacks add. The
+    # Jacobian forms keep it for the first assembly, which gives the matrix the sparsity of its
+    # facet couplings.
+    residual_mesh_motion = A_mesh_motion(u, du)
+
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
     residual_base_ufl = [cap_quadrature_degree(form, max_quadrature_degree) for form in ufl.extract_blocks(residual)]
-    jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, [u, v, p])
+    jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(
+        [
+            cap_quadrature_degree(form, max_quadrature_degree)
+            for form in ufl.extract_blocks(residual + residual_mesh_motion)
+        ],
+        [u, v, p],
+    )
 
     # One block per unknown in [u, v, p], since blocked assembly places forms by
     # position. Not built with ufl.extract_blocks, which drops the zero blocks. The
@@ -493,6 +512,20 @@ def solve(
 
     residual_post = dolfinx.fem.form(residual_post_ufl, entity_maps=entity_maps)
     jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
+
+    # B_m: the mesh motion as the u-u block of a matrix with the layout of the Jacobian, with
+    # the rows and columns of u_f_bc zeroed as in the Jacobian.
+    mesh_motion_ufl = [[None for _ in range(len([u, v, p]))] for __ in range(len([u, v, p]))]
+    mesh_motion_ufl[0][0] = cap_quadrature_degree(A_mesh_motion(trials[0], du), max_quadrature_degree)
+    for i in range(1, len([u, v, p])):
+        mesh_motion_ufl[i][i] = ufl.ZeroBaseForm(([du, dv, dp][i], trials[i]))
+    mesh_motion_forms = dolfinx.fem.form(mesh_motion_ufl, entity_maps=entity_maps)
+    mesh_motion_matrix = dolfinx.fem.petsc.create_matrix(mesh_motion_forms)
+    # assemble_matrix puts diag on the diagonal of the rows of bcs, 1 by default. The Jacobian
+    # reassembly already puts 1 there, and adds B_m to it, so B_m gets 0: with 1, those rows
+    # would have 2 on the diagonal, and Newton would only take half the step that sets u_f_bc.
+    dolfinx.fem.petsc.assemble_matrix(mesh_motion_matrix, mesh_motion_forms, bcs=[u_f_bc], diag=0.0)
+    mesh_motion_matrix.assemble()
 
     jacobian_approximate_base_ufl = [
         [jacobian_full_base_ufl[row][column] for column in range(len([u, v, p]))] for row in range(len([u, v, p]))
@@ -622,6 +655,19 @@ def solve(
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(residual_post), bcs_post)
     bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jacobian_post, 1), bcs_post)
 
+    # The residual and the Jacobian reassemblies get the u-u block as a zero form on the same
+    # spaces instead of the mesh motion forms, and the callbacks add B_m. dolfinx also lifts the
+    # residual by the boundary conditions with the Jacobian forms, which integrated the mesh
+    # motion forms in every residual evaluation: 0.88 of 0.92 s per residual on the coarse mesh.
+    # The first Jacobian assembly integrates them, since the matrix only keeps the entries
+    # inserted in its first assembly, and the facet couplings are in no other block.
+    assembly_forms = [list(row) for row in jac_kargs["jacobian"]]
+    assembly_forms[0][0] = dolfinx.fem.form(
+        dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(trials[0], du) * dx_solid, entity_maps=entity_maps
+    )
+    jac_kargs_reassembly = jac_kargs | {"jacobian": assembly_forms}
+    res_kargs = res_kargs | {"jacobian": assembly_forms}
+
     def pre_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         pass
 
@@ -630,10 +676,24 @@ def solve(
         dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
         J.assemble()
 
+    # B_m x is the mesh motion residual, with the lifting by u_f_bc, which is homogeneous. Its rows
+    # of the boundary conditions and the test function restriction are left out, as assembling
+    # the mesh motion forms into the residual would leave them.
+    mesh_motion_product = mesh_motion_matrix.createVecLeft()
+    u_rows = slice(offsets_owned[u_block], offsets_owned[u_block + 1])
+    mesh_motion_bc_rows = offsets_owned[u_block] + np.concatenate(
+        [indices[:num_owned] for indices, num_owned in (bc.dof_indices() for bc in [u_f_bc, u_s_bc, bc_deactivate])]
+    )
+
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
 
     def post_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
+
+        mesh_motion_matrix.mult(x, mesh_motion_product)
+        mesh_motion_product.array[mesh_motion_bc_rows] = 0.0
+        with b.localForm() as bl:
+            bl.array[u_rows] += mesh_motion_product.array[u_rows]
 
         dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], []], alpha=0.0)  # zero restricted rows
 
@@ -673,7 +733,11 @@ def solve(
         if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         pre_jacobian(x, J)
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        if jacobian_state["assembled"]:
+            fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs_reassembly)
+            J.axpy(1.0, mesh_motion_matrix, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+        else:
+            fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
@@ -712,9 +776,9 @@ def solve(
 
     # Rows of each displacement component in the m submatrix, for solving K_m component by
     # component. The owned u dofs are stored interleaved per node, (x, y, z), so the
-    # component of a dof is its position in its block modulo gdim. The m submatrix holds the
-    # rows of rows_m in sorted order.
-    component_names = ["x", "y", "z"]
+    # component of a dof is its position in its block modulo gdim, and the k-th rows of the
+    # components on a rank are the same node. The m submatrix holds the rows of rows_m in
+    # sorted order.
     component_u_I = (np.arange(len(rows_u)) % gdim)[~u_solid]
     components_m = component_u_I[np.argsort(rows_m)]
     start_m = comm.exscan(len(rows_m)) or 0  # first row of this rank in the m submatrix
@@ -825,29 +889,23 @@ def solve(
 
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
     # rows, so it is the same matrix in every Newton iteration and time step: factorize it
-    # only once. K_m does not couple the x, y and z components, so the additive fieldsplit over
-    # the components solves it exactly. That leaves out the zero couplings between the
-    # components, which the blocked matrix stores: on the medium mesh, MUMPS needed 42 GB for
-    # the mixed K_m as a whole and 7 GB for one component. The components also have the same
-    # matrix, so only the x component is factorized, and the y and z components apply its
-    # factorization through a ReusePC. The C0IP K_m is symmetric positive definite, so it is
-    # factorized by Cholesky (notes/c0ip-mesh-motion/implementation-log.md).
+    # only once. K_m does not couple the x, y and z components, and every component has the
+    # same matrix, since every boundary condition on the mesh motion constrains all components.
+    # So only the x component is factorized, which leaves out the zero couplings between the
+    # components that the blocked matrix stores: on the medium mesh, MUMPS needed 42 GB for the
+    # mixed K_m as a whole and 7 GB for one component. IdenticalBlocksPC solves for the three
+    # components at once with MatMatSolve, which reads the factor once instead of three times.
+    # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky
+    # (notes/c0ip-mesh-motion/implementation-log.md). The context is attached below.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
-        "fieldsplit_x_ksp_type": "preonly",
-        "fieldsplit_x_pc_type": "cholesky",
-        "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
-        # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
-        "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
+        "pc_type": "python",  # IdenticalBlocksPC
+        "block_pc_type": "cholesky",
+        "block_pc_factor_mat_solver_type": "mumps",
+        # "block_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+        "block_mat_mumps_cntl_1": 1e-4,
     }
-    for name in component_names[1:]:
-        mesh_motion_solve_options |= {
-            f"fieldsplit_{name}_ksp_type": "preonly",
-            f"fieldsplit_{name}_pc_type": "python",
-        }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
@@ -869,12 +927,8 @@ def solve(
     if not direct_k_c_solve:
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
-    ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
-    ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
-    pc_mesh_motion_reuse = ReusePC(ksp_m_components[0].getPC())
-    for ksp_m_i in ksp_m_components[1:]:
-        ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
-        ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
+    mesh_motion_pc = IdenticalBlocksPC(is_m_components)
+    ksp_m.getPC().setPythonContext(mesh_motion_pc)
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
@@ -945,9 +999,10 @@ def solve(
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = u_I,\n"
-            "    MUMPS Cholesky on the x component of the C0IP K_m, reused for the y and z components\n"
-            "    and for the whole run, CG with Jacobi on A_S\n"
+            "    MUMPS Cholesky on the x component of the C0IP K_m, for the whole run and for all three\n"
+            "    components at once by MatMatSolve, CG with Jacobi on A_S\n"
             f"  C0IP penalty: a_val = {c0ip_a_val}\n"
+            "  C0IP mesh motion: B_m assembled once, added to the residual and the Jacobian reassemblies\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
@@ -963,6 +1018,8 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
+    mesh_motion_pc.destroy_solvers()
+    mesh_motion_matrix.destroy()
 
     return
 
