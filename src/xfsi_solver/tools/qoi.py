@@ -4,8 +4,10 @@
 
 """Quantities of interest of the FSI2 benchmark: drag, lift and the displacement of a point on the structure."""
 
+from collections.abc import Callable
 from pathlib import Path
 
+import basix
 import dolfinx
 import numpy as np
 import ufl
@@ -17,6 +19,8 @@ from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 QOI_HEADER = "t\tdrag\tlift\tA_x\tA_y"
 LAGRANGE_QOI_HEADER = QOI_HEADER + "\tinterface_u_gap\tinterface_v_gap"
+# The violation of det(F) = 1 in the solid, see incompressibility_violation.
+INCOMPRESSIBLE_QOI_HEADER = QOI_HEADER + "\tsolid_area_change\tdet_F_rms\tdet_F_max"
 # The 3d benchmark measures the displacement at the point B on the beam.
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 
@@ -155,3 +159,40 @@ def assemble_gap_norm(form: dolfinx.fem.Form, comm: MPI.Intracomm) -> float | No
     """
     squared = comm.reduce(dolfinx.fem.assemble_scalar(form))
     return np.sqrt(max(squared, 0.0)) if comm.rank == 0 else None
+
+
+def incompressibility_violation(
+    u: dolfinx.fem.Function, dx: ufl.Measure, cells: np.ndarray, points_degree: int = 4
+) -> Callable[[], tuple[float | None, float | None, float | None]]:
+    """Measures of the violation of det(F) = 1, with F = I + grad(u), over the region of the cells
+    ``cells`` of the mesh of ``u``, which ``dx`` integrates over.
+
+    Returns a collective function that computes, from the current ``u``, on rank 0 (``None`` on the
+    other ranks):
+
+    - the relative change of the area (volume in 3d) of the region, ∫ (det(F) - 1) dx / |Ω|,
+    - the root mean square of det(F) - 1, ||det(F) - 1||_L2 / |Ω|^(1/2),
+    - the maximum of |det(F) - 1| at the points of an equispaced lattice of degree ``points_degree``
+      on each cell, which include the vertices.
+
+    A weak constraint det(F) = 1 against a pressure space that contains the constants keeps the area
+    change at zero, up to the solver tolerance, while the other two show the pointwise violation.
+    """
+    mesh = u.function_space.mesh
+    J = ufl.det(ufl.Identity(mesh.geometry.dim) + ufl.grad(u))
+    area = mesh.comm.allreduce(dolfinx.fem.assemble_scalar(dolfinx.fem.form(1.0 * dx)), op=MPI.SUM)
+    change_form = dolfinx.fem.form((J - 1) * dx)
+    squared_form = dolfinx.fem.form((J - 1) ** 2 * dx)
+    points = basix.create_lattice(mesh.basix_cell(), points_degree, basix.LatticeType.equispaced, True)
+    J_expression = dolfinx.fem.Expression(J - 1, points)
+
+    def measure():
+        change = mesh.comm.reduce(dolfinx.fem.assemble_scalar(change_form))
+        squared = mesh.comm.reduce(dolfinx.fem.assemble_scalar(squared_form))
+        local_max = np.max(np.abs(J_expression.eval(mesh, cells)), initial=0.0)
+        maximum = mesh.comm.reduce(local_max, op=MPI.MAX)
+        if mesh.comm.rank != 0:
+            return None, None, None
+        return change / area, np.sqrt(max(squared, 0.0) / area), maximum
+
+    return measure

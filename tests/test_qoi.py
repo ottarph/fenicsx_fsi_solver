@@ -12,6 +12,7 @@ from xfsi_solver.tools.qoi import (
     assemble_gap_norm,
     drag_lift_forms,
     find_point_dof,
+    incompressibility_violation,
     init_qoi_file,
     point_value,
 )
@@ -51,9 +52,10 @@ def test_qoi_file_is_created_with_header_and_rows(tmp_path):
     path = tmp_path / "sub" / "qoi.txt"
     init_qoi_file(path, COMM, restart=False, t=0.0, dt_val=0.1)
     append_qoi_row(path, COMM, 0.0, 1.0, 2.0, np.array([3.0, 4.0]))
-    lines = path.read_text().splitlines()
-    assert lines[0] == "# " + QOI_HEADER
-    assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0]
+    if COMM.rank == 0:  # the QoI file is written on rank 0 only, and tmp_path differs between ranks
+        lines = path.read_text().splitlines()
+        assert lines[0] == "# " + QOI_HEADER
+        assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0]
 
 
 def test_restart_drops_rows_after_the_checkpoint(tmp_path):
@@ -62,8 +64,9 @@ def test_restart_drops_rows_after_the_checkpoint(tmp_path):
     for k in range(4):
         append_qoi_row(path, COMM, 0.1 * k, 0.0, 0.0, np.zeros(2))
     init_qoi_file(path, COMM, restart=True, t=0.2, dt_val=0.1)
-    rows = np.loadtxt(path, ndmin=2)
-    np.testing.assert_allclose(rows[:, 0], [0.0, 0.1, 0.2])
+    if COMM.rank == 0:
+        rows = np.loadtxt(path, ndmin=2)
+        np.testing.assert_allclose(rows[:, 0], [0.0, 0.1, 0.2])
 
 
 def test_assemble_gap_norm_is_the_root_of_the_squared_norm():
@@ -86,9 +89,25 @@ def test_qoi_file_with_the_interface_gap_columns(tmp_path):
     path = tmp_path / "qoi.txt"
     init_qoi_file(path, COMM, restart=False, t=0.0, dt_val=0.1, header=LAGRANGE_QOI_HEADER)
     append_qoi_row(path, COMM, 0.0, 1.0, 2.0, np.array([3.0, 4.0]), 5.0, 6.0)
-    lines = path.read_text().splitlines()
-    assert lines[0].split()[1:] == ["t", "drag", "lift", "A_x", "A_y", "interface_u_gap", "interface_v_gap"]
-    assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    if COMM.rank == 0:
+        lines = path.read_text().splitlines()
+        assert lines[0].split()[1:] == ["t", "drag", "lift", "A_x", "A_y", "interface_u_gap", "interface_v_gap"]
+        assert [float(x) for x in lines[1].split()] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+def test_incompressibility_violation_of_a_stretch():
+    # u = (x^2 / 2, 0) has det(F) - 1 = x, whose mean over the unit square is 1/2, root mean square
+    # (1/3)^(1/2), and maximum 1, at the vertices on x = 1.
+    mesh = dolfinx.mesh.create_unit_square(COMM, 4, 4)
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))))
+    u.interpolate(lambda x: np.stack([x[0] ** 2 / 2, np.zeros_like(x[0])]))
+    cell_map = mesh.topology.index_map(mesh.topology.dim)
+    cells = np.arange(cell_map.size_local + cell_map.num_ghosts, dtype=np.int32)
+    change, rms, maximum = incompressibility_violation(u, ufl.dx(domain=mesh), cells)()
+    if COMM.rank == 0:
+        assert change == pytest.approx(0.5)
+        assert rms == pytest.approx(np.sqrt(1 / 3))
+        assert maximum == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("gdim", [2, 3])

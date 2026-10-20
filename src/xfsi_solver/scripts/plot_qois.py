@@ -33,6 +33,14 @@ _QOI_SPECS_3D = [
     (5, "$B$ $z$-displacement [m]", "z-disp"),
 ]
 
+# The FSI2i benchmark, with an incompressible solid, has the violation of det(F) = 1 in the solid
+# in columns 5 to 7.
+_QOI_SPECS_INCOMPRESSIBLE = _QOI_SPECS + [
+    (5, "Relative solid area change", "solid-area-change"),
+    (6, r"RMS of $\det F - 1$ in the solid", "det-F-rms"),
+    (7, r"Maximum of $|\det F - 1|$ in the solid", "det-F-max"),
+]
+
 # Reference values of the 3d benchmark, as (mean, amplitude) over t in [9, 10], on mesh
 # level 3 with k = 0.001 (Failer & Richter, J. Sci. Comput. 82:28, 2020, Fig. 3), by
 # column of the qoi files.
@@ -44,6 +52,19 @@ _REFERENCE_3D = {
     5: (0.486e-3, 0.877e-3),  # B z-displacement
 }
 _REFERENCE_3D_INTERVAL = (9.0, 10.0)
+_REFERENCE_3D_LABEL = "Failer & Richter (2020), min and max"
+
+# Reference values of the FSI2i benchmark, as (mean, amplitude) of the last computed oscillation,
+# on mesh level J = 5 with the GCsI2(E, I) scheme and tau = 0.0025 (Wichrowski et al., Int. J.
+# Numer. Methods Eng. 124 (2023), Table 5), by column of the qoi files. There are none for the drag
+# and the lift. The time of the last oscillation is not given, so they are drawn over the last
+# _REFERENCE_INCOMPRESSIBLE_DURATION seconds of the run.
+_REFERENCE_INCOMPRESSIBLE = {
+    3: (-14.72e-3, 12.55e-3),  # A x-displacement
+    4: (1.23e-3, 80.77e-3),  # A y-displacement
+}
+_REFERENCE_INCOMPRESSIBLE_DURATION = 2.0
+_REFERENCE_INCOMPRESSIBLE_LABEL = r"Wichrowski et al. (2023), $\tau = 0.0025$, min and max"
 
 
 QOI_DIR = Path("output/qoi")
@@ -111,7 +132,40 @@ def plot_3d_qois(
     qois = _load_qois(Path(qoi_dir) / f"{run}.txt")
     if qois is None:
         return
-    _plot_series([(run, "k-", qois)], *figure_prefix([run], figure_dir), _QOI_SPECS_3D, _REFERENCE_3D)
+    _plot_series(
+        [(run, "k-", qois)],
+        *figure_prefix([run], figure_dir),
+        _QOI_SPECS_3D,
+        _REFERENCE_3D,
+        _REFERENCE_3D_INTERVAL,
+        _REFERENCE_3D_LABEL,
+    )
+
+
+def plot_incompressible_qois(
+    run: str,
+    qoi_dir: str | os.PathLike = QOI_DIR,
+    figure_dir: str | os.PathLike = FIGURE_DIR,
+):
+    """Plot drag, lift, tip displacement and the violation of det(F) = 1 in the solid over time for
+    a run of the FSI2i benchmark, with an incompressible solid, in the folder of its solver script,
+    with the reference ranges of the tip displacement of Wichrowski et al. over the last
+    ``_REFERENCE_INCOMPRESSIBLE_DURATION`` seconds of the run. The violation is left out for QoI
+    files written before it was measured. The qoi file may still be written by a running simulation.
+    """
+    qois = _load_qois(Path(qoi_dir) / f"{run}.txt")
+    if qois is None:
+        return
+    specs = [spec for spec in _QOI_SPECS_INCOMPRESSIBLE if spec[0] < qois.shape[1]]
+    t_end = qois[-1, 0]
+    _plot_series(
+        [(run, "k-", qois)],
+        *figure_prefix([run], figure_dir),
+        specs,
+        _REFERENCE_INCOMPRESSIBLE,
+        (max(t_end - _REFERENCE_INCOMPRESSIBLE_DURATION, qois[0, 0]), t_end),
+        _REFERENCE_INCOMPRESSIBLE_LABEL,
+    )
 
 
 def _load_qois(qoi_path: str | os.PathLike | None) -> np.ndarray | None:
@@ -161,11 +215,14 @@ def _plot_series(
     prefix: str,
     qoi_specs: list[tuple[int, str, str]] = _QOI_SPECS,
     reference_ranges: dict[int, tuple[float, float]] | None = None,
+    reference_interval: tuple[float, float] | None = None,
+    reference_label: str | None = None,
 ):
     """Write one PDF and one SVG figure per qoi in ``qoi_specs``, to ``<folder>/<prefix><stem>.pdf``
     and ``.svg``, each showing every ``(label, style, qois)`` entry in ``series``, and the
-    ``(mean, amplitude)`` of ``reference_ranges`` over ``_REFERENCE_3D_INTERVAL`` as horizontal
-    lines at the minimum and the maximum. Without any series, no figures are written.
+    ``(mean, amplitude)`` of ``reference_ranges`` over ``reference_interval`` as horizontal
+    lines at the minimum and the maximum, labelled ``reference_label``, for the qois that have
+    one. Without any series, no figures are written.
     """
     if not series:
         print(f"Nothing to plot for {folder}/{prefix}*")
@@ -177,13 +234,11 @@ def _plot_series(
         plt.figure(figsize=(10, 5))
         for label, style, qois in series:
             plt.plot(qois[:, 0], qois[:, col], style, label=label)
-        if reference_ranges is not None:
+        if reference_ranges is not None and col in reference_ranges:
             # Plotted as lines, not with hlines, so that the legend avoids them.
             mean, amplitude = reference_ranges[col]
-            plt.plot(
-                _REFERENCE_3D_INTERVAL, [mean + amplitude] * 2, "r--", label="Failer & Richter (2020), min and max"
-            )
-            plt.plot(_REFERENCE_3D_INTERVAL, [mean - amplitude] * 2, "r--")
+            plt.plot(reference_interval, [mean + amplitude] * 2, "r--", label=reference_label)
+            plt.plot(reference_interval, [mean - amplitude] * 2, "r--")
         plt.grid()
         plt.xlabel("Time [s]")
         plt.ylabel(ylabel)
@@ -196,13 +251,16 @@ def _plot_series(
 
 
 def main():
-    # Every FSI2 run on its own, with the reference, and the 3d runs with their reference ranges.
+    # Every FSI2 run on its own, with the reference, the FSI2i runs on their own, and the 3d runs
+    # with their reference ranges.
     for qoi_path in sorted(QOI_DIR.glob("*.txt")):
         try:
             script = solver_script(qoi_path.stem)
         except ValueError:
             continue  # a QoI file of a solver that no longer exists
-        if script.startswith("fsi2_"):
+        if script == "fsi2_biharmonic_mixed_incompressible":
+            plot_incompressible_qois(qoi_path.stem)
+        elif script.startswith("fsi2_"):
             plot_comparison([qoi_path.stem])
         elif script.startswith("threeDfsi_"):
             plot_3d_qois(qoi_path.stem)
