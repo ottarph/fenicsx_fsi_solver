@@ -21,11 +21,13 @@ def qoi_files(tmp_path):
 
 
 def _plotted_lines(monkeypatch):
-    """Record the (label, x, y) of the lines of every figure plot_qoi saves."""
+    """Record the legend entries and the (x, y) of the lines of every figure plot_qoi saves."""
     saved = []
 
     def savefig(path, *args, **kwargs):
-        saved.append([(line.get_label(), line.get_xdata(), line.get_ydata()) for line in plt.gca().get_lines()])
+        legend = plt.gca().get_legend()
+        entries = [text.get_text() for text in legend.get_texts()] if legend is not None else []
+        saved.append((entries, [(line.get_xdata(), line.get_ydata()) for line in plt.gca().get_lines()]))
 
     monkeypatch.setattr(plt, "savefig", savefig)
     return saved
@@ -35,9 +37,9 @@ def test_plot_qoi_picks_the_columns_by_name(qoi_files, monkeypatch):
     run, reference = qoi_files
     saved = _plotted_lines(monkeypatch)
     plot_qoi("A_y", run, run.parent / "a_y.pdf", reference_file=reference)
-    (lines,) = saved
-    (run_label, t, a_y), (ref_label, t_ref, a_y_ref) = lines
-    assert (run_label, ref_label) == ("run", "reference")
+    ((entries, lines),) = saved
+    (t, a_y), (t_ref, a_y_ref) = lines
+    assert entries == ["reference"]
     np.testing.assert_allclose(a_y, 5 * t)
     np.testing.assert_allclose(a_y_ref, -t_ref)
 
@@ -46,10 +48,18 @@ def test_plot_qoi_restricts_to_the_time_interval(qoi_files, monkeypatch):
     run, _ = qoi_files
     saved = _plotted_lines(monkeypatch)
     plot_qoi("drag", run, run.parent / "drag.pdf", label="mine", time_interval=(0.5, 1.0))
-    ((label, t, drag),) = saved[0]
-    assert label == "mine"
+    ((entries, ((t, drag),)),) = saved
+    assert entries == ["mine"]
     np.testing.assert_allclose(t, np.linspace(0.5, 1.0, 6))
     np.testing.assert_allclose(drag, 2 * t)
+
+
+def test_plot_qoi_without_labels_has_no_legend(qoi_files, monkeypatch):
+    run, _ = qoi_files
+    saved = _plotted_lines(monkeypatch)
+    plot_qoi("drag", run, run.parent / "drag.pdf")
+    ((entries, _),) = saved
+    assert entries == []
 
 
 def test_plot_qoi_writes_the_figure_in_a_new_folder(qoi_files):

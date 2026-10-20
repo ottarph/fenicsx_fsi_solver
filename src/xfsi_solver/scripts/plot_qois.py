@@ -182,15 +182,15 @@ def plot_qoi(
 ):
     """Plot the qoi named ``qoi`` in the header of ``qoi_file`` over time, together with the
     column of the same name in ``reference_file``, and save the figure to ``save_path``, in the
-    format of its suffix. The run is labelled ``label``, by default the name of ``qoi_file``
-    without suffix, and the y-axis ``ylabel``, by default ``qoi``. With ``time_interval``, only
+    format of its suffix. The run is labelled ``label`` in the legend, or left out of it with
+    ``label=None``, and the y-axis ``ylabel``, by default ``qoi``. With ``time_interval``, only
     that interval is shown, even where the files don't reach it. A missing qoi file writes no
     figure, and a missing reference file is left out. The qoi file may still be written by a
     running simulation.
     """
     if (qois := _load_qois(qoi_file)) is None:
         return
-    series = [(label if label is not None else Path(qoi_file).stem, "k-", qois[:, _column(qoi_file, qoi)])]
+    series = [(label, "k-", qois[:, _column(qoi_file, qoi)])]
     if reference_file is not None and (reference := _load_qois(reference_file)) is not None:
         series.append((reference_label, "r:", reference[:, _column(reference_file, qoi)]))
 
@@ -206,7 +206,8 @@ def plot_qoi(
     plt.grid()
     plt.xlabel(xlabel)
     plt.ylabel(ylabel if ylabel is not None else qoi)
-    plt.legend()
+    if any(series_label is not None for series_label, _, _ in series):
+        plt.legend()
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     with matplotlib.rc_context(_SVG_RC if Path(save_path).suffix == ".svg" else {}):
         plt.savefig(save_path)
