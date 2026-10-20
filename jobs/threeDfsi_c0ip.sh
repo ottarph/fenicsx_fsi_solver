@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 # Run the 3d FSI benchmark with xfsi_solver.solvers.threeDfsi_c0ip.solve() on the fine mesh on
 # one eX3 node, up to t = 8 with dt = 0.004. As in Failer & Richter (Sect. 5.4), its checkpoint
 # at t = 8 is the start of the runs over [8, 10] with dt = 0.004, 0.002 and 0.001, so do not
@@ -18,6 +18,14 @@
 # The meshes are not in git: copy data/meshes/fsi3d/mesh_sec_fine.{xdmf,h5} to the checkout
 # on eX3 first.
 #
+# FEniCSx and PETSc come from the Spack environment fenicsx-v011
+# (https://github.com/finsberg/ex3-spack-envs/tree/main/fenicsx-v0.11): OpenMPI with UCX for
+# InfiniBand and Slurm support, PETSc 3.24 with MUMPS and hypre. xfsi_solver is not installed
+# there; it is imported from the checkout through PYTHONPATH. Check once on the login node,
+# after activating the environment as below, that everything it needs imports:
+#   PYTHONPATH=/home/hellanottar/code/xfsi_solver/src python -c \
+#       "import xfsi_solver.solvers.threeDfsi_c0ip, xfsi_solver.scripts.plot_qois, io4dolfinx, scifem"
+#
 # milanq has no time limit. The fine mesh has about 3.0M unknowns, 27k per rank on 112 ranks;
 # estimated 6 to 8 h for the 2000 steps to t = 8 on a Milan node, not yet measured. The ranks
 # are split evenly over the two sockets, since the solve is bound by memory bandwidth. The
@@ -31,6 +39,11 @@
 ##SBATCH --exclusive              # for timing runs, so that other jobs do not share the bandwidth
 #SBATCH -t 2-00:00:00
 #SBATCH -o /home/hellanottar/xfsi/logs/%x_%j.txt
+
+# Before set -u, since the Spack shell setup may read unset variables
+module use /cm/shared/spack-modules/modulefiles
+module load spack
+spack env activate fenicsx-v011
 
 set -euo pipefail
 
@@ -127,15 +140,19 @@ EOF
 )
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-# Single-node job: let Hydra start the ranks itself instead of through srun. It binds them to
-# the cores of the allocation, which --ntasks-per-socket splits over the sockets.
-export HYDRA_BOOTSTRAP=fork
+export PYTHONPATH=$REPO/src${PYTHONPATH:+:$PYTHONPATH}
+# FFCx JIT cache on node-local disk, one per job
+export XDG_CACHE_HOME=/tmp/$USER/fenics-cache-$SLURM_JOB_ID
+# InfiniBand (and shared memory on the node) through UCX
+export OMPI_MCA_pml=ucx
 
+# Slurm does not confine jobs to their cores (at least on defq), so mpirun's own binding may
+# put the ranks on other jobs' cores and fill one socket first. srun binds them to the cores
+# Slurm allocated, which --ntasks-per-socket splits over the sockets.
+#
 # Plot also after a failed solve, to see how far it got, but still let the job fail with it
 status=0
-~/miniforge3/bin/conda run --no-capture-output -n xfsi_solver \
-    mpiexec -n "$SLURM_NTASKS" -bind-to core \
-    python -u -c "$PY" || status=$?
+srun --mpi=pmix --cpu-bind=cores python -u -c "$PY" || status=$?
 
-~/miniforge3/bin/conda run --no-capture-output -n xfsi_solver python -u -c "$PLOT"
+python -u -c "$PLOT"
 exit $status
