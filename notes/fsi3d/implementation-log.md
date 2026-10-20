@@ -599,3 +599,13 @@ prefix `<m prefix>block_`.
   on all columns, with a `MatMatSolve` on its coarse grid; PCs without their
   own `PCMatApply`, such as Jacobi, are applied column by column. The test also
   covers a PCKSP with CG and Jacobi.
+- All solvers that split K_m into components now use `IdenticalBlocksPC`:
+  `fsi2_biharmonic_c0ip` (Cholesky), `fsi2_biharmonic_mixed`,
+  `fsi2_biharmonic_mixed_incompressible`, `component_benchmarks/fsi2D_benchmark`
+  and `threeDfsi_mixed` (LU). Checked against the previous version on the
+  coarse meshes (6 steps in 2d, 3 in 3d): the same Newton iterations, residual
+  norms agreeing to 1e-7 relative or better, and identical QoIs, apart from the
+  round-off (1e-17) of the incompressible solver's solid area change, which is
+  itself about 3e-16. `component_solvers/c0ip_mesh_motion.py` keeps the
+  fieldsplit with `ReusePC`: its CG variants run a Krylov method per
+  component, and its logged timings were measured with it.
