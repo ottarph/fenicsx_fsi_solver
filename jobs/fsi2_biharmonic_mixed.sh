@@ -83,10 +83,39 @@ EOF
 } >> run_info.txt
 echo "$PY"
 
+# Plot the QoIs of the whole run (with any earlier restarts) against the FSI2 reference into
+# RUN_DIR/figures. Run serially after the solve, since every rank of the solve would plot.
+PLOT=$(cat <<EOF
+from xfsi_solver.scripts.plot_qois import plot_qoi
+
+for qoi, qoi_label in zip(
+    ["drag", "lift", "A_x", "A_y"],
+    ["Drag", "Lift", "Tip \$x\$-displacement [m]", "Tip \$y\$-displacement [m]"],
+):
+    plot_qoi(
+        qoi,
+        qoi_file="$RUN_DIR/qoi/$RUN_NAME.txt",
+        save_path="$RUN_DIR/figures/${SLURM_JOB_NAME:-none}_${SLURM_JOB_ID:-none}_" + qoi + ".pdf",
+        reference_file="$REPO/data/fsi2_reference.txt",
+        label=None,
+        reference_label="reference",
+        title=None,
+        xlabel="Time [s]",
+        ylabel=qoi_label,
+        time_interval=[0, $T],
+    )
+EOF
+)
+
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 # Single-node job: let Hydra start the ranks itself instead of through srun
 export HYDRA_BOOTSTRAP=fork
 
+# Plot also after a failed solve, to see how far it got, but still let the job fail with it
+status=0
 ~/miniforge3/bin/conda run --no-capture-output -n xfsi_solver \
     mpiexec -n "$SLURM_NTASKS" -bind-to core \
-    python -u -c "$PY"
+    python -u -c "$PY" || status=$?
+
+~/miniforge3/bin/conda run --no-capture-output -n xfsi_solver python -u -c "$PLOT"
+exit $status
