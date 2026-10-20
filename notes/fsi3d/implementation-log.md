@@ -560,3 +560,35 @@ so the checkpoint did not change), with the beam oscillating:
   not checked.
 - MatMult took 34.2 s with B_m, against 28.4 s before and 27.5 s mixed. The
   B_m products (84, one per residual) are part of it; not split up further.
+
+## K_m components solved at once by MatMatSolve (2026-10-20)
+
+`threeDfsi_c0ip` solved the three components of K_m one after the other with
+the same MUMPS factorization (`ReusePC`), and each triangular solve reads the
+whole factor. `tools/petsc_reuse.py:IdenticalBlocksPC` now factorizes the x
+component and solves for all three at once: it copies the components of the
+right-hand side into the columns of a dense matrix and calls `MatMatSolve`,
+which reads the factor once for the three columns. The components of the owned
+dofs on a rank are the same nodes in the same order, so the copies are local.
+The m split is a PCPYTHON with this context instead of the additive fieldsplit
+over the components; the factorization is set up from the options with the
+prefix `<m prefix>block_`.
+
+10 steps from the mixed checkpoint at t = 10, against the B_m version above:
+
+| mesh, ranks | | K_m solves per Newton iteration | s/step | peak RSS (GB) |
+|---|---|---|---|---|
+| coarse, 14 | 3 MatSolve | 14.8 ms | 1.48 | |
+| | MatMatSolve | 8.5 ms | 1.47 | |
+| medium, 28 | 3 MatSolve | 123 ms | 18.9 | 19.9 |
+| | MatMatSolve | 51 ms | 18.4 | 19.6 |
+
+- The same Newton iterations and Jacobian assemblies, identical QoI files,
+  and residual norms agreeing to 1.3e-6 relative where they are above 1e-6.
+- 43% (coarse) and 58% (medium) less time in the K_m solves, against the 67%
+  of reading the factor a third as often; the rest is per-solve overhead,
+  which weighs more on the small coarse factor.
+- 3% per step on the medium mesh, since K_m solves were 5% of it. The share
+  grows with the factor, about N^(4/3), so the gain is larger on finer meshes.
+- `tests/test_petsc_reuse.py` checks the context on three interleaved 1d
+  Laplacians, in serial and on 3 ranks.
