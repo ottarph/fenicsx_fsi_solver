@@ -7,9 +7,30 @@ from pathlib import Path
 import numpy as np
 
 
+# Names of the columns of the FeatFlow point file, in order, as listed on the FeatFlow FSI benchmark
+# reference page, with the names of our qoi files where they coincide. The drag and the lift of our
+# runs are the sums of those on the beam and on the cylinder, with the opposite sign of the lift.
+# The page doesn't name columns 3, 4, 9 and 10 (1-based), which are named by their column number.
+REFERENCE_COLUMNS = [
+    "t",
+    "dt",
+    "unknown_3",
+    "unknown_4",
+    "drag_beam",
+    "lift_beam",
+    "drag_cylinder",
+    "lift_cylinder",
+    "unknown_9",
+    "unknown_10",
+    "A_x",
+    "A_y",
+]
+
+
 def translate_point_file(in_filename, out_filename):
 
     with open(in_filename, "r") as in_f, open(out_filename, "w") as out_f:
+        out_f.write("# " + "\t".join(REFERENCE_COLUMNS) + "\n")
         for line in in_f:
             out_f.write(line.replace("  ", " "))
 
