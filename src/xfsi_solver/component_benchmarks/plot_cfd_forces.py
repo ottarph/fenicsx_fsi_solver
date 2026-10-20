@@ -1,0 +1,102 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
+"""Plot the drag and lift on the cylinder and the flag for the CFD tests, together with the reference values.
+
+The lift is shown with the sign of the benchmark proposal (see compare_cfd_qois.py). Writes, as PDF and SVG, to
+output/figures/component_benchmarks, with the suffix of the QoI files appended to each name:
+
+- cfd1_forces, cfd2_forces: the steady tests, over the pseudo-time steps, with the reference value.
+- cfd3_forces: the whole CFD3 run, with the reference minimum and maximum (mean -/+ amplitude).
+- cfd3_forces_last_1s: the last second of CFD3.
+
+Run from the repository root, after the CFD solver has written its QoI files:
+
+    python -m xfsi_solver.component_benchmarks.plot_cfd_forces
+    python -m xfsi_solver.component_benchmarks.plot_cfd_forces --suffix _fine   # reads cfd_1_fine.txt, ...
+"""
+
+import argparse
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+
+from xfsi_solver.component_benchmarks.compare_cfd_qois import REFERENCE, TESTS, load_qois, qoi_path
+from xfsi_solver.component_benchmarks.references import TUREK_HRON_2006_SHORT
+
+FIGURE_DIR = Path("output/figures/component_benchmarks")
+
+
+def save(fig, name):
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    for extension in ("pdf", "svg"):
+        fig.savefig(FIGURE_DIR / f"{name}.{extension}")
+    plt.close(fig)
+    print(f"Saved {FIGURE_DIR / name}.pdf and .svg")
+
+
+def plot_steady(test, path, suffix):
+    """Drag and lift over the pseudo-time steps, which approach the steady solution."""
+    t, drag, lift = load_qois(path)
+    steps = range(len(t))
+    reference = REFERENCE[test]
+
+    fig, (ax_drag, ax_lift) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, layout="constrained")
+    for ax, force, name in ((ax_drag, drag, "drag"), (ax_lift, lift, "lift")):
+        ax.plot(steps, force, "ko-", label="computed")
+        ax.axhline(reference[name], color="r", linestyle="--", label=TUREK_HRON_2006_SHORT)
+        ax.set_ylabel(name.capitalize())
+        ax.grid()
+    ax_lift.set_xlabel("Pseudo-time step")
+    fig.suptitle(f"{test}: forces on the cylinder and the flag")
+    ax_drag.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=2, frameon=False)
+    save(fig, f"{test.lower()}_forces{suffix}")
+
+
+def plot_periodic(test, path, suffix, t_start=None, name_suffix=""):
+    """Drag and lift over time from t_start (default: the start of the run), with the reference minimum and maximum."""
+    t, drag, lift = load_qois(path)
+    reference = REFERENCE[test]
+    if t_start is not None:
+        shown = t >= t_start
+        t, drag, lift = t[shown], drag[shown], lift[shown]
+
+    fig, (ax_drag, ax_lift) = plt.subplots(2, 1, figsize=(10, 6), sharex=True, layout="constrained")
+    for ax, force, name in ((ax_drag, drag, "drag"), (ax_lift, lift, "lift")):
+        mean = reference[f"{name}_mean"]
+        amplitude = reference[f"{name}_amplitude"]
+        ax.plot(t, force, "k-", label="computed")
+        ax.axhline(mean + amplitude, color="r", linestyle="--", label=f"{TUREK_HRON_2006_SHORT}, min and max")
+        ax.axhline(mean - amplitude, color="r", linestyle="--")
+        ax.set_ylabel(name.capitalize())
+        ax.grid()
+    ax_lift.set_xlabel("Time [s]")
+    fig.suptitle(f"{test}: forces on the cylinder and the flag")
+    ax_drag.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=2, frameon=False)
+    save(fig, f"{test.lower()}_forces{suffix}{name_suffix}")
+
+
+def plot_all(suffix=""):
+    """Plot every CFD test whose QoI file cfd_<n><suffix>.txt exists."""
+    for test in TESTS:
+        path = qoi_path(test, suffix)
+        if not path.is_file():
+            print(f"{test}: no QoI file at {path}")
+            continue
+        if test == "CFD3":
+            t_end = load_qois(path)[0][-1]
+            plot_periodic(test, path, suffix)
+            plot_periodic(test, path, suffix, t_start=t_end - 1.0, name_suffix="_last_1s")
+        else:
+            plot_steady(test, path, suffix)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--suffix", default="", help="suffix of the QoI file names, e.g. _fine for cfd_1_fine.txt")
+    plot_all(parser.parse_args().suffix)
+
+
+if __name__ == "__main__":
+    main()
