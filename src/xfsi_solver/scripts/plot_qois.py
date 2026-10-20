@@ -18,7 +18,7 @@ _SVG_RC = {"path.simplify": True, "path.simplify_threshold": 1.0}
 # (column index into a qoi/reference array, y-axis label, output filename stem)
 _QOI_SPECS = [
     (1, "Drag", "drag"),
-    (2, "lift", "lift"),
+    (2, "Lift", "lift"),
     (3, "Tip $x$-displacement [m]", "x-disp"),
     (4, "Tip $y$-displacement [m]", "y-disp"),
 ]
@@ -166,6 +166,64 @@ def plot_incompressible_qois(
         (max(t_end - _REFERENCE_INCOMPRESSIBLE_DURATION, qois[0, 0]), t_end),
         _REFERENCE_INCOMPRESSIBLE_LABEL,
     )
+
+
+def plot_qoi(
+    qoi: str,
+    qoi_file: str | os.PathLike,
+    save_path: str | os.PathLike,
+    reference_file: str | os.PathLike | None = None,
+    label: str | None = None,
+    reference_label: str = "reference",
+    title: str | None = None,
+    xlabel: str = "Time [s]",
+    ylabel: str | None = None,
+    time_interval: tuple[float, float] | None = None,
+):
+    """Plot the qoi named ``qoi`` in the header of ``qoi_file`` over time, together with the
+    column of the same name in ``reference_file``, and save the figure to ``save_path``, in the
+    format of its suffix. The run is labelled ``label``, by default the name of ``qoi_file``
+    without suffix, and the y-axis ``ylabel``, by default ``qoi``. With ``time_interval``, only
+    that interval is shown, even where the files don't reach it. A missing qoi file writes no
+    figure, and a missing reference file is left out. The qoi file may still be written by a
+    running simulation.
+    """
+    if (qois := _load_qois(qoi_file)) is None:
+        return
+    series = [(label if label is not None else Path(qoi_file).stem, "k-", qois[:, _column(qoi_file, qoi)])]
+    if reference_file is not None and (reference := _load_qois(reference_file)) is not None:
+        series.append((reference_label, "r:", reference[:, _column(reference_file, qoi)]))
+
+    plt.figure(figsize=(10, 5))
+    for series_label, style, data in series:
+        if time_interval is not None:
+            data = data[(data[:, 0] >= time_interval[0]) & (data[:, 0] <= time_interval[1])]
+        plt.plot(data[:, 0], data[:, 1], style, label=series_label)
+    if time_interval is not None:
+        plt.xlim(time_interval)
+    if title is not None:
+        plt.title(title)
+    plt.grid()
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel if ylabel is not None else qoi)
+    plt.legend()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    with matplotlib.rc_context(_SVG_RC if Path(save_path).suffix == ".svg" else {}):
+        plt.savefig(save_path)
+    plt.close()
+    print(f"Saved {save_path}")
+
+
+def _column(path: str | os.PathLike, qoi: str) -> list[int]:
+    """The column indices of the time and of the qoi named ``qoi`` in the header of the qoi or
+    reference file ``path``: its first line, as ``# t<tab>drag<tab>...``."""
+    with open(path) as f:
+        header = f.readline()
+    columns = header.lstrip("#").split() if header.startswith("#") else []
+    for name in ("t", qoi):
+        if name not in columns:
+            raise ValueError(f"No column {name!r} in the header of {path}: {columns}")
+    return [columns.index("t"), columns.index(qoi)]
 
 
 def _load_qois(qoi_path: str | os.PathLike | None) -> np.ndarray | None:
