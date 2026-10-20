@@ -118,3 +118,61 @@ def test_identical_blocks_pc_applies_the_block_pc_to_all_components(block_pc):
     A.destroy()
     for key in BLOCK_PC_OPTIONS[block_pc]:
         opts.delValue(f"{prefix}block_{key}")
+
+
+@pytest.mark.parametrize("telescope", [False, True], ids=["direct", "telescope"])
+def test_identical_interleaved_blocks_pc_from_options(telescope):
+    # Three decoupled components with the same 1d Laplacian, interleaved per node as (x, y, z), with
+    # the PC created by PETSc from the options, directly or inside a PCTELESCOPE onto one rank.
+    n, num_components = 20, 3
+    size = num_components * n
+    A = PETSc.Mat().createAIJ(((None, size), (None, size)), bsize=num_components, nnz=3, comm=COMM)
+    start, end = A.getOwnershipRange()
+    for row in range(start, end):
+        node, component = divmod(row, num_components)
+        A.setValue(row, row, 2.0)
+        for neighbour in (node - 1, node + 1):
+            if 0 <= neighbour < n:
+                A.setValue(row, num_components * neighbour + component, -1.0)
+    A.assemble()
+
+    prefix = "interleaved_blocks_test_"
+    inner = "telescope_" if telescope else ""
+    options = {"ksp_type": "preonly"}
+    if telescope:
+        options |= {"pc_type": "telescope", "pc_telescope_reduction_factor": COMM.size, "telescope_ksp_type": "preonly"}
+    options |= {
+        f"{inner}pc_type": "python",
+        f"{inner}pc_python_type": "xfsi_solver.tools.petsc_reuse.IdenticalInterleavedBlocksPC",
+        f"{inner}identical_interleaved_blocks_num": num_components,
+        f"{inner}block_pc_type": "cholesky",
+        f"{inner}block_pc_factor_mat_solver_type": "mumps",
+    }
+    opts = PETSc.Options()
+    for key, value in options.items():
+        opts[f"{prefix}{key}"] = value
+
+    ksp = PETSc.KSP().create(COMM)
+    ksp.setOptionsPrefix(prefix)
+    ksp.setOperators(A)
+    ksp.setFromOptions()
+
+    b, x = A.createVecs()
+    b.setArray(np.random.default_rng(COMM.rank).random(end - start))
+    PETSc.Log.begin()
+    mat_mat_solve = PETSc.Log.Event("MatMatSolve")
+    count_before = mat_mat_solve.getPerfInfo()["count"]
+    ksp.solve(b, x)
+    count = COMM.allreduce(mat_mat_solve.getPerfInfo()["count"] - count_before, op=MPI.MAX)
+
+    r = b.duplicate()
+    A.mult(x, r)
+    r.axpy(-1.0, b)
+    assert r.norm() < 1e-12 * b.norm()
+    # The components are solved at once, also under the telescope.
+    assert count == 1
+
+    ksp.destroy()  # destroys the context's PC through the destroy hook
+    A.destroy()
+    for key in options:
+        opts.delValue(f"{prefix}{key}")

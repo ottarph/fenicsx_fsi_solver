@@ -11,6 +11,7 @@ the block whose solver it reuses, which would then apply itself forever. The con
 reference to the reused solver, which its own split still owns and destroys.
 """
 
+import numpy as np
 from petsc4py import PETSc
 
 
@@ -107,3 +108,47 @@ class IdenticalBlocksPC:
             if obj is not None:
                 obj.destroy()
         self.block_pc = self.block_matrix = self.rhs = self.solution = None
+
+
+class IdenticalInterleavedBlocksPC(IdenticalBlocksPC):
+    """IdenticalBlocksPC for blocks interleaved row by row, which PETSc can create from the options,
+    for example as the inner PC of a PCTELESCOPE, which petsc4py gives no access to.
+
+    Row i of the matrix belongs to block i % num_blocks, as for the components of the owned dofs
+    of a vector function space, and every rank owns whole groups of num_blocks rows. num_blocks
+    is the option ``<prefix>identical_interleaved_blocks_num``, by default the block size of the
+    matrix. Set the PC by the options ``<prefix>pc_type python`` and
+    ``<prefix>pc_python_type xfsi_solver.tools.petsc_reuse.IdenticalInterleavedBlocksPC``. Under a
+    PCTELESCOPE, the matrix keeps its global numbering on the smaller communicator, and its rows
+    are split over the ranks in whole blocks of the matrix's block size, so the outer matrix
+    needs block size num_blocks for every rank to keep whole groups.
+
+    PETSc owns the context, so its PC is destroyed when PETSc destroys the PC holding the context,
+    collectively, instead of by ``destroy_solvers``.
+    """
+
+    def __init__(self):
+        super().__init__([])
+
+    def setUp(self, pc: PETSc.PC) -> None:
+        if self.block_pc is None:
+            prefix = pc.getOptionsPrefix() or ""
+            _, P = pc.getOperators()
+            num_blocks = PETSc.Options(prefix).getInt("identical_interleaved_blocks_num", P.getBlockSize())
+            start, end = P.getOwnershipRange()
+            if start % num_blocks != 0 or end % num_blocks != 0:
+                raise ValueError(
+                    f"The rows {start} to {end} of a rank are not whole groups of {num_blocks} interleaved blocks"
+                )
+            self.block_is = [
+                PETSc.IS().createGeneral(np.arange(start + b, end, num_blocks, dtype=PETSc.IntType), comm=pc.getComm())
+                for b in range(num_blocks)
+            ]
+        super().setUp(pc)
+
+    def destroy(self, pc: PETSc.PC) -> None:
+        """Called by petsc4py when PETSc destroys the PC holding the context."""
+        self.destroy_solvers()
+        for block in self.block_is:
+            block.destroy()
+        self.block_is = []
