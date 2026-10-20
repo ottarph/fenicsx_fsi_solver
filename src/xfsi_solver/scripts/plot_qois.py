@@ -189,24 +189,19 @@ def _load_qois(qoi_path: str | os.PathLike | None) -> np.ndarray | None:
 
 def _load_reference(reference_path: str | os.PathLike | None) -> np.ndarray | None:
     """Load the FSI2 reference data into the same column layout as the
-    solver qoi files: time, drag, lift, tip x- and y-displacement, or
-    return ``None`` with a message if there is no path or no file.
+    solver qoi files: time, drag, lift, tip x- and y-displacement, picked
+    by the column names in its header, or return ``None`` with a message
+    if there is no path or no file.
     """
     if reference_path is None:
         return None
     if not Path(reference_path).is_file():
         print(f"Skipping {reference_path}: file not found")
         return None
+    with open(reference_path) as f:
+        columns = f.readline().lstrip("#").split()
     ref = np.loadtxt(reference_path)
-    return np.column_stack(
-        [
-            ref[:, 0],  # time
-            ref[:, 4] + ref[:, 6],  # drag
-            -ref[:, 5] - ref[:, 7],  # lift
-            ref[:, 10],  # tip x-displacement
-            ref[:, 11],  # tip y-displacement
-        ]
-    )
+    return ref[:, [columns.index(name) for name in ("t", "drag", "lift", "A_x", "A_y")]]
 
 
 def _plot_series(

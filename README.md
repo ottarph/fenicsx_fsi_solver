@@ -148,7 +148,8 @@ restart from zero. See ``notes/checkpointing/implementation-log.md`` for design 
 ## Reference data
 
 ``plot_qois.py`` compares solver output against the published FSI2 benchmark reference values, which
-aren't included in this repository. To generate ``data/fsi2_reference.txt``:
+aren't included in this repository. To generate ``data/fsi2_reference.txt``, in the layout of the solver
+QoI files, and ``data/fsi2_reference_split.txt``, with all columns of the FeatFlow file:
 
 1. Download ``ref_fsi2.point`` from the FeatFlow FSI benchmark reference page:
    https://wwwold.mathematik.tu-dortmund.de/~featflow/en/benchmarks/cfdbenchmarking/fsi_benchmark/fsi_reference.html,
