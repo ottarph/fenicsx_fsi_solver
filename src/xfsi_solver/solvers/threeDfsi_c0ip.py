@@ -56,6 +56,7 @@ def solve(
     direct_k_c_solve=False,
     max_quadrature_degree=8,
     c0ip_a_val=2.0,
+    mesh_motion_telescope_reduction_factor=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020,
     Sect. 5.1.2), an elastic beam attached to a cylinder in a channel of square cross
@@ -91,6 +92,9 @@ def solve(
     same matrix, so only the x component is factorized, which leaves out the zero couplings
     between the components that the blocked matrix stores. The three components are solved
     with that factorization at once, by one MatMatSolve with three right-hand sides.
+
+    With ``mesh_motion_telescope_reduction_factor``, K_m is moved by a PCTELESCOPE to that many
+    times fewer ranks, where MUMPS factorizes it and solves for the three components at once.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
@@ -816,7 +820,12 @@ def solve(
     # u_S with the right-hand side updated by C delta v, then K_m for u_I with the
     # right-hand side updated by L delta u_S.
     pc = solver.getKSP().getPC()
-    pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
+    is_m = make_is(rows_m)
+    if mesh_motion_telescope_reduction_factor is not None:
+        # The m submatrix takes the block size of its index set. PCTELESCOPE splits the rows over the
+        # fewer ranks in whole blocks, so each rank keeps whole nodes, with their components interleaved.
+        is_m.setBlockSize(gdim)
+    pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", is_m))
 
     # GAMG smoothing with SOR. In parallel, PETSc's SOR is Gauss-Seidel within each rank and
     # Jacobi between ranks, which can diverge where the coupling across a rank boundary is strong,
@@ -897,15 +906,36 @@ def solve(
     # components at once with MatMatSolve, which reads the factor once instead of three times.
     # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky
     # (notes/c0ip-mesh-motion/implementation-log.md). The context is attached below.
-    mesh_motion_solve_options = {
-        "ksp_type": "preonly",
-        "ksp_reuse_preconditioner": True,
-        "pc_type": "python",  # IdenticalBlocksPC
+    mesh_motion_factor_options = {
         "block_pc_type": "cholesky",
         "block_pc_factor_mat_solver_type": "mumps",
         # "block_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
         "block_mat_mumps_cntl_1": 1e-4,
     }
+    if mesh_motion_telescope_reduction_factor is None:
+        mesh_motion_solve_options = {
+            "ksp_type": "preonly",
+            "ksp_reuse_preconditioner": True,
+            "pc_type": "python",  # IdenticalBlocksPC
+            **mesh_motion_factor_options,
+        }
+    else:
+        # A PCTELESCOPE moves K_m to fewer ranks, with an IdenticalInterleavedBlocksPC inside, which
+        # PETSc creates from the options, since petsc4py gives no access to the inner PC. The
+        # PCTELESCOPE has no PCMatApply of its own, but it moves the three components as one vector.
+        if not np.array_equal(components_m, np.arange(len(components_m)) % gdim):
+            raise RuntimeError("The components of the m submatrix are not interleaved by node")
+        mesh_motion_solve_options = {
+            "ksp_type": "preonly",
+            "ksp_reuse_preconditioner": True,
+            "pc_type": "telescope",
+            "pc_telescope_reduction_factor": mesh_motion_telescope_reduction_factor,
+            "telescope_ksp_type": "preonly",
+            "telescope_pc_type": "python",
+            "telescope_pc_python_type": "xfsi_solver.tools.petsc_reuse.IdenticalInterleavedBlocksPC",
+            "telescope_identical_interleaved_blocks_num": gdim,
+            **{f"telescope_{key}": value for key, value in mesh_motion_factor_options.items()},
+        }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
@@ -927,8 +957,10 @@ def solve(
     if not direct_k_c_solve:
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
-    mesh_motion_pc = IdenticalBlocksPC(is_m_components)
-    ksp_m.getPC().setPythonContext(mesh_motion_pc)
+    mesh_motion_pc = None  # PETSc owns the IdenticalInterleavedBlocksPC under the telescope
+    if mesh_motion_telescope_reduction_factor is None:
+        mesh_motion_pc = IdenticalBlocksPC(is_m_components)
+        ksp_m.getPC().setPythonContext(mesh_motion_pc)
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
@@ -1002,6 +1034,7 @@ def solve(
             "    MUMPS Cholesky on the x component of the C0IP K_m, for the whole run and for all three\n"
             "    components at once by MatMatSolve, CG with Jacobi on A_S\n"
             f"  C0IP penalty: a_val = {c0ip_a_val}\n"
+            f"  K_m telescope reduction factor: {mesh_motion_telescope_reduction_factor}\n"
             "  C0IP mesh motion: B_m assembled once, added to the residual and the Jacobian reassemblies\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
@@ -1018,7 +1051,8 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
-    mesh_motion_pc.destroy_solvers()
+    if mesh_motion_pc is not None:
+        mesh_motion_pc.destroy_solvers()
     mesh_motion_matrix.destroy()
 
     return

@@ -609,3 +609,46 @@ prefix `<m prefix>block_`.
   itself about 3e-16. `component_solvers/c0ip_mesh_motion.py` keeps the
   fieldsplit with `ReusePC`: its CG variants run a Krylov method per
   component, and its logged timings were measured with it.
+
+## K_m on fewer ranks by PCTELESCOPE (2026-10-20)
+
+PCTELESCOPE has no `PCMatApply` (PETSc 3.25.5, also not on `main`): PETSc's
+`PCMatApply` applies a PC without one column by column, so a telescope as the
+block PC of `IdenticalBlocksPC` would solve the components one by one again.
+The other way around works: the m split is a PCTELESCOPE, which moves the
+right-hand side with all three components as one vector to fewer ranks, and
+its inner PC is `tools/petsc_reuse.py:IdenticalInterleavedBlocksPC`, which
+makes the one `MatMatSolve` there. petsc4py gives no access to the inner PC,
+so PETSc creates the context from `telescope_pc_python_type`, and it finds the
+blocks from the interleaving (row i is component i % 3). PCTELESCOPE splits
+the rows over the fewer ranks in whole blocks of the matrix's block size, so
+the m index set gets block size 3; with block size 1 the ranks got 8672 rows,
+which split nodes. `threeDfsi_c0ip` has it as
+`mesh_motion_telescope_reduction_factor`.
+
+Medium mesh, 28 ranks, 10 steps from the mixed checkpoint at t = 10:
+
+| reduction factor | MUMPS ranks | s/step | Cholesky symbolic / numerical (s) | K_m solve per Newton iteration | peak RSS (GB), at most on a rank |
+|---|---|---|---|---|---|
+| none | 28 | 18.34 | 2.31 / 1.45 | 53 ms | 19.5, 0.76 |
+| 2 | 14 | 18.69 | 2.30 / 2.34 | 71 ms | 20.3, 0.97 |
+| 4 | 7 | 19.05 | 2.33 / 4.66 | 87 ms | 20.0, 1.10 |
+| 7 | 4 | 19.41 | 2.35 / 4.91 | 123 ms | 19.7, 1.33 |
+| 14 | 2 | 19.92 | 2.33 / 6.50 | 179 ms | 19.5, 1.89 |
+| 28 | 1 | 20.84 | 2.20 / 8.11 | 270 ms | 19.2, 2.88 |
+
+- All runs: 74 Newton iterations and QoI files identical to the run without
+  telescope.
+- On one socket, every reduction makes K_m slower: the solves still speed up
+  from 14 to 28 ranks (71 to 53 ms), so a few cores do not use the socket's
+  memory bandwidth, and MUMPS's communication on one node is cheap. From 28
+  ranks to 1, the solves take 5.1 times as long and the numerical
+  factorization 5.6 times. The analysis does not change.
+- The step grows by 0.35 s (2%) at factor 2 and 2.5 s (14%) at factor 28; K_m
+  solves are 2 to 10% of a step here.
+- The memory moves to the MUMPS ranks (at most 0.76 to 2.88 GB on a rank), with
+  the sum unchanged.
+- The gain the telescope is meant for, fewer MUMPS ranks when hundreds of ranks
+  over several nodes make its solves latency-bound, cannot show on one node.
+  These numbers say to keep many MUMPS ranks per socket, at least half of them,
+  rather than a few.
