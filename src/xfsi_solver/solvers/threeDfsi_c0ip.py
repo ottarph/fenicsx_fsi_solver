@@ -17,7 +17,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
-from xfsi_solver.tools.petsc_reuse import ReusePC
+from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
     append_qoi_row,
@@ -87,10 +87,10 @@ def solve(
     (v, p), u_S, u_I. Each Newton step is solved by a multiplicative fieldsplit in that
     order, with MUMPS Cholesky on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
-    whole run. K_m does not couple the x, y and z components, so it is solved by an
-    additive fieldsplit over the components, which leaves out the zero couplings between
-    the components that the blocked matrix stores. The components have the same matrix,
-    so the MUMPS factorization of the x component is reused for the y and z components.
+    whole run. K_m does not couple the x, y and z components, and the components have the
+    same matrix, so only the x component is factorized, which leaves out the zero couplings
+    between the components that the blocked matrix stores. The three components are solved
+    with that factorization at once, by one MatMatSolve with three right-hand sides.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
@@ -776,9 +776,9 @@ def solve(
 
     # Rows of each displacement component in the m submatrix, for solving K_m component by
     # component. The owned u dofs are stored interleaved per node, (x, y, z), so the
-    # component of a dof is its position in its block modulo gdim. The m submatrix holds the
-    # rows of rows_m in sorted order.
-    component_names = ["x", "y", "z"]
+    # component of a dof is its position in its block modulo gdim, and the k-th rows of the
+    # components on a rank are the same node. The m submatrix holds the rows of rows_m in
+    # sorted order.
     component_u_I = (np.arange(len(rows_u)) % gdim)[~u_solid]
     components_m = component_u_I[np.argsort(rows_m)]
     start_m = comm.exscan(len(rows_m)) or 0  # first row of this rank in the m submatrix
@@ -889,29 +889,22 @@ def solve(
 
     # K_m is assembled from linear forms on the reference fluid mesh, with fixed Dirichlet
     # rows, so it is the same matrix in every Newton iteration and time step: factorize it
-    # only once. K_m does not couple the x, y and z components, so the additive fieldsplit over
-    # the components solves it exactly. That leaves out the zero couplings between the
-    # components, which the blocked matrix stores: on the medium mesh, MUMPS needed 42 GB for
-    # the mixed K_m as a whole and 7 GB for one component. The components also have the same
-    # matrix, so only the x component is factorized, and the y and z components apply its
-    # factorization through a ReusePC. The C0IP K_m is symmetric positive definite, so it is
-    # factorized by Cholesky (notes/c0ip-mesh-motion/implementation-log.md).
+    # only once. K_m does not couple the x, y and z components, and every component has the
+    # same matrix, since every boundary condition on the mesh motion constrains all components.
+    # So only the x component is factorized, which leaves out the zero couplings between the
+    # components that the blocked matrix stores: on the medium mesh, MUMPS needed 42 GB for the
+    # mixed K_m as a whole and 7 GB for one component. IdenticalBlocksPC solves for the three
+    # components at once with MatMatSolve, which reads the factor once instead of three times.
+    # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky
+    # (notes/c0ip-mesh-motion/implementation-log.md). The PC type is set below, with the context.
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "additive",
         "ksp_reuse_preconditioner": True,
-        "fieldsplit_x_ksp_type": "preonly",
-        "fieldsplit_x_pc_type": "cholesky",
-        "fieldsplit_x_pc_factor_mat_solver_type": "mumps",
-        # "fieldsplit_x_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
-        "fieldsplit_x_mat_mumps_cntl_1": 1e-4,
+        "block_pc_type": "cholesky",
+        "block_pc_factor_mat_solver_type": "mumps",
+        # "block_mat_mumps_icntl_14": 80,  # if the factorization runs out of MUMPS workspace
+        "block_mat_mumps_cntl_1": 1e-4,
     }
-    for name in component_names[1:]:
-        mesh_motion_solve_options |= {
-            f"fieldsplit_{name}_ksp_type": "preonly",
-            f"fieldsplit_{name}_pc_type": "python",
-        }
 
     # Set through the options database, since the fieldsplit calls setFromOptions on its
     # sub-KSPs in PCSetUp, which would override types set directly on them.
@@ -933,12 +926,9 @@ def solve(
     if not direct_k_c_solve:
         ksp_q_c.getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
-    ksp_m.getPC().setFieldSplitIS(*zip(component_names, is_m_components, strict=True))
-    ksp_m_components = ksp_m.getPC().getFieldSplitSubKSP()
-    pc_mesh_motion_reuse = ReusePC(ksp_m_components[0].getPC())
-    for ksp_m_i in ksp_m_components[1:]:
-        ksp_m_i.getPC().setType(PETSc.PC.Type.PYTHON)
-        ksp_m_i.getPC().setPythonContext(pc_mesh_motion_reuse)
+    mesh_motion_pc = IdenticalBlocksPC(is_m_components)
+    ksp_m.getPC().setType(PETSc.PC.Type.PYTHON)
+    ksp_m.getPC().setPythonContext(mesh_motion_pc)
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
@@ -1009,8 +999,8 @@ def solve(
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = u_I,\n"
-            "    MUMPS Cholesky on the x component of the C0IP K_m, reused for the y and z components\n"
-            "    and for the whole run, CG with Jacobi on A_S\n"
+            "    MUMPS Cholesky on the x component of the C0IP K_m, for the whole run and for all three\n"
+            "    components at once by MatMatSolve, CG with Jacobi on A_S\n"
             f"  C0IP penalty: a_val = {c0ip_a_val}\n"
             "  C0IP mesh motion: B_m assembled once, added to the residual and the Jacobian reassemblies\n"
             f"  K_c solve: {k_c_solve_description}"
@@ -1028,6 +1018,7 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
+    mesh_motion_pc.destroy_solvers()
     mesh_motion_matrix.destroy()
 
     return

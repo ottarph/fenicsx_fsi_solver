@@ -2,7 +2,7 @@ import numpy as np
 from mpi4py import MPI
 from petsc4py import PETSc
 
-from xfsi_solver.tools.petsc_reuse import ReusePC
+from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC, ReusePC
 
 COMM = MPI.COMM_WORLD
 
@@ -51,3 +51,52 @@ def test_reuse_pc_applies_one_factorization_to_both_components():
 
     ksp.destroy()
     A.destroy()
+
+
+def test_identical_blocks_pc_solves_all_components_with_one_factorization():
+    # Three decoupled components with the same 1d Laplacian, interleaved per node as (x, y, z).
+    n, num_components = 20, 3
+    size = num_components * n
+    A = PETSc.Mat().createAIJ(((None, size), (None, size)), bsize=num_components, nnz=3, comm=COMM)
+    start, end = A.getOwnershipRange()
+    for row in range(start, end):
+        node, component = divmod(row, num_components)
+        A.setValue(row, row, 2.0)
+        for neighbour in (node - 1, node + 1):
+            if 0 <= neighbour < n:
+                A.setValue(row, num_components * neighbour + component, -1.0)
+    A.assemble()
+
+    block_is = [
+        PETSc.IS().createGeneral(np.arange(start + c, end, num_components, dtype=np.int32), comm=COMM)
+        for c in range(num_components)
+    ]
+    context = IdenticalBlocksPC(block_is)
+    opts = PETSc.Options()
+    opts["identical_blocks_test_block_pc_type"] = "cholesky"
+    opts["identical_blocks_test_block_pc_factor_mat_solver_type"] = "mumps"
+
+    ksp = PETSc.KSP().create(COMM)
+    ksp.setOperators(A)
+    ksp.setType("preonly")
+    pc = ksp.getPC()
+    pc.setType(PETSc.PC.Type.PYTHON)
+    pc.setPythonContext(context)
+    pc.setOptionsPrefix("identical_blocks_test_")
+
+    b, x = A.createVecs()
+    b.setArray(np.random.default_rng(COMM.rank).random(end - start))
+    ksp.solve(b, x)
+
+    r = b.duplicate()
+    A.mult(x, r)
+    r.axpy(-1.0, b)
+    assert r.norm() < 1e-12 * b.norm()
+    assert context.block_pc.getType() == PETSc.PC.Type.CHOLESKY
+    assert context.block_matrix.getSize() == (n, n)
+
+    ksp.destroy()
+    context.destroy_solvers()
+    A.destroy()
+    for key in ["identical_blocks_test_block_pc_type", "identical_blocks_test_block_pc_factor_mat_solver_type"]:
+        opts.delValue(key)
