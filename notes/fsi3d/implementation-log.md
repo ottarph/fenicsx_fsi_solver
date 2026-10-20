@@ -592,3 +592,10 @@ prefix `<m prefix>block_`.
   grows with the factor, about N^(4/3), so the gain is larger on finer meshes.
 - `tests/test_petsc_reuse.py` checks the context on three interleaved 1d
   Laplacians, in serial and on 3 ranks.
+- Generalized afterwards: the context applies the PC of the first block by
+  `PCMatApply` instead of calling `MatMatSolve` on its factor, so it takes any
+  PC. For Cholesky that is the same single `MatMatSolve` (checked: the same
+  event counts and identical QoIs on the coarse mesh); GAMG runs one V-cycle
+  on all columns, with a `MatMatSolve` on its coarse grid; PCs without their
+  own `PCMatApply`, such as Jacobi, are applied column by column. The test also
+  covers a PCKSP with CG and Jacobi.

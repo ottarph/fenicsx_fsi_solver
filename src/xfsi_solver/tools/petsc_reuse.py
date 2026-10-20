@@ -41,19 +41,22 @@ class ReusePC:
 
 class IdenticalBlocksPC:
     """PCPYTHON context for a block diagonal matrix whose diagonal blocks are the same matrix,
-    such as the displacement components of the mesh-motion block. It factorizes the first block,
-    and solves for all blocks at once with MatMatSolve, one right-hand side per block.
+    such as the displacement components of the mesh-motion block. It sets up a PC on the first
+    block, and applies it to all blocks at once by PCMatApply, with one column per block.
 
-    A direct solver's triangular solves are bound by memory bandwidth, so solving with all the
-    right-hand sides at once reads the factor once instead of once per block, and takes one
-    round of messages between the ranks instead of one per block.
+    How much PCMatApply shares between the columns depends on the PC. A factorization applies
+    them by one MatMatSolve, which reads the factor once instead of once per block, and takes one
+    round of messages between the ranks instead of one per block: the triangular solves are bound
+    by memory bandwidth, so this is where most is gained. GAMG runs one V-cycle on all columns,
+    with a MatMatSolve on its coarse grid. PCs without their own PCMatApply, such as Jacobi, are
+    applied column by column, which gives the same result as applying them to each block.
 
     ``block_is`` are the index sets of the blocks in the matrix. On each rank, they must hold
     the same number of indices, in matching order, so that the k-th index of every block is the
     same row of the block matrix, as for the components of the owned dofs of a vector function
-    space. The factorization of the first block is set up from the options with the prefix of
-    the PC followed by ``block_``, for example ``<prefix>block_pc_type cholesky``. The context
-    owns the factorization: call ``destroy_solvers`` on all ranks when done.
+    space. The PC of the first block is set up from the options with the prefix of the PC
+    followed by ``block_``, for example ``<prefix>block_pc_type cholesky``. The context owns
+    that PC: call ``destroy_solvers`` on all ranks when done.
     """
 
     def __init__(self, block_is: list[PETSc.IS]):
@@ -61,9 +64,12 @@ class IdenticalBlocksPC:
         self.block_pc = self.block_matrix = self.rhs = self.solution = None
 
     def setUp(self, pc: PETSc.PC) -> None:
-        if self.block_pc is not None:
-            return  # the blocks are only factorized once
         _, P = pc.getOperators()
+        if self.block_pc is not None:
+            # The operator has changed: update the block, which sets up its PC again.
+            P.createSubMatrix(self.block_is[0], self.block_is[0], submat=self.block_matrix)
+            self.block_pc.setUp()
+            return
         start = P.getOwnershipRange()[0]
         # The local positions of each block's rows in the vectors of the block matrix.
         self.local_rows = [block.getIndices() - start for block in self.block_is]
@@ -74,7 +80,6 @@ class IdenticalBlocksPC:
         self.block_pc.setOptionsPrefix((pc.getOptionsPrefix() or "") + "block_")
         self.block_pc.setFromOptions()
         self.block_pc.setUp()
-        self.factor = self.block_pc.getFactorMatrix()
 
         num_local, num_blocks = len(self.local_rows[0]), len(self.block_is)
         self.rhs, self.solution = (
@@ -89,14 +94,14 @@ class IdenticalBlocksPC:
         b_array = b.getArray(readonly=True)
         for column, rows in enumerate(self.local_rows):
             rhs[:, column] = b_array[rows]
-        self.factor.matSolve(self.rhs, self.solution)
+        self.block_pc.matApply(self.rhs, self.solution)
         solution = self.solution.getDenseArray(readonly=True)
         x_array = x.array
         for column, rows in enumerate(self.local_rows):
             x_array[rows] = solution[:, column]
 
     def destroy_solvers(self) -> None:
-        """Destroy the factorization, collectively. Not named destroy, which petsc4py would call
+        """Destroy the PC of the blocks, collectively. Not named destroy, which petsc4py would call
         as a hook when the PC is destroyed."""
         for obj in (self.block_pc, self.block_matrix, self.rhs, self.solution):
             if obj is not None:

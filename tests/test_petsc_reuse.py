@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from mpi4py import MPI
 from petsc4py import PETSc
 
@@ -53,7 +54,18 @@ def test_reuse_pc_applies_one_factorization_to_both_components():
     A.destroy()
 
 
-def test_identical_blocks_pc_solves_all_components_with_one_factorization():
+BLOCK_PC_OPTIONS = {
+    # One MatMatSolve on all blocks.
+    "cholesky": {"pc_type": "cholesky", "pc_factor_mat_solver_type": "mumps"},
+    # A PC that runs a Krylov solve: PCMatApply solves each column with CG.
+    "ksp": {"pc_type": "ksp", "ksp_ksp_type": "cg", "ksp_pc_type": "jacobi", "ksp_ksp_rtol": 1e-14},
+    # A PC without its own PCMatApply, applied column by column.
+    "jacobi": {"pc_type": "jacobi"},
+}
+
+
+@pytest.mark.parametrize("block_pc", BLOCK_PC_OPTIONS)
+def test_identical_blocks_pc_applies_the_block_pc_to_all_components(block_pc):
     # Three decoupled components with the same 1d Laplacian, interleaved per node as (x, y, z).
     n, num_components = 20, 3
     size = num_components * n
@@ -72,9 +84,10 @@ def test_identical_blocks_pc_solves_all_components_with_one_factorization():
         for c in range(num_components)
     ]
     context = IdenticalBlocksPC(block_is)
+    prefix = "identical_blocks_test_"
     opts = PETSc.Options()
-    opts["identical_blocks_test_block_pc_type"] = "cholesky"
-    opts["identical_blocks_test_block_pc_factor_mat_solver_type"] = "mumps"
+    for key, value in BLOCK_PC_OPTIONS[block_pc].items():
+        opts[f"{prefix}block_{key}"] = value
 
     ksp = PETSc.KSP().create(COMM)
     ksp.setOperators(A)
@@ -82,21 +95,26 @@ def test_identical_blocks_pc_solves_all_components_with_one_factorization():
     pc = ksp.getPC()
     pc.setType(PETSc.PC.Type.PYTHON)
     pc.setPythonContext(context)
-    pc.setOptionsPrefix("identical_blocks_test_")
+    pc.setOptionsPrefix(prefix)
 
     b, x = A.createVecs()
     b.setArray(np.random.default_rng(COMM.rank).random(end - start))
     ksp.solve(b, x)
 
-    r = b.duplicate()
-    A.mult(x, r)
-    r.axpy(-1.0, b)
-    assert r.norm() < 1e-12 * b.norm()
-    assert context.block_pc.getType() == PETSc.PC.Type.CHOLESKY
+    assert context.block_pc.getType() == block_pc
     assert context.block_matrix.getSize() == (n, n)
+    if block_pc == "jacobi":
+        # The block PC applied to each block: x = b / diag(A).
+        assert np.allclose(x.getArray(readonly=True), b.getArray(readonly=True) / 2.0, rtol=1e-14, atol=0.0)
+    else:
+        # The block PC solves each block, so x solves the coupled system.
+        r = b.duplicate()
+        A.mult(x, r)
+        r.axpy(-1.0, b)
+        assert r.norm() < 1e-12 * b.norm()
 
     ksp.destroy()
     context.destroy_solvers()
     A.destroy()
-    for key in ["identical_blocks_test_block_pc_type", "identical_blocks_test_block_pc_factor_mat_solver_type"]:
-        opts.delValue(key)
+    for key in BLOCK_PC_OPTIONS[block_pc]:
+        opts.delValue(f"{prefix}block_{key}")
