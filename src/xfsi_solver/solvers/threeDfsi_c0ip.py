@@ -514,14 +514,16 @@ def solve(
     jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
 
     # B_m: the mesh motion as the u-u block of a matrix with the layout of the Jacobian, with
-    # the rows and columns of u_f_bc zeroed as in the Jacobian. Its diagonal there is zero, since
-    # the Jacobian assembly already sets it.
+    # the rows and columns of u_f_bc zeroed as in the Jacobian.
     mesh_motion_ufl = [[None for _ in range(len([u, v, p]))] for __ in range(len([u, v, p]))]
     mesh_motion_ufl[0][0] = cap_quadrature_degree(A_mesh_motion(trials[0], du), max_quadrature_degree)
     for i in range(1, len([u, v, p])):
         mesh_motion_ufl[i][i] = ufl.ZeroBaseForm(([du, dv, dp][i], trials[i]))
     mesh_motion_forms = dolfinx.fem.form(mesh_motion_ufl, entity_maps=entity_maps)
     mesh_motion_matrix = dolfinx.fem.petsc.create_matrix(mesh_motion_forms)
+    # assemble_matrix puts diag on the diagonal of the rows of bcs, 1 by default. The Jacobian
+    # reassembly already puts 1 there, and adds B_m to it, so B_m gets 0: with 1, those rows
+    # would have 2 on the diagonal, and Newton would only take half the step that sets u_f_bc.
     dolfinx.fem.petsc.assemble_matrix(mesh_motion_matrix, mesh_motion_forms, bcs=[u_f_bc], diag=0.0)
     mesh_motion_matrix.assemble()
 
