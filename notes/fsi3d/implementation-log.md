@@ -480,3 +480,50 @@ so peak RSS is the better measure there.
   against "split") and 0.34 GB (7%). Over a full 2d run, the gain is the per-step
   part; the per-step gain against "whole" comes mostly from the smaller
   component solves, without the zero couplings between the components.
+
+## C0IP mesh motion assembled once (2026-10-20)
+
+`threeDfsi_c0ip` (Phase 7 of `notes/restricted-cleanup/implementation-log.md`)
+took 3.2 times as long per step as `threeDfsi_mixed` on the coarse mesh, with
+a residual evaluation of 0.94 s. Timing the assembly calls showed that the
+residual forms take 0.035 s of that; the rest is the lifting by the boundary
+conditions in dolfinx's `assemble_residual`, which integrates the Jacobian
+forms, including the C0IP facet terms of the u-u block, in every residual
+evaluation. Removing the C0IP terms from the residual forms alone changed
+nothing.
+
+The C0IP mesh motion is linear in u and integrated on the reference mesh, so
+it is now assembled once, as B_m, the u-u block of a matrix with the layout of
+the Jacobian (rows and columns of `u_f_bc` zeroed, zero diagonal there):
+
+- Residual: the residual forms and the lifting get a zero form in the u-u
+  block, and `post_residual` adds B_m x on the u rows that no boundary
+  condition or test function restriction sets. `u_f_bc` is homogeneous, so the
+  zeroed columns hold its lifting.
+- Jacobian: the first assembly integrates the full forms, since the matrix
+  only keeps the entries of its first assembly and the facet couplings are in
+  no other block. Reassemblies use the zero form and add B_m by `MatAXPY`
+  (`SUBSET_NONZERO_PATTERN`).
+
+Coarse mesh, 14 ranks, iterative K_c, against the committed version and
+`threeDfsi_mixed` in the same session:
+
+| case | before | B_m | mixed |
+|---|---|---|---|
+| from rest, 20 steps (s/step) | 3.82 | 1.07–1.14 | 1.13 |
+| from t = 10 (mixed checkpoint), 10 steps (s/step) | 4.95 | 1.50–1.59 | 1.47 |
+| from t = 10, `gamma_reassemble=0`, 24 Jacobian assemblies (s/step) | 8.26 | 2.35 | |
+| residual evaluation (s) | 0.94 | 0.155 | 0.172 |
+| Jacobian reassembly (s) | 1.32 | 0.23 | 0.36 |
+
+- Exact up to round-off: the same Newton iterations and Jacobian assemblies,
+  the residual norms agree to 7 to 10 digits where they are above 1e-6, and
+  the QoI files are identical, in all three cases.
+- The C0IP solver now costs the same per step as the mixed one, slightly less
+  in the residual and the Jacobian, which have no auxiliary field.
+- B_m is a second copy of the u-u block's nonzeros: about 0.9 GB summed over
+  the ranks on the medium mesh, estimated from 185 nonzeros per row, not
+  measured.
+- The remaining lifting (0.12 of the 0.155 s per residual) is by the velocity
+  boundary conditions, with the Jacobian blocks of the v columns. The mixed
+  solver lifts the same way; not changed here.
