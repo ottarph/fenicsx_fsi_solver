@@ -522,8 +522,41 @@ Coarse mesh, 14 ranks, iterative K_c, against the committed version and
 - The C0IP solver now costs the same per step as the mixed one, slightly less
   in the residual and the Jacobian, which have no auxiliary field.
 - B_m is a second copy of the u-u block's nonzeros: about 0.9 GB summed over
-  the ranks on the medium mesh, estimated from 185 nonzeros per row, not
-  measured.
+  the ranks on the medium mesh, estimated from 185 nonzeros per row. On the
+  medium mesh the peak memory went down instead (below).
 - The remaining lifting (0.12 of the 0.155 s per residual) is by the velocity
   boundary conditions, with the Jacobian blocks of the v columns. The mixed
   solver lifts the same way; not changed here.
+
+### Medium mesh
+
+28 ranks, 10 steps from the medium mixed checkpoint at t = 10 (scratch copies,
+so the checkpoint did not change), with the beam oscillating:
+
+| | before | B_m | mixed |
+|---|---|---|---|
+| s/step | 38.1 | 18.9 | 21.1 |
+| residual evaluation (s) | 2.28 | 0.41 | 0.45 |
+| Jacobian assembly (s, 11 assemblies) | 4.27 | 1.06 | 1.16 |
+| K_m factorization (s) | 1.3 | 1.4 | 9.9 |
+| MatSolve, all calls (s) | 8.8 | 9.1 | 16.6 |
+| peak RSS, summed over the ranks (GB) | 21.5 | 19.9 | 26.3 |
+
+- All three: 74 Newton iterations and 11 Jacobian assemblies, 32.4 FGMRES
+  iterations per K_c solve on average.
+- B_m against before: the QoI files are identical, and the residual norms
+  agree to 1.3e-6 relative where they are above 1e-6. The mixed QoIs differ
+  by up to 2e-4 relative, since the mesh motion differs.
+- The Jacobian assembly with B_m is an average over the first assembly, which
+  still integrates the C0IP forms (about 4.3 s), and 10 reassemblies (about
+  0.74 s each).
+- The C0IP solver is now 10% faster per step than the mixed one, and uses
+  6.4 GB (24%) less memory: the K_m Cholesky factor of one component is
+  smaller than the LU factor of the mixed form, and the auxiliary field is
+  gone. MatSolve also includes GAMG's coarse grid solves, which are the same
+  in both.
+- Peak memory dropped by 1.6 GB against before, despite the extra B_m;
+  probably the coefficient packing of the C0IP facet forms in every lifting,
+  not checked.
+- MatMult took 34.2 s with B_m, against 28.4 s before and 27.5 s mixed. The
+  B_m products (84, one per residual) are part of it; not split up further.
