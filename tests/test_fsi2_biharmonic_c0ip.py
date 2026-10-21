@@ -4,6 +4,7 @@ from restart_helpers import (
     check_restart_rejects_different_dt,
     check_restart_rejects_T_not_after_checkpoint,
     check_restart_reproduces_continuous_run,
+    check_start_from_initial_state,
 )
 
 from xfsi_solver.solvers.fsi2_biharmonic_c0ip import solve
@@ -60,3 +61,9 @@ def test_fsi2_biharmonic_c0ip_restart_rejects_different_dt(output_dirs, tmp_path
 
 def test_fsi2_biharmonic_c0ip_restart_rejects_T_not_after_checkpoint(output_dirs, tmp_path):
     check_restart_rejects_T_not_after_checkpoint(solve, MESH, output_dirs, tmp_path)
+
+
+def test_fsi2_biharmonic_c0ip_starts_from_initial_state(output_dirs, tmp_path):
+    check_start_from_initial_state(
+        solve, MESH, ELEMENTS, output_dirs, tmp_path, rtol=1e-6, qoi_rtol=1e-6, solve_kwargs={"direct_k_c_solve": True}
+    )

@@ -12,6 +12,11 @@
 #   sbatch --export=ALL,RUN_NAME=threeDfsi_c0ip_fine_short,T=0.02 -t 0-01:00:00 jobs/threeDfsi_c0ip.sh
 # Values are inserted as Python expressions: True/False, None, numbers or arithmetic.
 #
+# With INITIAL_STATE_RUN, a new run starts from the latest checkpoint of that earlier run, with
+# its own DT, and only reads from the earlier run's directory. The runs over [8, 10]:
+#   for dt in 0.004 0.002 0.001; do sbatch --export=ALL,RUN_NAME=threeDfsi_c0ip_fine_dt$dt,INITIAL_STATE_RUN=threeDfsi_c0ip_fine_t8,DT=$dt,T=10.0 jobs/threeDfsi_c0ip.sh; done
+# Such a run that stopped is resumed with RESTART=True, without INITIAL_STATE_RUN.
+#
 # Each run gets its own directory, RUN_DIR, which holds the QoIs, checkpoints, VTX output and
 # a record of the code version and arguments.
 #
@@ -49,8 +54,10 @@ spack env activate fenicsx-v011
 set -euo pipefail
 
 REPO=/home/hellanottar/code/xfsi_solver
+RUNS=/home/hellanottar/xfsi/runs
 RUN_NAME=${RUN_NAME:-threeDfsi_c0ip_fine_t8}
-RUN_DIR=/home/hellanottar/xfsi/runs/$RUN_NAME
+RUN_DIR=$RUNS/$RUN_NAME
+INITIAL_STATE_RUN=${INITIAL_STATE_RUN:-}
 
 # Arguments of solve()
 MESH=${MESH:-$REPO/data/meshes/fsi3d/mesh_sec_fine.xdmf}
@@ -68,6 +75,15 @@ RESTART=${RESTART:-False}
 if [[ ! -f $MESH ]]; then
     echo "Mesh $MESH not found; copy it to the checkout first" >&2
     exit 1
+fi
+
+INITIAL_STATE_DIR=None
+if [[ -n $INITIAL_STATE_RUN ]]; then
+    if [[ ! -d $RUNS/$INITIAL_STATE_RUN/checkpoints ]]; then
+        echo "No checkpoints in $RUNS/$INITIAL_STATE_RUN to start from" >&2
+        exit 1
+    fi
+    INITIAL_STATE_DIR="\"$RUNS/$INITIAL_STATE_RUN/checkpoints\""
 fi
 
 # A fresh run must not overwrite an earlier one; a restart needs its checkpoints.
@@ -99,6 +115,7 @@ solve(
     checkpoint_every=$CHECKPOINT_EVERY,
     vtx_save_every=$VTX_SAVE_EVERY,
     restart=$RESTART,
+    initial_state_dir=$INITIAL_STATE_DIR,
     gamma_reassemble=$GAMMA_REASSEMBLE,
     direct_k_c_solve=$DIRECT_K_C_SOLVE,
     max_quadrature_degree=$MAX_QUADRATURE_DEGREE,

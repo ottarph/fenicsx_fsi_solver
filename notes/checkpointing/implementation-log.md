@@ -301,3 +301,44 @@ neither SNES nor MUMPS keep state between steps. `t` is restored exactly
   labelled `t = 0` started from rest with zero inflow and stayed there) are
   identical to the printed 6 digits, and the new runs add an all-zero row for
   the initial state at `t = 0` and end at `T` instead of `T - dt`.
+
+## Starting a new run from another run's checkpoint (2026-10-21)
+
+The 3d benchmark runs of Failer & Richter go to t = 8 with one time step and
+continue over [8, 10] with three (Sect. 5.4), so a run must be able to start
+from the state of another run with another `dt`. That is kept apart from a
+restart, which resumes a run that stopped, in its own checkpoint directory,
+with the same `dt`, and still rejects any other.
+
+- `initial_state_dir` in all FSI solvers (`solvers/fsi2_*`, `threeDfsi_*`,
+  `component_benchmarks/fsi2D_benchmark`): the run reads the latest
+  checkpoint there without checking `dt` (`Checkpointer.read(..., dt=None)`),
+  only the number of cells. Its start time `t0` is the time of that
+  checkpoint, and its step counter starts at 0, so `num_steps = round((T -
+  t0) / dt_val)` and the time labels `t0 + (step + 1) * dt_val` need no
+  conversion between time steps. Otherwise it is a fresh run: it clears its
+  own `checkpoint_dir`, writes a new QoI file whose first row is the state
+  at `t0`, and new VTX output. It never writes to `initial_state_dir`, and
+  `check_start_options` rejects `initial_state_dir == checkpoint_dir`, which
+  the new run would clear, and `restart=True` together with
+  `initial_state_dir`.
+- Checkpoints store `t0` as an extra attribute, so a restart of such a run
+  continues from the same `t0` (`start_time`). Checkpoints without it, from
+  before this change, were all written by runs starting at `t0 = 0`.
+- `t0` is read from the checkpoint attributes where it was set to 0 before,
+  ahead of `num_steps` and the `vtx_save_every` warning; the functions are
+  read at the same point as on a restart.
+- Functions are matched by name and the others in the checkpoint ignored,
+  so a solver can start from the checkpoint of another solver with the same
+  fields, e.g. `threeDfsi_c0ip` (u, v, p) from `threeDfsi_mixed` (u, v, p, z).
+- The `fsi2_harmonic_lagrange` multipliers start from zero, as on a restart.
+- `tests/restart_helpers.py:check_start_from_initial_state`, for every FSI
+  solver: a source run of 2 steps of 2 dt, a run of 2 steps of dt from its
+  checkpoint, and a run from it that stops after 1 step and is restarted.
+  The QoI times are t0, t0 + dt, t0 + 2 dt, the first row equals the source's
+  last, the source directory is unchanged byte for byte, the checkpoints
+  store t0, and the restarted run reproduces the uninterrupted one (to the
+  tolerances of each solver's restart test; the incompressible solver's
+  solid area change is round-off, about 1e-17, there).
+- `jobs/threeDfsi_c0ip.sh`: `INITIAL_STATE_RUN` names the run whose
+  checkpoints a new run starts from.
