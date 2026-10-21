@@ -7,7 +7,7 @@ import pytest
 from mpi4py import MPI
 from restart_helpers import run_mpi_python
 
-from xfsi_solver.tools.checkpoint import Checkpointer
+from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options
 
 DT = 0.1
 
@@ -127,6 +127,68 @@ def test_rejects_different_dt(mesh_kind, tmp_path):
     mesh, submeshes, functions = _setup(mesh_kind)
     with pytest.raises(ValueError, match="dt"):
         Checkpointer(tmp_path, mesh, submeshes).read(functions, 2 * DT)
+
+
+def test_reads_any_dt_without_dt(mesh_kind, tmp_path):
+    """With dt=None, as for the initial state of a new run, a checkpoint with any time step is read."""
+    _write_steps(mesh_kind, tmp_path, [0, 1])
+    mesh, submeshes, functions = _setup(mesh_kind)
+    t, step = Checkpointer(tmp_path, mesh, submeshes).read(functions, None)
+    assert step == 1
+    _assert_state(functions, t)
+
+
+def test_latest_times(mesh_kind, tmp_path):
+    mesh, submeshes, functions = _setup(mesh_kind)
+    checkpointer = Checkpointer(tmp_path, mesh, submeshes)
+    _fill(functions, 0.5 + DT)
+    checkpointer.write(functions, 0.5 + DT, 0, DT, 0.5)
+    _fill(functions, 0.5 + 2 * DT)
+    checkpointer.write(functions, 0.5 + 2 * DT, 1, DT, 0.5)
+    assert Checkpointer(tmp_path, mesh, submeshes).latest_times() == (0.5 + 2 * DT, 0.5)
+
+
+def test_latest_times_without_stored_t0(mesh_kind, tmp_path):
+    """A checkpoint written before t0 was stored is from a run that started at t0 = 0."""
+    mesh, _, functions = _setup(mesh_kind)
+    u = functions[0]
+    _fill([u], DT)
+    path = tmp_path / "checkpoint_0.bp"
+    io4dolfinx.write_mesh_input_order(path, mesh)
+    io4dolfinx.write_function_on_input_mesh(path, u, time=DT)
+    num_cells = mesh.topology.index_map(mesh.topology.dim).size_global
+    attrs = {
+        "t": np.array([DT]),
+        "step": np.array([0], dtype=np.int64),
+        "dt": np.array([DT]),
+        "num_cells": np.array([num_cells], dtype=np.int64),
+    }
+    io4dolfinx.write_attributes(path, mesh.comm, "checkpoint", attrs)
+    assert Checkpointer(tmp_path, mesh).latest_times() == (DT, 0.0)
+
+
+@pytest.mark.parametrize(
+    "restart,checkpoint_dir,checkpoint_every,initial_state_dir,match",
+    [
+        (True, None, None, None, "requires checkpoint_dir"),
+        (False, None, 1, None, "requires checkpoint_dir"),
+        (True, "run", None, "other", "initial_state_dir"),
+        (False, "run", 1, "run", "must differ"),
+    ],
+    ids=["restart_without_dir", "every_without_dir", "restart_and_initial_state", "initial_state_is_checkpoint_dir"],
+)
+def test_check_start_options_rejects(tmp_path, restart, checkpoint_dir, checkpoint_every, initial_state_dir, match):
+    checkpoint_dir = None if checkpoint_dir is None else tmp_path / checkpoint_dir
+    initial_state_dir = None if initial_state_dir is None else tmp_path / initial_state_dir
+    with pytest.raises(ValueError, match=match):
+        check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+
+
+def test_check_start_options_accepts(tmp_path):
+    check_start_options(False, None, None, None)
+    check_start_options(True, tmp_path / "run", 1, None)
+    check_start_options(False, tmp_path / "run", 1, tmp_path / "other")
+    check_start_options(False, None, None, tmp_path / "other")
 
 
 def test_missing_checkpoint(mesh_kind, tmp_path):

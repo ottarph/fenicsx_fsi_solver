@@ -23,6 +23,14 @@ different number of ranks would silently pair new values with the old
 dofmap. The step counter and time are written as attributes *after* the
 functions, so they act as a commit marker: a run killed while writing one
 file still restarts from the complete checkpoint in the other.
+
+A checkpoint serves two purposes. A run that stopped is resumed from the
+latest checkpoint in its own directory (``restart``), with the same time
+step. A new run can also start from the state in a checkpoint of another run
+(``initial_state_dir``), with any time step: it starts at the time of that
+checkpoint, counts its steps from there, and only reads from the other run's
+directory. The start time ``t0`` of the run is stored with each checkpoint,
+so that such a run can be resumed too.
 """
 
 import shutil
@@ -33,6 +41,7 @@ import io4dolfinx
 import numpy as np
 
 _ATTRIBUTES = "checkpoint"
+# Checkpoints written before t0 was stored have no t0; they were all written by runs starting at t0 = 0
 _ATTRIBUTE_KEYS = {"t", "step", "dt", "num_cells"}
 _NUM_FILES = 2
 
@@ -96,8 +105,8 @@ class Checkpointer:
         self.mesh.comm.Barrier()
         self._next_file = 0
 
-    def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float) -> None:
-        """Save ``functions`` at time ``t``, after completing time step ``step``."""
+    def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float, t0: float = 0.0) -> None:
+        """Save ``functions`` at time ``t``, after completing time step ``step`` of a run starting at ``t0``."""
         path = self._file(self._next_file)
         if self.mesh.comm.rank == 0:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -114,8 +123,9 @@ class Checkpointer:
             "step": np.array([step], dtype=np.int64),
             "dt": np.array([dt], dtype=np.float64),
             "num_cells": np.array([_num_global_cells(self.mesh)], dtype=np.int64),
+            "t0": np.array([t0], dtype=np.float64),
         }
-        assert attrs.keys() == _ATTRIBUTE_KEYS
+        assert _ATTRIBUTE_KEYS <= attrs.keys()
         io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
         self._next_file = (self._next_file + 1) % _NUM_FILES
 
@@ -130,22 +140,32 @@ class Checkpointer:
             return None
         return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
 
-    def read(self, functions: list[dolfinx.fem.Function], dt: float) -> tuple[float, int]:
-        """Read ``functions`` from the latest complete checkpoint.
-
-        The functions are matched by name, so they must have the names they
-        were written with. Returns the time ``t`` and step counter ``step`` of
-        the checkpoint, and makes the next :meth:`write` go to the other file.
-        Raises ``FileNotFoundError`` if there is no complete checkpoint and
-        ``ValueError`` if it was written with a different time step or on a
-        different mesh.
-        """
+    def _latest(self) -> tuple[dict[str, np.ndarray], int]:
+        """Attributes and file index of the latest complete checkpoint."""
         candidates = [(attrs, i) for i in range(_NUM_FILES) if (attrs := self._read_attributes(i)) is not None]
         if not candidates:
             raise FileNotFoundError(f"No complete checkpoint in {self.directory}")
-        attrs, i = max(candidates, key=lambda c: int(c[0]["step"][0]))
+        return max(candidates, key=lambda c: int(c[0]["step"][0]))
+
+    def latest_times(self) -> tuple[float, float]:
+        """Time ``t`` of the latest complete checkpoint and start time ``t0`` of the run that wrote it."""
+        attrs, _ = self._latest()
+        return float(attrs["t"][0]), float(attrs.get("t0", [0.0])[0])
+
+    def read(self, functions: list[dolfinx.fem.Function], dt: float | None) -> tuple[float, int]:
+        """Read ``functions`` from the latest complete checkpoint.
+
+        The functions are matched by name, so they must have the names they
+        were written with; other functions in the checkpoint are ignored.
+        Returns the time ``t`` and step counter ``step`` of the checkpoint, and
+        makes the next :meth:`write` go to the other file. Raises
+        ``FileNotFoundError`` if there is no complete checkpoint and
+        ``ValueError`` if it was written on a different mesh, or, unless ``dt``
+        is None, with a time step other than ``dt``.
+        """
+        attrs, i = self._latest()
         t, step = float(attrs["t"][0]), int(attrs["step"][0])
-        if not np.isclose(attrs["dt"][0], dt, rtol=1e-12, atol=0.0):
+        if dt is not None and not np.isclose(attrs["dt"][0], dt, rtol=1e-12, atol=0.0):
             raise ValueError(f"Checkpoint {self._file(i)} was written with dt = {attrs['dt'][0]}, not {dt}")
         if int(attrs["num_cells"][0]) != _num_global_cells(self.mesh):
             raise ValueError(
@@ -160,6 +180,39 @@ class Checkpointer:
                 f.interpolate(g, cells0=parent_cells, cells1=sub_cells)
         self._next_file = (i + 1) % _NUM_FILES
         return t, step
+
+
+def check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir) -> None:
+    """Raise ``ValueError`` for combinations of the checkpoint arguments of a solver that do not fit together."""
+    if restart and checkpoint_dir is None:
+        raise ValueError("restart=True requires checkpoint_dir")
+    if checkpoint_every is not None and checkpoint_dir is None:
+        raise ValueError("checkpoint_every requires checkpoint_dir")
+    if restart and initial_state_dir is not None:
+        raise ValueError(
+            "restart=True resumes the run in checkpoint_dir, which already has its initial state; "
+            "do not also pass initial_state_dir"
+        )
+    if (
+        initial_state_dir is not None
+        and checkpoint_dir is not None
+        and Path(initial_state_dir).resolve() == Path(checkpoint_dir).resolve()
+    ):
+        raise ValueError("initial_state_dir must differ from checkpoint_dir, which a new run clears")
+
+
+def start_time(mesh: dolfinx.mesh.Mesh, restart: bool, checkpoint_dir, initial_state_dir) -> float:
+    """Start time ``t0`` of a solver run.
+
+    0 for a new run from rest; the time of the latest checkpoint in
+    ``initial_state_dir`` for a new run from that state; and on a restart, the
+    start time of the run being resumed, stored with its checkpoints.
+    """
+    if restart:
+        return Checkpointer(checkpoint_dir, mesh).latest_times()[1]
+    if initial_state_dir is not None:
+        return Checkpointer(initial_state_dir, mesh).latest_times()[0]
+    return 0.0
 
 
 def restart_output_path(path: str | Path, t: float) -> str:
