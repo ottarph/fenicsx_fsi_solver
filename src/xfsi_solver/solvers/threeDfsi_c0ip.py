@@ -56,6 +56,7 @@ def solve(
     initial_state_dir=None,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
+    k_c_options=None,
     max_quadrature_degree=8,
     c0ip_a_val=2.0,
     mesh_motion_telescope_reduction_factor=None,
@@ -107,6 +108,12 @@ def solve(
     with omega = 0.5: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
     Jacobi between ranks, and with omega = 1 it made GAMG diverge for some partitions of
     the 3d mesh.
+
+    ``k_c_options`` is a dict of PETSc options for the K_c solve, without the K_c prefix, for
+    example ``{"fieldsplit_v_mg_levels_ksp_max_it": 4}``. They are added to the options above
+    and replace those with the same name, for trying other preconditioners. Options left
+    unused by the replacement, such as the SOR omega with another smoother, are listed when
+    PETSc finalizes. The time and the K_c iterations of every time step are printed.
 
     The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
     19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
@@ -901,6 +908,9 @@ def solve(
             # "fieldsplit_p_ksp_converged_reason": None,
         }
 
+    if k_c_options is not None:
+        velocity_pressure_solve_options.update(k_c_options)
+
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
     # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
     # A_S is the same matrix in every Newton iteration and time step, so its preconditioner
@@ -996,8 +1006,11 @@ def solve(
 
     first_step = step
     num_newton_iterations = 0
+    step_times = []
+    k_c_iterations = []  # of every K_c solve in the run
     start = timer()
     while step < num_steps:
+        step_start = timer()
         t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
@@ -1011,6 +1024,15 @@ def solve(
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=ksp_check)
+
+        step_times.append(timer() - step_start)
+        step_k_c_iterations = ksp_check.iterations.get(ksp_q_c.getOptionsPrefix(), [])
+        k_c_iterations += step_k_c_iterations
+        PETSc.Sys.Print(
+            f"  step time {step_times[-1]:.2f} s, K_c iterations {sum(step_k_c_iterations)} in "
+            f"{len(step_k_c_iterations)} solves ({sum(step_k_c_iterations) / max(len(step_k_c_iterations), 1):.1f} "
+            "per solve)"
+        )
 
         if comm.rank == 0:
             sys.stdout.flush()
@@ -1026,6 +1048,11 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if len(step_times) > 1:
+            # The first step also sets up the K_m factorization and the AMG hierarchies.
+            print(f"Time per step after the first: {sum(step_times[1:]) / (len(step_times) - 1):.3f} s")
+        if k_c_iterations:
+            print(f"K_c iterations per solve: {sum(k_c_iterations) / len(k_c_iterations):.1f}")
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
         else:
@@ -1035,13 +1062,15 @@ def solve(
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
                 f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
             )
-            if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+            if options["fieldsplit_v_mg_levels_pc_type"] == "sor":
                 gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
             k_c_solve_description = (
                 f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
                 f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
                 "    one V-cycle of BoomerAMG on -B diag(A)^{-1} G (selfp), for S^{-1}\n"
             )
+        if k_c_options is not None:
+            k_c_solve_description += f"    with the options {k_c_options} replacing those above\n"
         print(
             "\nSolver setup:\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"

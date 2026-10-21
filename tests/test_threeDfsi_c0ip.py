@@ -30,6 +30,22 @@ def test_threeDfsi_c0ip_solve(output_dirs, direct):
     assert 0.0 < rows[1, 1] < rows[2, 1]
 
 
+def test_threeDfsi_c0ip_k_c_options_replace_the_defaults(output_dirs):
+    # One FGMRES iteration is not enough for K_c, so the run fails on the K_c solve, which shows
+    # that the option reached it.
+    dt_val = 0.004
+    with pytest.raises(RuntimeError, match="solver_fieldsplit_q_c_ DIVERGED_(ITS|MAX_IT)"):
+        solve(
+            mesh_path="data/meshes/fsi3d/mesh_sec_coarse.xdmf",
+            T=dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / "threeDfsi_c0ip_k_c_options.bp"),
+            output_path_p=str(output_dirs["pv"] / "threeDfsi_c0ip_k_c_options_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "threeDfsi_c0ip_k_c_options.txt"),
+            k_c_options={"ksp_max_it": 1},
+        )
+
+
 def test_threeDfsi_c0ip_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(
         solve,
