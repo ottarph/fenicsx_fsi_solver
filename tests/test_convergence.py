@@ -145,3 +145,17 @@ def test_ksp_check_clear_forgets_failures():
     assert ksp_check.failures
     ksp_check.clear()
     assert ksp_check.failures == []
+
+
+def test_ksp_check_records_iterations_of_nested_solves():
+    problem = _make_split_problem()
+    ksp_check = KSPConvCheck(problem.solver.getKSP())
+    problem.solve()
+    newton_iterations = problem.solver.getIterationNumber()
+    # One solve per Newton iteration in each split, and in the outer preonly KSP.
+    assert set(ksp_check.iterations) == {"split_test_", "split_test_fieldsplit_0_", "split_test_fieldsplit_1_"}
+    for prefix in ("split_test_fieldsplit_0_", "split_test_fieldsplit_1_"):
+        assert len(ksp_check.iterations[prefix]) == newton_iterations
+        assert all(its > 0 for its in ksp_check.iterations[prefix])
+    ksp_check.clear()
+    assert ksp_check.iterations == {}
