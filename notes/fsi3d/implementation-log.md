@@ -652,3 +652,51 @@ Medium mesh, 28 ranks, 10 steps from the mixed checkpoint at t = 10:
   over several nodes make its solves latency-bound, cannot show on one node.
   These numbers say to keep many MUMPS ranks per socket, at least half of them,
   rather than a few.
+
+## K_c iterations on the fine mesh (2026-10-21)
+
+The fine run on eX3 (`jobs/threeDfsi_c0ip.sh`, one defq node, 64 ranks,
+fenicsx-v011 Spack environment) takes about 51 s per step, with 7 to 8 Newton
+iterations per step and 50 to 67 FGMRES iterations per K_c solve around
+t = 4.1, about 58 on average. The medium mesh needed about 27 to 32 on 28 and 30
+ranks.
+
+Two steps from its checkpoint at t = 4 (written on 64 ranks):
+
+| | ranks | Newton iterations | FGMRES per Newton iteration |
+|---|---|---|---|
+| eX3 (defq, Spack, PETSc 3.24) | 24 | 7, 10 | 34.7, 33.9 |
+| workstation (conda, PETSc 3.25) | 24 | 7, 10 | 32.3, 29.6 |
+
+Both take the same Newton iterations and Jacobian assemblies. So the doubling on
+eX3 comes from the 64 ranks, not from the mesh or the software. Fewer ranks are
+still slower: 107 s per step on 24 ranks on a shared defq node, against 51 s on
+64.
+
+Smoother experiments on the workstation, from the same checkpoint (scratch copy
+of the solver with the K_c options overridden, 24 ranks, 2 steps, Newton
+iterations 7 and 10 where it converged). Step time is the second step, which
+has no setup apart from Jacobian reassemblies:
+
+| variant (GAMG on the velocity block unless noted) | FGMRES per Newton iteration | second step |
+|---|---|---|
+| Richardson + SOR, omega 0.5 (current) | 32.3, 29.6 | 58.9 s |
+| the same with 4 smoothing steps instead of 2 | 24.3, 22.4 | 69.1 s |
+| SOR as bjacobi with 3 blocks per rank (72 in all) | 37.6, 34.6 | 72.2 s |
+| `pc_gamg_repartition` | identical to current | 58.7 s |
+| Chebyshev + Jacobi | 200 (limit) in every Newton iteration | failed |
+| Chebyshev + SOR | 200 (limit) | stopped |
+| no aggressive coarsening | PC setup failed (`SUBPC_ERROR`) | failed |
+| BoomerAMG, nodal coarsening 6, interpolation from the rigid body modes | 100 (limit) | failed |
+
+- All converged variants give identical QoIs.
+- Chebyshev fails here although it converged in the first coarse steps: its
+  eigenvalue estimate assumes a symmetric operator, and A is far from symmetric
+  once the flow has developed.
+- 72 SOR blocks on 24 ranks give only 15% more iterations, far from the doubling
+  on 64 ranks. So the weaker SOR coupling between ranks explains little of it;
+  GAMG's coarsening, which aggregates within each rank, probably explains more.
+  That cannot be tested here without 64 ranks.
+- More smoothing steps lower the iterations by a quarter but make a step 17%
+  slower on 24 ranks. With 58 iterations on 64 ranks the trade may differ, to be
+  measured there.
