@@ -9,6 +9,7 @@ import numpy as np
 import ufl
 from mpi4py.MPI import COMM_WORLD as comm
 
+from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.qoi import (
     LAGRANGE_QOI_HEADER,
@@ -45,6 +46,7 @@ def solve(
     checkpoint_every=None,
     vtx_save_every=None,
     restart=False,
+    initial_state_dir=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -60,14 +62,17 @@ def solve(
     VTX output is written to new files with a ``_from_t<time>`` suffix, since
     ``VTXWriter`` cannot append.
 
+    With ``initial_state_dir``, the run instead starts from the state in the latest checkpoint
+    in ``initial_state_dir``, written by another run, possibly with another ``dt_val``. ``t0`` is
+    the time of that checkpoint, the run writes its own QoI file, VTX output and checkpoints,
+    and it only reads from ``initial_state_dir``. A restart of such a run continues it from
+    the same ``t0``.
+
     The Lagrange multipliers ``lambda_u`` and ``lambda_v`` are not
-    checkpointed, so a restart starts them from zero; see the comment where
-    the checkpointer is set up.
+    checkpointed, so a restart, or a run from ``initial_state_dir``, starts
+    them from zero; see the comment where the checkpointer is set up.
     """
-    if restart and checkpoint_dir is None:
-        raise ValueError("restart=True requires checkpoint_dir")
-    if checkpoint_every is not None and checkpoint_dir is None:
-        raise ValueError("checkpoint_every requires checkpoint_dir")
+    check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
 
     # load mesh and meshtags
 
@@ -172,7 +177,7 @@ def solve(
     U_bar = 1.0
     H = 0.41
 
-    t0 = 0.0
+    t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
     theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
@@ -400,8 +405,6 @@ def solve(
     # drag, lift and tip displacement QoIs are unchanged
     # (notes/checkpointing/implementation-log.md).
 
-    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path
-
     checkpointed = [u_f, v_f, u_s, v_s, p]
     output_path_solid = output_path.replace(".bp", "_solid.bp")
 
@@ -432,6 +435,22 @@ def solve(
             print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
+    if initial_state_dir is not None:
+        t, _ = Checkpointer(
+            initial_state_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map), (solid_mesh, solid_cell_map)]
+        ).read(checkpointed, None)
+        if t != t0:
+            raise RuntimeError(
+                f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
+                "start from a copy of a run that is still writing checkpoints"
+            )
+        if num_steps <= 0:
+            raise ValueError(
+                f"Cannot start from the state at {t = :.4f} in {initial_state_dir}: "
+                f"no time step is left to solve up to {T = }"
+            )
+        if mesh.comm.rank == 0:
+            print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
 
     # Set up output
 
@@ -542,7 +561,7 @@ def solve(
         write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
-            checkpointer.write(checkpointed, t, step, dt_val)
+            checkpointer.write(checkpointed, t, step, dt_val, t0)
 
     end = timer()
     if comm.rank == 0:
@@ -561,6 +580,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
+    parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
     solve(
@@ -574,6 +594,7 @@ def main():
         checkpoint_every=100,
         vtx_save_every=8,
         restart=args.restart,
+        initial_state_dir=args.initial_state_dir,
     )
 
 

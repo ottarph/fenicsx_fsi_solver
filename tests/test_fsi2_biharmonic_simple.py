@@ -3,6 +3,7 @@ from restart_helpers import (
     check_restart_rejects_different_dt,
     check_restart_rejects_T_not_after_checkpoint,
     check_restart_reproduces_continuous_run,
+    check_start_from_initial_state,
 )
 
 from xfsi_solver.solvers.fsi2_biharmonic_simple import solve
@@ -55,3 +56,7 @@ def test_fsi2_biharmonic_simple_restart_rejects_different_dt(output_dirs, tmp_pa
 
 def test_fsi2_biharmonic_simple_restart_rejects_T_not_after_checkpoint(output_dirs, tmp_path):
     check_restart_rejects_T_not_after_checkpoint(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", output_dirs, tmp_path)
+
+
+def test_fsi2_biharmonic_simple_starts_from_initial_state(output_dirs, tmp_path):
+    check_start_from_initial_state(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", ELEMENTS, output_dirs, tmp_path)
