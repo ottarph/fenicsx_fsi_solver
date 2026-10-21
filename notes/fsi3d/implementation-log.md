@@ -700,3 +700,10 @@ has no setup apart from Jacobian reassemblies:
 - More smoothing steps lower the iterations by a quarter but make a step 17%
   slower on 24 ranks. With 58 iterations on 64 ranks the trade may differ, to be
   measured there.
+
+`threeDfsi_c0ip` now takes `k_c_options`, a dict of PETSc options that replace
+those of the K_c solve, and prints the time and the K_c iterations of every
+step, with the mean time per step after the first. `KSPConvCheck` records the
+iterations of every solve for that. `jobs/threeDfsi_c0ip.sh` passes
+`K_C_OPTIONS` on, so the experiments above can be repeated on eX3 with 64
+ranks from a checkpoint (`INITIAL_STATE_RUN`), without editing the solver.
