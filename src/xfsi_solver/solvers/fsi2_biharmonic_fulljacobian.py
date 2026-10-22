@@ -590,7 +590,8 @@ def solve(
 
         pc = solver.getKSP().getPC()
         pc.setType(PETSc.PC.Type.PYTHON)
-        pc.setPythonContext(ScaledLU(f"{solver.getOptionsPrefix()}scaled_lu_"))
+        scaled_lu = ScaledLU(f"{solver.getOptionsPrefix()}scaled_lu_")
+        pc.setPythonContext(scaled_lu)
 
         # Preconditioner matrix D*J, factorized by MUMPS instead of J. J is
         # assembled once first, so that P gets J's final parallel layout and can
@@ -670,6 +671,13 @@ def solve(
             ),
         }
         plot_matrix_blocks(J_mat, partitions, "Full Jacobian", matrix_blocks_dir(__file__), t)
+
+    # Destroying the MUMPS factorization is collective, so destroy it on all ranks here instead of leaving it
+    # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
+    # plotted the matrices.
+    solver.destroy()
+    if mesh_motion_scaling is not None:
+        scaled_lu.lu.destroy()
 
     return
 
