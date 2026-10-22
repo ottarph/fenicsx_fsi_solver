@@ -738,3 +738,18 @@ converged. Time per step after the first, which leaves out the setup:
 - With 24 ranks on the workstation, 4 smoothing steps cost 17% more time per
   step; on 64 ranks the smoother has more to make up for.
 - To confirm over 10 steps before making 3 smoothing steps the default.
+
+10 steps from the same checkpoint (to t = 4.04), defq, 64 ranks, job of
+`jobs/threeDfsi_c0ip_kc_experiments.sh`:
+
+| smoothing steps per level | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 2 (PETSc's default) | 53.2 | 61.9 |
+| 3 | 35.9 | 57.6 |
+
+33% fewer iterations and 7% less time per step, so `threeDfsi_c0ip` now
+smooths with 3 SOR steps per level (`fieldsplit_v_mg_levels_ksp_max_it`), and
+the solver summary prints the number. On one rank on the coarse mesh (the
+test), the iterations drop from 30.8 to 26.5 per solve and the second step
+takes 8.8 s instead of 8.1 s: on few ranks the third step costs more than it
+saves. `threeDfsi_mixed` keeps 2.
