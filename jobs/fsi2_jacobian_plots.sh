@@ -6,24 +6,34 @@
 #   condensed    fsi2_biharmonic_mixed: u_S condensed out of the solid stress
 #   approximate  fsi2_biharmonic_mixed: J_0, without the fluid ALE derivatives
 #
+# With FORMULATION=harmonic, the same plots of the harmonic version of the formulation, in the
+# order (u_S, v, p, u_I), from fsi2_harmonic_fulljacobian (full, state (u, v, p)) and
+# fsi2_harmonic_condensed (condensed and approximate). The default is FORMULATION=biharmonic.
+#
 # Each solver's solve() takes one time step from a developed checkpoint with plot_matrices=True,
 # and plots the Jacobians at the state after that step. The script collects
 #
 #   OUT_DIR/figures/spy_{full,condensed,approximate}.png          on the coarse mesh
 #   OUT_DIR/figures/block_norms_{full,condensed,approximate}.png  on mesh_sec
 #
+# (spy_harmonic_full.png and so on with FORMULATION=harmonic, in OUT_DIR ending in _harmonic),
 # and keeps every plot and log of the runs in OUT_DIR/<mesh>/<solver>/. Run it on a workstation
 # from anywhere:
 #
 #   jobs/fsi2_jacobian_plots.sh
+#   FORMULATION=harmonic jobs/fsi2_jacobian_plots.sh
 #
 # The solvers run from the source of COMMIT, exported into a temporary directory that is removed
 # when the script exits, and not from the checkout, so the plots stay tied to that commit
 # whatever is checked out. The checkout is not changed. The meshes are
-# read from the checkout. The checkpoints are not in git: the defaults are the states at
-# t = 15 that fsi2_biharmonic_mixed (at c3c6d01, dt = 0.0025) wrote in
+# read from the checkout. The checkpoints are not in git: the biharmonic defaults are the states
+# at t = 15 that fsi2_biharmonic_mixed (at c3c6d01, dt = 0.0025) wrote in
 # output/matrix_block_runs/. Any checkpoint of an FSI2 solver with (u, v, p, z) on the same
-# mesh works; the solvers only read them.
+# mesh works; the solvers only read them. The harmonic defaults are the states at t = 7 that
+# fsi2_harmonic_condensed (at e83a4d4, dt = 0.0025) wrote there, since plain harmonic mesh
+# motion is expected to degenerate before t = 15 (min det F over the fluid on mesh_sec fell from
+# 0.99 at t = 1 to 0.60 at t = 7). The harmonic solvers read (u, v, p) of any FSI2 checkpoint,
+# also a biharmonic one, whose z they ignore.
 #
 # The ranks set how the dofs are numbered within each block, so they set the spy plots; on one
 # rank, the dofs are in the order of the mesh. The block norms do not depend on them.
@@ -31,13 +41,30 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-COMMIT=${COMMIT:-66b0885e02f07b5bbf3251bc6cf23c961186d412}
+FORMULATION=${FORMULATION:-biharmonic}
+case $FORMULATION in
+    biharmonic)
+        default_commit=66b0885e02f07b5bbf3251bc6cf23c961186d412
+        full_solver=fsi2_biharmonic_fulljacobian condensed_solver=fsi2_biharmonic_mixed
+        runs=fsi2_mixed figure_prefix="" out_suffix=""
+        ;;
+    harmonic)
+        default_commit=e83a4d4e63555d610948eb3a6ae020cc20c3e02b
+        full_solver=fsi2_harmonic_fulljacobian condensed_solver=fsi2_harmonic_condensed
+        runs=fsi2_harmonic figure_prefix=harmonic_ out_suffix=_harmonic
+        ;;
+    *)
+        echo "FORMULATION must be biharmonic or harmonic, not $FORMULATION" >&2
+        exit 1
+        ;;
+esac
+COMMIT=${COMMIT:-$default_commit}
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
-OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}}
+OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}$out_suffix}
 COARSE_MESH=${COARSE_MESH:-$REPO/data/meshes/fsi2/mesh_sec_coarse.xdmf}
 NORMAL_MESH=${NORMAL_MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
-COARSE_CHECKPOINTS=${COARSE_CHECKPOINTS:-$REPO/output/matrix_block_runs/fsi2_mixed_coarse/checkpoints}
-NORMAL_CHECKPOINTS=${NORMAL_CHECKPOINTS:-$REPO/output/matrix_block_runs/fsi2_mixed_normal/checkpoints}
+COARSE_CHECKPOINTS=${COARSE_CHECKPOINTS:-$REPO/output/matrix_block_runs/${runs}_coarse/checkpoints}
+NORMAL_CHECKPOINTS=${NORMAL_CHECKPOINTS:-$REPO/output/matrix_block_runs/${runs}_normal/checkpoints}
 COARSE_RANKS=${COARSE_RANKS:-1}
 NORMAL_RANKS=${NORMAL_RANKS:-8}
 DT=${DT:-0.0025}
@@ -62,6 +89,7 @@ git -C "$REPO" archive "$COMMIT" src | tar -x -C "$SRC_DIR"
 {
     echo "=== $(hostname), $(date -Iseconds)"
     git -C "$REPO" log -1 --format="%H %s" "$COMMIT"
+    echo "formulation: $FORMULATION"
     echo "coarse: $COARSE_MESH from $COARSE_CHECKPOINTS on $COARSE_RANKS ranks"
     echo "normal: $NORMAL_MESH from $NORMAL_CHECKPOINTS on $NORMAL_RANKS ranks"
     echo "dt = $DT"
@@ -118,19 +146,19 @@ for mesh_name in coarse normal; do
     else
         args=("$NORMAL_MESH" "$NORMAL_CHECKPOINTS" "$NORMAL_RANKS")
     fi
-    run "$mesh_name" "${args[@]}" fsi2_biharmonic_fulljacobian ""
-    run "$mesh_name" "${args[@]}" fsi2_biharmonic_mixed "direct_k_c_solve=True,"
+    run "$mesh_name" "${args[@]}" "$full_solver" ""
+    run "$mesh_name" "${args[@]}" "$condensed_solver" "direct_k_c_solve=True,"
 done
 
 plots() {
     local mesh_name=$1 kind=$2
     local figures=output/figures/matrix_blocks
-    cp "$OUT_DIR/$mesh_name/fsi2_biharmonic_fulljacobian/$figures/fsi2_biharmonic_fulljacobian/${kind}_eq1.png" \
-        "$OUT_DIR/figures/${kind}_full.png"
-    cp "$OUT_DIR/$mesh_name/fsi2_biharmonic_mixed/$figures/fsi2_biharmonic_mixed/${kind}_eq1.png" \
-        "$OUT_DIR/figures/${kind}_condensed.png"
-    cp "$OUT_DIR/$mesh_name/fsi2_biharmonic_mixed/$figures/fsi2_biharmonic_mixed/${kind}_approximate_eq1.png" \
-        "$OUT_DIR/figures/${kind}_approximate.png"
+    cp "$OUT_DIR/$mesh_name/$full_solver/$figures/$full_solver/${kind}_eq1.png" \
+        "$OUT_DIR/figures/${kind}_${figure_prefix}full.png"
+    cp "$OUT_DIR/$mesh_name/$condensed_solver/$figures/$condensed_solver/${kind}_eq1.png" \
+        "$OUT_DIR/figures/${kind}_${figure_prefix}condensed.png"
+    cp "$OUT_DIR/$mesh_name/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_eq1.png" \
+        "$OUT_DIR/figures/${kind}_${figure_prefix}approximate.png"
 }
 plots coarse spy
 plots normal block_norms
