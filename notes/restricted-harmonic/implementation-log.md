@@ -60,3 +60,62 @@ with matrix plotting, and harmonic plots from `jobs/fsi2_jacobian_plots.sh`. Tas
   (p) after 8 steps on the coarse mesh: with alpha_u = 1e-9 the fluid contribution to the
   interface rows is negligible. So the comparison test does not distinguish the two harmonic
   formulations; it checks that the condensed and full solvers agree.
+
+## Developed harmonic state (2026-10-22)
+
+Runs from rest to T = 7 with `fsi2_harmonic_condensed` (dt = 0.0025, `direct_k_c_solve=True`,
+`gamma_reassemble=0.2`, `checkpoint_every=400`), from the source of e83a4d4 exported to
+`output/matrix_block_runs/harmonic_src/` (`harmonic_run.py`), in
+`output/matrix_block_runs/fsi2_harmonic_{coarse,normal}/`, logs in `output/matrix_block_runs/logs/`.
+A serial watcher (`harmonic_watch_detF.py`) logged min det F = det(I + grad u) over the fluid cells
+(degree-6 quadrature points and vertices) at each new checkpoint, since only the two latest
+checkpoints are kept and a mesh can fold without Newton failing.
+
+- `mesh_sec_coarse`, 4 ranks: finished, 70.8 s (0.025 s/step), 13475 Newton iterations in 2800 steps
+  (mostly 4–5 per step, at most 8), 399 Jacobian assemblies, no failures.
+  min det F: 0.995 (t = 2), 0.977 (t = 4), 0.954 (t = 6), 0.970 (t = 7).
+- The mesh does not degenerate before t = 7; the state at t = 7 is used. It is only the start of
+  the oscillation: tip A_y in (6, 7] is -3.8e-3 .. 4.6e-3 (biharmonic coarse run: -4.0e-3 .. 4.8e-3
+  over the same interval, and -7.6e-2 .. 7.8e-2 in (14, 15]). So the harmonic plots show a much
+  less deformed state than the biharmonic plots at t = 15.
+- `mesh_sec`, 8 ranks: finished, 190.6 s (0.068 s/step), 13982 Newton iterations in 2800 steps
+  (2–9 per step, mostly 4–6), 58 Jacobian assemblies, no failures. min det F: 0.991 (t = 1),
+  0.959, 0.938, 0.906, 0.827, 0.686, 0.603 (t = 7): falling, but far from folding at t = 7. Tip
+  A_y in (6, 7] is -1.46e-2 .. 1.39e-2.
+
+## Plot script and harmonic plots (2026-10-22)
+
+- `jobs/fsi2_jacobian_plots.sh`: `FORMULATION=biharmonic|harmonic` (default biharmonic) selects
+  the solvers, the default commit, the default checkpoints, the OUT_DIR suffix (`_harmonic`) and
+  the figure names (`spy_harmonic_full.png`, ...). The biharmonic default COMMIT stays 66b0885;
+  the harmonic default is e83a4d4, the commit of the solvers. A per-formulation default keeps the
+  biharmonic plots tied to the commit they were made from.
+- Biharmonic behaviour checked: the default run, into a scratch OUT_DIR, gave PNGs byte-identical
+  to `output/figures/jacobian_plots/66b0885/figures/`.
+- `FORMULATION=harmonic jobs/fsi2_jacobian_plots.sh`: 17 s, figures in
+  `output/figures/jacobian_plots/e83a4d4_harmonic/figures/`. One step from t = 7, plots at
+  t = 7.0025. The condensed run on mesh_sec took 9 Newton iterations in that step (first step
+  after a restart, with a fresh J_0).
+- Block norms on mesh_sec, order (u_S, v, p, u_I), against the harmonic eqs. (1), (3), (6):
+
+  | block | full | condensed | J_0 | expected |
+  |---|---|---|---|---|
+  | (u_S, u_S) A_S | 7.37e2 | 7.37e2 | 7.37e2 | rho_s M_S / dt |
+  | (u_S, v) C | 0.926 | 0.926 | 0.926 | theta dt A_S R_S: 0.5025 * 0.0025 * 737 = 0.926 |
+  | (v, u_S) | 2.68e8 | 6.60e3 | — | E_S + F_S; F_S only; dropped |
+  | (v, v) | 6.97e3 | 3.37e5 | 3.37e5 | H; H_c = H + theta^2 dt K_S |
+  | (v, p) G, (p, v) B | 0.874 | 0.874 | 0.874 | unchanged |
+  | (v, u_I) F_I | 5.55e4 | 5.55e4 | — | dropped in J_0 |
+  | (p, u_S) D_S, (p, u_I) D_I | 0.258, 9.39 | same | — | dropped in J_0 |
+  | (u_I, u_S) A_IS, (u_I, u_I) A_II | 27.4, 690 | same | same | the only mesh rows |
+
+  The mesh rows have no v or p columns, (u_S, p) and (u_S, u_I) are empty, and J_0 is block lower
+  triangular in ((u_S, v, p), u_I). The spy plots on the coarse mesh show the same structure
+  (121372, 118360 and 77439 nonzeros in the full, condensed and approximate Jacobians, 4433 dofs).
+  In Frobenius norm, F_I is about 8 times larger than F_S here.
+
+## Test suite (2026-10-22)
+
+Full suite at 13f52ed (solvers, tests and docs; the job script is not covered by tests), serial
+pytest with the restart tests spawning 2 ranks, while the plot script and the biharmonic check ran:
+189 passed in 542.8 s (`output/logs/restricted_harmonic_tests.txt`).
