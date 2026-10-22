@@ -216,7 +216,8 @@ Other decisions:
 - `jobs/fsi2_jacobian_plots.sh` plots the full, condensed and approximate Jacobians in the order
   (u_S, v, p, z, u_I): spy plots on `mesh_sec_coarse` and block norm plots on `mesh_sec`. Each solver takes
   one step from a checkpoint (`initial_state_dir`) with `plot_matrices=True`. The script exports `src` of a
-  pinned commit into its output folder and runs from there, so the plots stay tied to that commit.
+  pinned commit into a temporary directory and runs from there, so the plots stay tied to that commit. The
+  directory is removed when the script exits, also when it fails or is stopped, and the checkout is not changed.
 - The checkpoints are not in git. The defaults are the t = 15 states that `fsi2_biharmonic_mixed` wrote at
   c3c6d01 in `output/matrix_block_runs/` (2026-10-20). Checkpoints from before the start time was stored
   still read, as t0 = 0.

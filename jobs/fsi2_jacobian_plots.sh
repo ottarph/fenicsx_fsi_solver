@@ -17,8 +17,9 @@
 #
 #   jobs/fsi2_jacobian_plots.sh
 #
-# The solvers run from the source of COMMIT, exported into OUT_DIR/src, and not from the
-# checkout, so the plots stay tied to that commit whatever is checked out. The meshes are
+# The solvers run from the source of COMMIT, exported into a temporary directory that is removed
+# when the script exits, and not from the checkout, so the plots stay tied to that commit
+# whatever is checked out. The checkout is not changed. The meshes are
 # read from the checkout. The checkpoints are not in git: the defaults are the states at
 # t = 15 that fsi2_biharmonic_mixed (at c3c6d01, dt = 0.0025) wrote in
 # output/matrix_block_runs/. Any checkpoint of an FSI2 solver with (u, v, p, z) on the same
@@ -52,7 +53,11 @@ if [[ -e $OUT_DIR ]]; then
     exit 1
 fi
 mkdir -p "$OUT_DIR/figures"
-git -C "$REPO" archive "$COMMIT" src | tar -x -C "$OUT_DIR"
+SRC_DIR=$(mktemp -d)
+# Also when a run fails or the script is stopped, which otherwise skips the EXIT trap
+trap 'rm -rf "$SRC_DIR"' EXIT
+trap 'exit 1' INT TERM HUP
+git -C "$REPO" archive "$COMMIT" src | tar -x -C "$SRC_DIR"
 
 {
     echo "=== $(hostname), $(date -Iseconds)"
@@ -63,7 +68,7 @@ git -C "$REPO" archive "$COMMIT" src | tar -x -C "$OUT_DIR"
 } | tee "$OUT_DIR/run_info.txt"
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-export PYTHONPATH=$OUT_DIR/src
+export PYTHONPATH=$SRC_DIR/src
 
 run() {
     local mesh_name=$1 mesh=$2 checkpoints=$3 ranks=$4 solver=$5 solver_kwargs=$6
@@ -82,7 +87,7 @@ from xfsi_solver.solvers.$solver import solve
 from xfsi_solver.tools.checkpoint import Checkpointer
 
 # The editable install of the checkout must not shadow the exported source
-assert Path(xfsi_solver.__file__).is_relative_to("$OUT_DIR/src"), xfsi_solver.__file__
+assert Path(xfsi_solver.__file__).is_relative_to("$SRC_DIR/src"), xfsi_solver.__file__
 
 with dolfinx.io.XDMFFile(MPI.COMM_WORLD, "$mesh", "r") as f:
     t0, _ = Checkpointer("$checkpoints", f.read_mesh()).latest_times()
