@@ -128,6 +128,8 @@ the default ``vtx_save_every=None`` no VTX files are written.
 ``python -m xfsi_solver.scripts.plot_qois`` plots the QoI files, each on its own and in comparisons, into
 ``output/figures/qoi/<script>/``. The solvers with ``plot_matrices=True`` save spy and block-norm plots of
 their Jacobians into ``output/figures/matrix_blocks/<script>/``.
+``jobs/fsi2_jacobian_plots.sh`` plots the full, condensed and approximate Jacobians from a developed
+checkpoint, with the source of a pinned commit.
 
 ## Checkpointing and restarts
 

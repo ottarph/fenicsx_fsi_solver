@@ -207,3 +207,26 @@ Other decisions:
   check. In 2d, the C0IP solver is about 25% slower per step than the mixed one (0.37 vs 0.30 s/step from
   t = 16).
 - No production run of `threeDfsi_c0ip` has been made.
+
+## Jacobian plots from a developed state (2026-10-22)
+
+- `fsi2_biharmonic_fulljacobian` gets `plot_matrices`, with the same storage and eq. (1) orderings as
+  `fsi2_biharmonic_mixed`. The mixed solver's full Jacobian is now titled "Condensed Jacobian", since u_S is
+  condensed out of its solid stress.
+- `jobs/fsi2_jacobian_plots.sh` plots the full, condensed and approximate Jacobians in the order
+  (u_S, v, p, z, u_I): spy plots on `mesh_sec_coarse` and block norm plots on `mesh_sec`. Each solver takes
+  one step from a checkpoint (`initial_state_dir`) with `plot_matrices=True`. The script exports `src` of a
+  pinned commit into its output folder and runs from there, so the plots stay tied to that commit.
+- The checkpoints are not in git. The defaults are the t = 15 states that `fsi2_biharmonic_mixed` wrote at
+  c3c6d01 in `output/matrix_block_runs/` (2026-10-20). Checkpoints from before the start time was stored
+  still read, as t0 = 0.
+- The spy plots run on one rank, since the ranks set the dof numbering within each block. From the coarse
+  t = 15 state, the full Jacobian Newton converges in 3 iterations, and the three matrices have 160494,
+  157485 and 116564 nonzeros on 6299 dofs. The whole script takes about 20 s (mesh_sec on 8 ranks).
+- The first try hung on mesh_sec on 8 ranks after the full Jacobian was plotted: all ranks at 100% CPU,
+  with the plots written. `fsi2_biharmonic_fulljacobian` left its MUMPS factorization to garbage
+  collection, and after rank 0 had plotted, the ranks reached that collective destroy at different points.
+  It now destroys its solver at the end of `solve()`, as `fsi2_biharmonic_mixed` already did.
+- Block norms on mesh_sec at t = 15.0025: the (v, u_S) block is 2.7e8 in the full Jacobian (E_S + F_S)
+  and 8.8e3 in the condensed one (F_S), where (v, v) grows from 7.0e3 (H) to 3.4e5 (H_c). The approximate
+  Jacobian drops (v, u_S), (v, u_I), (p, u_S) and (p, u_I).
