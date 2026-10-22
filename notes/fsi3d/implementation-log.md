@@ -752,4 +752,6 @@ smooths with 3 SOR steps per level (`fieldsplit_v_mg_levels_ksp_max_it`), and
 the solver summary prints the number. On one rank on the coarse mesh (the
 test), the iterations drop from 30.8 to 26.5 per solve and the second step
 takes 8.8 s instead of 8.1 s: on few ranks the third step costs more than it
-saves. `threeDfsi_mixed` keeps 2.
+saves. `threeDfsi_mixed` smooths with 3 steps too: its K_c and the K_c
+solve are the same as in `threeDfsi_c0ip`, which only differs in the mesh
+motion.

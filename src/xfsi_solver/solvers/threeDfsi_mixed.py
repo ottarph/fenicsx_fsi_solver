@@ -92,7 +92,8 @@ def solve(
     the pressure Schur complement S = -B A^{-1} G, for S^{-1}. The SOR is under-relaxed,
     with omega = 0.5: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
     Jacobi between ranks, and with omega = 1 it made GAMG diverge for some partitions of
-    the 3d mesh.
+    the 3d mesh. GAMG smooths with three SOR steps per level, which on many ranks takes
+    fewer FGMRES iterations and less time than PETSc's two.
 
     The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
     19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
@@ -712,8 +713,13 @@ def solve(
     # directly as the smoother when the Richardson scale is 1, and needed about 20% more FGMRES
     # iterations: omega = 0.5 takes 14 to 16% less time per step on the medium mesh
     # (notes/fsi3d/implementation-log.md).
+    # Three smoothing steps per level instead of PETSc's two: the SOR weakens as the ranks increase,
+    # and on the fine mesh with 64 ranks the third step cuts the FGMRES iterations by a third and
+    # the time per step by 7%, over 10 steps with the beam oscillating (measured with
+    # threeDfsi_c0ip, whose K_c is the same). A fourth gains no iterations.
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
+        "fieldsplit_v_mg_levels_ksp_max_it": 3,
         "fieldsplit_v_mg_levels_pc_type": "sor",
         "fieldsplit_v_mg_levels_pc_sor_omega": 0.5,
     }
@@ -867,7 +873,8 @@ def solve(
             gamg_description = (
                 "GAMG built from A (rigid body modes as near-nullspace),\n"
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
-                f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+                f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing, "
+                f"{options['fieldsplit_v_mg_levels_ksp_max_it']} steps per level"
             )
             if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
                 gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
