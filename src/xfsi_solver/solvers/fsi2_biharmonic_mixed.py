@@ -102,7 +102,8 @@ def solve(
     and it only reads from ``initial_state_dir``. A restart of such a run continues it from
     the same ``t0``.
 
-    With ``plot_matrices=True``, spy plots and block norm plots of the full Jacobian and
+    With ``plot_matrices=True``, spy plots and block norm plots of the condensed Jacobian
+    (the full Jacobian of this formulation, with u_S condensed out of the solid stress) and
     the approximate Jacobian J_0 at the final state are saved in
     ``output/figures/matrix_blocks/fsi2_biharmonic_mixed/``, with the dofs ordered by the
     storage blocks [u, v, p, z] and by the blocks of eq. (1) of
@@ -866,7 +867,7 @@ def solve(
             "eq1": ([rows_u_S, rows_v, rows_p, rows_z, rows_u[~u_solid]], ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"]),
         }
         for label, title, jacobian_forms in [
-            ("", "Jacobian", jacobian_full_base),
+            ("", "Condensed Jacobian", jacobian_full_base),
             ("approximate_", "Approximate Jacobian", jac_kargs["jacobian"]),
         ]:
             J = dolfinx.fem.petsc.create_matrix(jacobian_full_base)

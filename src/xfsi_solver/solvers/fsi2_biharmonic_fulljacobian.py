@@ -47,6 +47,7 @@ def solve(
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
+    plot_matrices=False,
     restart=False,
     initial_state_dir=None,
     mesh_motion_scaling=None,
@@ -79,6 +80,12 @@ def solve(
     notes/restricted-test-functions/solver-time.md. The residual and Jacobian
     seen by SNES stay unscaled, so the convergence tests see the unscaled
     residual. With ``None``, the Jacobian is factorized as it is.
+
+    With ``plot_matrices=True``, a spy plot and a block norm plot of the Jacobian at the
+    final state, without the row scaling, are saved in
+    ``output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian/``, with the dofs ordered by
+    the storage blocks [u, v, p, z] and by the blocks of eq. (1) of
+    docs/restricted-iterative-solver.md. The matrix is gathered on rank 0.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
 
@@ -638,6 +645,31 @@ def solve(
 
     for writer in writers:
         writer.close()
+
+    if plot_matrices:
+        from xfsi_solver.tools.matrix_blocks import matrix_blocks_dir, plot_matrix_blocks
+
+        dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
+        fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
+        post_jacobian(problem.x, J_mat)
+
+        # Global rows of the owned dofs of each block in [u, v, p, z], and the owned u dofs
+        # supported on solid cells, which are u_S in eq. (1); the others are u_I.
+        first_row = J_mat.getOwnershipRange()[0]
+        rows_u, rows_v, rows_p, rows_z = (first_row + np.arange(off_own[k], off_own[k + 1]) for k in range(4))
+        bs = U.dofmap.index_map_bs
+        solid_dofs = dolfinx.fem.locate_dofs_topological(
+            U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+        )
+        u_solid = np.isin(np.arange(len(rows_u)), (bs * solid_dofs[:, None] + np.arange(bs)).ravel())
+        partitions = {
+            "storage": ([rows_u, rows_v, rows_p, rows_z], ["$u$", "$v$", "$p$", "$z$"]),
+            "eq1": (
+                [rows_u[u_solid], rows_v, rows_p, rows_z, rows_u[~u_solid]],
+                ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"],
+            ),
+        }
+        plot_matrix_blocks(J_mat, partitions, "Full Jacobian", matrix_blocks_dir(__file__), t)
 
     return
 
