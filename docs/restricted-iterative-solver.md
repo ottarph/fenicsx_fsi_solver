@@ -349,6 +349,8 @@ A_{II}\delta u_I=r_I-A_{IS}\delta u_S,
 
 with a vector-Laplacian AMG preconditioner as the natural starting point.
 
+`src/xfsi_solver/solvers/fsi2_harmonic_fulljacobian.py` implements this harmonic restricted formulation with the full Jacobian and MUMPS LU, and `fsi2_harmonic_condensed.py` the condensed approximate system with the multiplicative fieldsplit \(q_c=(\delta v,\delta p)\), \(\delta u_S\), \(m=\delta u_I\), where \(A_{II}\) is factorized once by MUMPS Cholesky instead of AMG.
+
 **How to establish confidence in the algorithm.**
 
 First compare the six-step block solve using accurate subsolves with a monolithic direct solve of the same \(J_0\). This isolates algebraic errors in signs, right-hand sides and recovery. Then replace one inverse action at a time, measuring the true residual after each solve. Check that the physical correction is independent of the mesh-extension inverse when solving \(J_0\); the recovered fluid displacement should still respond to the interface motion.

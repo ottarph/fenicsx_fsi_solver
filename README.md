@@ -106,6 +106,8 @@ biharmonic mesh motion) on a submesh of the fluid domain, with dolfinx's mixed-m
 | ``dfg_2d_3`` | none (fluid only, DFG 2D-3 benchmark) | MUMPS LU |
 | ``fsi2_harmonic`` | harmonic | Newton, MUMPS LU |
 | ``fsi2_harmonic_lagrange`` | harmonic, interface coupled by Lagrange multipliers | Newton, MUMPS LU |
+| ``fsi2_harmonic_fulljacobian`` | harmonic, restricted test functions | as ``fsi2_biharmonic_fulljacobian`` |
+| ``fsi2_harmonic_condensed`` | harmonic, restricted test functions | as ``fsi2_biharmonic_mixed``, with MUMPS Cholesky on K_m = A_II |
 | ``fsi2_biharmonic_simple`` | biharmonic, mixed form | Newton, MUMPS LU |
 | ``fsi2_biharmonic_fulljacobian`` | biharmonic, mixed form, restricted test functions | Newton with the full Jacobian, MUMPS LU (``mesh_motion_scaling`` scales the mesh-motion rows in the factorization) |
 | ``fsi2_biharmonic_mixed`` | biharmonic, mixed form, restricted test functions | approximate Jacobian, fieldsplit; K_c by MUMPS or block-preconditioned FGMRES |
