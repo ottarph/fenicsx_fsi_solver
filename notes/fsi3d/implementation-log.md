@@ -707,3 +707,34 @@ step, with the mean time per step after the first. `KSPConvCheck` records the
 iterations of every solve for that. `jobs/threeDfsi_c0ip.sh` passes
 `K_C_OPTIONS` on, so the experiments above can be repeated on eX3 with 64
 ranks from a checkpoint (`INITIAL_STATE_RUN`), without editing the solver.
+
+### K_c options on 64 ranks (2026-10-22)
+
+`jobs/threeDfsi_c0ip_kc_experiments.sh`, job 1439820 on n002 (defq, 64 ranks,
+the whole node: no other job ran there meanwhile), two steps from the t = 4
+checkpoint of `fine_rank_test`, one variant after the other. Every variant
+converged. Time per step after the first, which leaves out the setup:
+
+| variant (options replacing the solver's) | K_c iterations per solve | s per step |
+|---|---|---|
+| none | 47.8 | 42.8 |
+| `mg_levels_ksp_max_it 3` (3 smoothing steps instead of 2) | 31.6 | 39.0 |
+| `mg_levels_ksp_max_it 4` | 31.4 | 44.5 |
+| `pc_gamg_threshold 0.05` (instead of 0.01) | 34.2 | 91.8 |
+| `pc_gamg_threshold 0.1` | 23.9 | 101.2 |
+| `pc_gamg_process_eq_limit 1000` (instead of 50) | 47.9 | 72.8 |
+| `pc_gamg_coarse_eq_limit 5000` | 47.5 | 80.9 |
+
+(all on `fieldsplit_v_`, the GAMG on the velocity block)
+
+- The coarse levels are not where 64 ranks lose: fewer ranks on them or a
+  larger coarsest grid leave the iterations unchanged, and only cost time
+  (redistribution at every setup, and a serial coarse solve in every V-cycle).
+- A third smoothing step recovers most of it: 34% fewer iterations and 9% less
+  time per step. A fourth gains no iterations and costs time.
+- Higher thresholds cut the iterations but coarsen more slowly, into more and
+  denser levels, which are more expensive in every V-cycle and in the setup at
+  every Jacobian reassembly.
+- With 24 ranks on the workstation, 4 smoothing steps cost 17% more time per
+  step; on 64 ranks the smoother has more to make up for.
+- To confirm over 10 steps before making 3 smoothing steps the default.
