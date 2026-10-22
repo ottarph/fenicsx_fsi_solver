@@ -32,7 +32,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 COMMIT=${COMMIT:-66b0885e02f07b5bbf3251bc6cf23c961186d412}
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
-OUT_DIR=${OUT_DIR:-$REPO/output/jacobian_plots/${COMMIT:0:7}}
+OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}}
 COARSE_MESH=${COARSE_MESH:-$REPO/data/meshes/fsi2/mesh_sec_coarse.xdmf}
 NORMAL_MESH=${NORMAL_MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
 COARSE_CHECKPOINTS=${COARSE_CHECKPOINTS:-$REPO/output/matrix_block_runs/fsi2_mixed_coarse/checkpoints}
