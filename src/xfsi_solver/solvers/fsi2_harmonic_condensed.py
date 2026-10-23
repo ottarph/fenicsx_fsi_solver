@@ -113,8 +113,9 @@ def solve(
     (the full Jacobian of this formulation, with u_S condensed out of the solid stress) and
     the approximate Jacobian J_0 at the final state are saved in
     ``output/figures/matrix_blocks/fsi2_harmonic_condensed/``, with the dofs ordered by the
-    storage blocks [u, v, p] and by the blocks (u_S, v, p, u_I) of the harmonic version of
-    eq. (1) of docs/restricted-iterative-solver.md. The matrices are gathered on rank 0.
+    storage blocks [u, v, p], by the blocks (u_S, v, p, u_I) of the harmonic version of
+    eq. (1) of docs/restricted-iterative-solver.md, and in the order (v, p, u_S, u_I) in which the
+    fieldsplit solves them. The matrices are gathered on rank 0.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
 
@@ -869,6 +870,7 @@ def solve(
         partitions = {
             "storage": ([rows_u, rows_v, rows_p], ["$u$", "$v$", "$p$"]),
             "eq1": ([rows_u_S, rows_v, rows_p, rows_u[~u_solid]], ["$u_S$", "$v$", "$p$", "$u_I$"]),
+            "split": ([rows_v, rows_p, rows_u_S, rows_u[~u_solid]], ["$v$", "$p$", "$u_S$", "$u_I$"]),
         }
         for label, title, jacobian_forms in [
             ("", "Condensed Jacobian", jacobian_full_base),

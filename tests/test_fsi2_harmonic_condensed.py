@@ -191,6 +191,6 @@ def test_fsi2_harmonic_condensed_plots_matrices(output_dirs, tmp_path, monkeypat
     )
 
     figures = tmp_path / "output/figures/matrix_blocks/fsi2_harmonic_condensed"
-    for label in ("storage", "eq1", "approximate_storage", "approximate_eq1"):
+    for label in ("storage", "eq1", "split", "approximate_storage", "approximate_eq1", "approximate_split"):
         assert (figures / f"spy_{label}.png").exists()
         assert (figures / f"block_norms_{label}.png").exists()

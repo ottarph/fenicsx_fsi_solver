@@ -84,8 +84,9 @@ def solve(
     With ``plot_matrices=True``, a spy plot and a block norm plot of the Jacobian at the
     final state, without the row scaling, are saved in
     ``output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian/``, with the dofs ordered by
-    the storage blocks [u, v, p, z] and by the blocks of eq. (1) of
-    docs/restricted-iterative-solver.md. The matrix is gathered on rank 0.
+    the storage blocks [u, v, p, z], by the blocks of eq. (1) of
+    docs/restricted-iterative-solver.md, and in the order (v, p, u_S, z, u_I) in which the
+    fieldsplit of fsi2_biharmonic_mixed.py solves them. The matrix is gathered on rank 0.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
 
@@ -668,6 +669,10 @@ def solve(
             "eq1": (
                 [rows_u[u_solid], rows_v, rows_p, rows_z, rows_u[~u_solid]],
                 ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"],
+            ),
+            "split": (
+                [rows_v, rows_p, rows_u[u_solid], rows_z, rows_u[~u_solid]],
+                ["$v$", "$p$", "$u_S$", "$z$", "$u_I$"],
             ),
         }
         plot_matrix_blocks(J_mat, partitions, "Full Jacobian", matrix_blocks_dir(__file__), t)

@@ -95,6 +95,6 @@ def test_fsi2_biharmonic_fulljacobian_plots_matrices(output_dirs, tmp_path, monk
     )
 
     figures = tmp_path / "output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian"
-    for label in ("storage", "eq1"):
+    for label in ("storage", "eq1", "split"):
         assert (figures / f"spy_{label}.png").exists()
         assert (figures / f"block_norms_{label}.png").exists()
