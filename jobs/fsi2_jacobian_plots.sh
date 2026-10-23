@@ -18,7 +18,9 @@
 #   spy_<formulation>_{full,condensed,approximate}.png          on the coarse mesh
 #   block_norms_<formulation>_{full,condensed,approximate}.png  on mesh_sec
 #
-# for each formulation. The runs, with their logs and the other plots of the solvers, are in a
+# for each formulation, and the same with the suffix _split, in the order (v, p, u_S, z, u_I), or
+# (v, p, u_S, u_I) for the harmonic formulation, in which the fieldsplit of the condensed solvers
+# solves the blocks. The runs, with their logs and the other plots of the solvers, are in a
 # temporary directory, and OUT_DIR is only made once all of them have succeeded. When a run
 # fails, the end of its log is printed. Run it on a workstation from anywhere:
 #
@@ -46,8 +48,8 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 FORMULATIONS=${FORMULATIONS:-biharmonic harmonic}
-# The first commit with the solvers of both formulations
-COMMIT=${COMMIT:-e83a4d4e63555d610948eb3a6ae020cc20c3e02b}
+# The first commit where the solvers of both formulations plot the fieldsplit order
+COMMIT=${COMMIT:-ff3f31f02748a8f06081e6cf82c206c86391e80a}
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
 OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}}
 COARSE_MESH=${COARSE_MESH:-$REPO/data/meshes/fsi2/mesh_sec_coarse.xdmf}
@@ -167,11 +169,16 @@ EOF
 plots() {
     local name=$1 mesh_name=$2 kind=$3
     local runs=$WORK_DIR/runs/$mesh_name figures=output/figures/matrix_blocks
-    cp "$runs/$full_solver/$figures/$full_solver/${kind}_eq1.png" "$RESULT_DIR/${kind}_${name}_full.png"
-    cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_eq1.png" \
-        "$RESULT_DIR/${kind}_${name}_condensed.png"
-    cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_eq1.png" \
-        "$RESULT_DIR/${kind}_${name}_approximate.png"
+    local order suffix
+    for order in eq1 split; do
+        suffix=$([[ $order == split ]] && echo _split || true)
+        cp "$runs/$full_solver/$figures/$full_solver/${kind}_$order.png" \
+            "$RESULT_DIR/${kind}_${name}_full$suffix.png"
+        cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_$order.png" \
+            "$RESULT_DIR/${kind}_${name}_condensed$suffix.png"
+        cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_$order.png" \
+            "$RESULT_DIR/${kind}_${name}_approximate$suffix.png"
+    done
 }
 
 for name in $FORMULATIONS; do

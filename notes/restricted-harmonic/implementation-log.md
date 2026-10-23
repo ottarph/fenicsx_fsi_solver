@@ -138,3 +138,9 @@ pytest with the restart tests spawning 2 ranks, while the plot script and the bi
   `spy_<formulation>_<jacobian>.png` and `block_norms_<formulation>_<jacobian>.png`.
   `output/figures/jacobian_plots/e83a4d4/` now holds `run_info.txt` and all 12 figures, replacing
   `66b0885/` and the harmonic-only `e83a4d4/`. The biharmonic block norms are the same as at 66b0885.
+- The four solvers of the script plot a third ordering, `split`: (v, p, u_S, z, u_I), or (v, p, u_S, u_I)
+  in the harmonic formulation, the order in which the fieldsplit of the condensed solvers solves the
+  blocks (ff3f31f). In it, J_0 is block lower triangular, and the full and condensed Jacobians show the
+  dropped blocks above the diagonal. The script, pinned to ff3f31f, also collects these as
+  `*_split.png`: `output/figures/jacobian_plots/ff3f31f/` holds `run_info.txt` and 24 figures, and
+  replaces `e83a4d4/`.
