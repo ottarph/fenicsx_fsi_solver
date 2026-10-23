@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from restart_helpers import (
     check_restart_rejects_different_dt,
@@ -76,3 +78,23 @@ def test_fsi2_biharmonic_fulljacobian_restart_rejects_T_not_after_checkpoint(out
 
 def test_fsi2_biharmonic_fulljacobian_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", ELEMENTS, output_dirs, tmp_path)
+
+
+def test_fsi2_biharmonic_fulljacobian_plots_matrices(output_dirs, tmp_path, monkeypatch):
+    mesh_path = str(Path("data/meshes/fsi2/mesh_sec_coarse.xdmf").resolve())
+    # The plots go to output/figures/matrix_blocks/<script>/ in the working directory
+    monkeypatch.chdir(tmp_path)
+    solve(
+        mesh_path=mesh_path,
+        T=0.0025,
+        dt_val=0.0025,
+        output_path=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
+        plot_matrices=True,
+    )
+
+    figures = tmp_path / "output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian"
+    for label in ("storage", "eq1", "split"):
+        assert (figures / f"spy_{label}.png").exists()
+        assert (figures / f"block_norms_{label}.png").exists()
