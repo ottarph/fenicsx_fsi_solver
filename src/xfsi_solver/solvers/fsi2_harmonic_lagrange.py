@@ -516,7 +516,7 @@ def solve(
             "snes_rtol": rtol,
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
-            "snes_monitor": None,
+            "snes_converged_reason": None,
         },
     )
 

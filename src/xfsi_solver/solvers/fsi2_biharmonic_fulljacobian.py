@@ -375,7 +375,7 @@ def solve(
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_fulljacobian_snes_log.txt",
-            "snes_monitor": None,
+            "snes_converged_reason": None,
         },
     )
 
