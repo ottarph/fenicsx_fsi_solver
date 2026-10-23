@@ -61,11 +61,11 @@ biharmonic ones.
 
 ## Figures
 
-`output/figures/jacobian_plots/e83a4d4_harmonic/figures/`:
+`output/figures/jacobian_plots/e83a4d4/`:
 `spy_harmonic_{full,condensed,approximate}.png` (coarse mesh, 1 rank) and
 `block_norms_harmonic_{full,condensed,approximate}.png` (mesh_sec, 8 ranks), at t = 7.0025, in the
-order (u_S, v, p, u_I). The per-run plots, including the storage order, and the logs are in
-`.../e83a4d4_harmonic/{coarse,normal}/<solver>/`.
+order (u_S, v, p, u_I), with `run_info.txt`. Since 2026-10-23 the script keeps only these; the
+per-run plots and logs are left in a temporary directory, see `implementation-log.md`.
 
 What they show (block norms on mesh_sec):
 

@@ -119,3 +119,15 @@ checkpoints are kept and a mesh can fold without Newton failing.
 Full suite at 13f52ed (solvers, tests and docs; the job script is not covered by tests), serial
 pytest with the restart tests spawning 2 ranks, while the plot script and the biharmonic check ran:
 189 passed in 542.8 s (`output/logs/restricted_harmonic_tests.txt`).
+
+## Plot script output (2026-10-23)
+
+- `jobs/fsi2_jacobian_plots.sh` now leaves only `run_info.txt` and the six figures in OUT_DIR, which is
+  `output/figures/jacobian_plots/<short hash of COMMIT>/` for both formulations (no `_harmonic` suffix
+  and no `figures/` subfolder). The exported source, the runs with their logs, and the other plots of
+  the solvers are in one temporary directory, removed when the script exits. OUT_DIR is made only after
+  all four runs succeeded; a failed run prints the end of its log instead.
+- If both formulations are ever pinned to the same commit, the second run stops because OUT_DIR exists;
+  pass another OUT_DIR then.
+- Regenerated `66b0885/` (biharmonic) and `e83a4d4/` (harmonic) with it, replacing the earlier
+  folders `66b0885/` and `e83a4d4_harmonic/`.

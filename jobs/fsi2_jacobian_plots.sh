@@ -11,20 +11,23 @@
 # fsi2_harmonic_condensed (condensed and approximate). The default is FORMULATION=biharmonic.
 #
 # Each solver's solve() takes one time step from a developed checkpoint with plot_matrices=True,
-# and plots the Jacobians at the state after that step. The script collects
+# and plots the Jacobians at the state after that step. The result is OUT_DIR, by default
+# output/figures/jacobian_plots/<short hash of COMMIT>/, with only
 #
-#   OUT_DIR/figures/spy_{full,condensed,approximate}.png          on the coarse mesh
-#   OUT_DIR/figures/block_norms_{full,condensed,approximate}.png  on mesh_sec
+#   run_info.txt
+#   spy_{full,condensed,approximate}.png          on the coarse mesh
+#   block_norms_{full,condensed,approximate}.png  on mesh_sec
 #
-# (spy_harmonic_full.png and so on with FORMULATION=harmonic, in OUT_DIR ending in _harmonic),
-# and keeps every plot and log of the runs in OUT_DIR/<mesh>/<solver>/. Run it on a workstation
+# (spy_harmonic_full.png and so on with FORMULATION=harmonic). The runs, with their logs and the
+# other plots of the solvers, are in a temporary directory, and OUT_DIR is only made once all of
+# them have succeeded. When a run fails, the end of its log is printed. Run it on a workstation
 # from anywhere:
 #
 #   jobs/fsi2_jacobian_plots.sh
 #   FORMULATION=harmonic jobs/fsi2_jacobian_plots.sh
 #
-# The solvers run from the source of COMMIT, exported into a temporary directory that is removed
-# when the script exits, and not from the checkout, so the plots stay tied to that commit
+# The solvers run from the source of COMMIT, exported into the temporary directory, which is
+# removed when the script exits, and not from the checkout, so the plots stay tied to that commit
 # whatever is checked out. The checkout is not changed. The meshes are
 # read from the checkout. The checkpoints are not in git: the biharmonic defaults are the states
 # at t = 15 that fsi2_biharmonic_mixed (at c3c6d01, dt = 0.0025) wrote in
@@ -46,12 +49,12 @@ case $FORMULATION in
     biharmonic)
         default_commit=66b0885e02f07b5bbf3251bc6cf23c961186d412
         full_solver=fsi2_biharmonic_fulljacobian condensed_solver=fsi2_biharmonic_mixed
-        runs=fsi2_mixed figure_prefix="" out_suffix=""
+        runs=fsi2_mixed figure_prefix=""
         ;;
     harmonic)
         default_commit=e83a4d4e63555d610948eb3a6ae020cc20c3e02b
         full_solver=fsi2_harmonic_fulljacobian condensed_solver=fsi2_harmonic_condensed
-        runs=fsi2_harmonic figure_prefix=harmonic_ out_suffix=_harmonic
+        runs=fsi2_harmonic figure_prefix=harmonic_
         ;;
     *)
         echo "FORMULATION must be biharmonic or harmonic, not $FORMULATION" >&2
@@ -60,7 +63,7 @@ case $FORMULATION in
 esac
 COMMIT=${COMMIT:-$default_commit}
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
-OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}$out_suffix}
+OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}}
 COARSE_MESH=${COARSE_MESH:-$REPO/data/meshes/fsi2/mesh_sec_coarse.xdmf}
 NORMAL_MESH=${NORMAL_MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
 COARSE_CHECKPOINTS=${COARSE_CHECKPOINTS:-$REPO/output/matrix_block_runs/${runs}_coarse/checkpoints}
@@ -79,12 +82,14 @@ if [[ -e $OUT_DIR ]]; then
     echo "$OUT_DIR exists; remove it or choose another OUT_DIR" >&2
     exit 1
 fi
-mkdir -p "$OUT_DIR/figures"
-SRC_DIR=$(mktemp -d)
+# The exported source, the runs and the collected results until they are moved to OUT_DIR
+WORK_DIR=$(mktemp -d)
 # Also when a run fails or the script is stopped, which otherwise skips the EXIT trap
-trap 'rm -rf "$SRC_DIR"' EXIT
+trap 'rm -rf "$WORK_DIR"' EXIT
 trap 'exit 1' INT TERM HUP
-git -C "$REPO" archive "$COMMIT" src | tar -x -C "$SRC_DIR"
+git -C "$REPO" archive "$COMMIT" src | tar -x -C "$WORK_DIR"
+RESULT_DIR=$WORK_DIR/result
+mkdir -p "$RESULT_DIR"
 
 {
     echo "=== $(hostname), $(date -Iseconds)"
@@ -93,14 +98,14 @@ git -C "$REPO" archive "$COMMIT" src | tar -x -C "$SRC_DIR"
     echo "coarse: $COARSE_MESH from $COARSE_CHECKPOINTS on $COARSE_RANKS ranks"
     echo "normal: $NORMAL_MESH from $NORMAL_CHECKPOINTS on $NORMAL_RANKS ranks"
     echo "dt = $DT"
-} | tee "$OUT_DIR/run_info.txt"
+} | tee "$RESULT_DIR/run_info.txt"
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-export PYTHONPATH=$SRC_DIR/src
+export PYTHONPATH=$WORK_DIR/src
 
 run() {
     local mesh_name=$1 mesh=$2 checkpoints=$3 ranks=$4 solver=$5 solver_kwargs=$6
-    local dir=$OUT_DIR/$mesh_name/$solver
+    local dir=$WORK_DIR/runs/$mesh_name/$solver
     mkdir -p "$dir"
     # Every rank runs the call from -c; a script on stdin would only reach rank 0
     local py
@@ -115,7 +120,7 @@ from xfsi_solver.solvers.$solver import solve
 from xfsi_solver.tools.checkpoint import Checkpointer
 
 # The editable install of the checkout must not shadow the exported source
-assert Path(xfsi_solver.__file__).is_relative_to("$SRC_DIR/src"), xfsi_solver.__file__
+assert Path(xfsi_solver.__file__).is_relative_to("$WORK_DIR/src"), xfsi_solver.__file__
 
 with dolfinx.io.XDMFFile(MPI.COMM_WORLD, "$mesh", "r") as f:
     t0, _ = Checkpointer("$checkpoints", f.read_mesh()).latest_times()
@@ -135,8 +140,12 @@ EOF
 )
     echo "=== $mesh_name $solver: start $(date +%T)"
     # The plots go to output/figures/matrix_blocks/<solver>/ in the working directory
-    (cd "$dir" && timeout 1800 conda run --no-capture-output -n xfsi_solver \
-        mpirun -n "$ranks" python -u -c "$py" > log.txt 2>&1)
+    if ! (cd "$dir" && timeout 1800 conda run --no-capture-output -n xfsi_solver \
+        mpirun -n "$ranks" python -u -c "$py" > log.txt 2>&1); then
+        echo "=== $mesh_name $solver: failed $(date +%T); end of its log:" >&2
+        tail -n 40 "$dir/log.txt" >&2
+        exit 1
+    fi
     echo "=== $mesh_name $solver: done $(date +%T)"
 }
 
@@ -152,14 +161,17 @@ done
 
 plots() {
     local mesh_name=$1 kind=$2
-    local figures=output/figures/matrix_blocks
-    cp "$OUT_DIR/$mesh_name/$full_solver/$figures/$full_solver/${kind}_eq1.png" \
-        "$OUT_DIR/figures/${kind}_${figure_prefix}full.png"
-    cp "$OUT_DIR/$mesh_name/$condensed_solver/$figures/$condensed_solver/${kind}_eq1.png" \
-        "$OUT_DIR/figures/${kind}_${figure_prefix}condensed.png"
-    cp "$OUT_DIR/$mesh_name/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_eq1.png" \
-        "$OUT_DIR/figures/${kind}_${figure_prefix}approximate.png"
+    local runs=$WORK_DIR/runs/$mesh_name figures=output/figures/matrix_blocks
+    cp "$runs/$full_solver/$figures/$full_solver/${kind}_eq1.png" \
+        "$RESULT_DIR/${kind}_${figure_prefix}full.png"
+    cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_eq1.png" \
+        "$RESULT_DIR/${kind}_${figure_prefix}condensed.png"
+    cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_eq1.png" \
+        "$RESULT_DIR/${kind}_${figure_prefix}approximate.png"
 }
 plots coarse spy
 plots normal block_norms
-echo "=== plots in $OUT_DIR/figures"
+
+mkdir -p "$(dirname "$OUT_DIR")"
+mv -T "$RESULT_DIR" "$OUT_DIR"
+echo "=== plots in $OUT_DIR"
