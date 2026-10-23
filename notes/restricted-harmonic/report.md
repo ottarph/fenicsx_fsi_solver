@@ -28,7 +28,8 @@ e83a4d4 Add the condensed restricted harmonic FSI2 solver with J_0 and fieldspli
   (solve, restart, restart on 2→1 and 1→2 ranks, initial state, start from a biharmonic
   checkpoint, matrix plots, and the two harmonic solvers against each other).
 - `jobs/fsi2_jacobian_plots.sh`: `FORMULATION=harmonic` (default `biharmonic`), harmonic default
-  COMMIT e83a4d4; the biharmonic default stays 66b0885.
+  COMMIT e83a4d4; the biharmonic default stays 66b0885. Since 2026-10-23, one run makes both
+  formulations at e83a4d4 into one folder; see `implementation-log.md`.
 - README solver table and an implementation line in `docs/restricted-iterative-solver.md`.
 
 ## Tests
@@ -61,7 +62,7 @@ biharmonic ones.
 
 ## Figures
 
-`output/figures/jacobian_plots/e83a4d4/`:
+`output/figures/jacobian_plots/e83a4d4/`, next to the biharmonic plots `*_biharmonic_*.png`:
 `spy_harmonic_{full,condensed,approximate}.png` (coarse mesh, 1 rank) and
 `block_norms_harmonic_{full,condensed,approximate}.png` (mesh_sec, 8 ranks), at t = 7.0025, in the
 order (u_S, v, p, u_I), with `run_info.txt`. Since 2026-10-23 the script keeps only these; the

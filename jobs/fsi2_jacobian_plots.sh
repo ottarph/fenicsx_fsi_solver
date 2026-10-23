@@ -6,30 +6,31 @@
 #   condensed    fsi2_biharmonic_mixed: u_S condensed out of the solid stress
 #   approximate  fsi2_biharmonic_mixed: J_0, without the fluid ALE derivatives
 #
-# With FORMULATION=harmonic, the same plots of the harmonic version of the formulation, in the
-# order (u_S, v, p, u_I), from fsi2_harmonic_fulljacobian (full, state (u, v, p)) and
-# fsi2_harmonic_condensed (condensed and approximate). The default is FORMULATION=biharmonic.
+# and the same plots of the harmonic version of the formulation, in the order (u_S, v, p, u_I),
+# from fsi2_harmonic_fulljacobian (full, state (u, v, p)) and fsi2_harmonic_condensed (condensed
+# and approximate). FORMULATIONS selects them, by default "biharmonic harmonic".
 #
 # Each solver's solve() takes one time step from a developed checkpoint with plot_matrices=True,
 # and plots the Jacobians at the state after that step. The result is OUT_DIR, by default
 # output/figures/jacobian_plots/<short hash of COMMIT>/, with only
 #
 #   run_info.txt
-#   spy_{full,condensed,approximate}.png          on the coarse mesh
-#   block_norms_{full,condensed,approximate}.png  on mesh_sec
+#   spy_<formulation>_{full,condensed,approximate}.png          on the coarse mesh
+#   block_norms_<formulation>_{full,condensed,approximate}.png  on mesh_sec
 #
-# (spy_harmonic_full.png and so on with FORMULATION=harmonic). The runs, with their logs and the
-# other plots of the solvers, are in a temporary directory, and OUT_DIR is only made once all of
-# them have succeeded. When a run fails, the end of its log is printed. Run it on a workstation
-# from anywhere:
+# for each formulation. The runs, with their logs and the other plots of the solvers, are in a
+# temporary directory, and OUT_DIR is only made once all of them have succeeded. When a run
+# fails, the end of its log is printed. Run it on a workstation from anywhere:
 #
 #   jobs/fsi2_jacobian_plots.sh
-#   FORMULATION=harmonic jobs/fsi2_jacobian_plots.sh
+#   FORMULATIONS=harmonic jobs/fsi2_jacobian_plots.sh
 #
 # The solvers run from the source of COMMIT, exported into the temporary directory, which is
 # removed when the script exits, and not from the checkout, so the plots stay tied to that commit
 # whatever is checked out. The checkout is not changed. The meshes are
-# read from the checkout. The checkpoints are not in git: the biharmonic defaults are the states
+# read from the checkout. The checkpoints are not in git, and are set per formulation and mesh by
+# BIHARMONIC_COARSE_CHECKPOINTS, BIHARMONIC_NORMAL_CHECKPOINTS, HARMONIC_COARSE_CHECKPOINTS and
+# HARMONIC_NORMAL_CHECKPOINTS. The biharmonic defaults are the states
 # at t = 15 that fsi2_biharmonic_mixed (at c3c6d01, dt = 0.0025) wrote in
 # output/matrix_block_runs/. Any checkpoint of an FSI2 solver with (u, v, p, z) on the same
 # mesh works; the solvers only read them. The harmonic defaults are the states at t = 7 that
@@ -44,39 +45,48 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-FORMULATION=${FORMULATION:-biharmonic}
-case $FORMULATION in
-    biharmonic)
-        default_commit=66b0885e02f07b5bbf3251bc6cf23c961186d412
-        full_solver=fsi2_biharmonic_fulljacobian condensed_solver=fsi2_biharmonic_mixed
-        runs=fsi2_mixed figure_prefix=""
-        ;;
-    harmonic)
-        default_commit=e83a4d4e63555d610948eb3a6ae020cc20c3e02b
-        full_solver=fsi2_harmonic_fulljacobian condensed_solver=fsi2_harmonic_condensed
-        runs=fsi2_harmonic figure_prefix=harmonic_
-        ;;
-    *)
-        echo "FORMULATION must be biharmonic or harmonic, not $FORMULATION" >&2
-        exit 1
-        ;;
-esac
-COMMIT=${COMMIT:-$default_commit}
+FORMULATIONS=${FORMULATIONS:-biharmonic harmonic}
+# The first commit with the solvers of both formulations
+COMMIT=${COMMIT:-e83a4d4e63555d610948eb3a6ae020cc20c3e02b}
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}")
 OUT_DIR=${OUT_DIR:-$REPO/output/figures/jacobian_plots/${COMMIT:0:7}}
 COARSE_MESH=${COARSE_MESH:-$REPO/data/meshes/fsi2/mesh_sec_coarse.xdmf}
 NORMAL_MESH=${NORMAL_MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
-COARSE_CHECKPOINTS=${COARSE_CHECKPOINTS:-$REPO/output/matrix_block_runs/${runs}_coarse/checkpoints}
-NORMAL_CHECKPOINTS=${NORMAL_CHECKPOINTS:-$REPO/output/matrix_block_runs/${runs}_normal/checkpoints}
+RUNS=$REPO/output/matrix_block_runs
+BIHARMONIC_COARSE_CHECKPOINTS=${BIHARMONIC_COARSE_CHECKPOINTS:-$RUNS/fsi2_mixed_coarse/checkpoints}
+BIHARMONIC_NORMAL_CHECKPOINTS=${BIHARMONIC_NORMAL_CHECKPOINTS:-$RUNS/fsi2_mixed_normal/checkpoints}
+HARMONIC_COARSE_CHECKPOINTS=${HARMONIC_COARSE_CHECKPOINTS:-$RUNS/fsi2_harmonic_coarse/checkpoints}
+HARMONIC_NORMAL_CHECKPOINTS=${HARMONIC_NORMAL_CHECKPOINTS:-$RUNS/fsi2_harmonic_normal/checkpoints}
 COARSE_RANKS=${COARSE_RANKS:-1}
 NORMAL_RANKS=${NORMAL_RANKS:-8}
 DT=${DT:-0.0025}
 
+# Sets the solvers and checkpoints of formulation $1
+formulation() {
+    case $1 in
+        biharmonic)
+            full_solver=fsi2_biharmonic_fulljacobian condensed_solver=fsi2_biharmonic_mixed
+            coarse_checkpoints=$BIHARMONIC_COARSE_CHECKPOINTS normal_checkpoints=$BIHARMONIC_NORMAL_CHECKPOINTS
+            ;;
+        harmonic)
+            full_solver=fsi2_harmonic_fulljacobian condensed_solver=fsi2_harmonic_condensed
+            coarse_checkpoints=$HARMONIC_COARSE_CHECKPOINTS normal_checkpoints=$HARMONIC_NORMAL_CHECKPOINTS
+            ;;
+        *)
+            echo "FORMULATIONS must list biharmonic and/or harmonic, not $1" >&2
+            exit 1
+            ;;
+    esac
+}
+
 for path in "$COARSE_MESH" "$NORMAL_MESH"; do
     [[ -f $path ]] || { echo "Mesh $path not found" >&2; exit 1; }
 done
-for path in "$COARSE_CHECKPOINTS" "$NORMAL_CHECKPOINTS"; do
-    [[ -d $path ]] || { echo "No checkpoints in $path to start from" >&2; exit 1; }
+for name in $FORMULATIONS; do
+    formulation "$name"
+    for path in "$coarse_checkpoints" "$normal_checkpoints"; do
+        [[ -d $path ]] || { echo "No $name checkpoints in $path to start from" >&2; exit 1; }
+    done
 done
 if [[ -e $OUT_DIR ]]; then
     echo "$OUT_DIR exists; remove it or choose another OUT_DIR" >&2
@@ -94,10 +104,15 @@ mkdir -p "$RESULT_DIR"
 {
     echo "=== $(hostname), $(date -Iseconds)"
     git -C "$REPO" log -1 --format="%H %s" "$COMMIT"
-    echo "formulation: $FORMULATION"
-    echo "coarse: $COARSE_MESH from $COARSE_CHECKPOINTS on $COARSE_RANKS ranks"
-    echo "normal: $NORMAL_MESH from $NORMAL_CHECKPOINTS on $NORMAL_RANKS ranks"
+    echo "coarse: $COARSE_MESH on $COARSE_RANKS ranks"
+    echo "normal: $NORMAL_MESH on $NORMAL_RANKS ranks"
     echo "dt = $DT"
+    for name in $FORMULATIONS; do
+        formulation "$name"
+        echo "$name: $full_solver and $condensed_solver, from"
+        echo "    coarse: $coarse_checkpoints"
+        echo "    normal: $normal_checkpoints"
+    done
 } | tee "$RESULT_DIR/run_info.txt"
 
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
@@ -149,28 +164,30 @@ EOF
     echo "=== $mesh_name $solver: done $(date +%T)"
 }
 
-for mesh_name in coarse normal; do
-    if [[ $mesh_name == coarse ]]; then
-        args=("$COARSE_MESH" "$COARSE_CHECKPOINTS" "$COARSE_RANKS")
-    else
-        args=("$NORMAL_MESH" "$NORMAL_CHECKPOINTS" "$NORMAL_RANKS")
-    fi
-    run "$mesh_name" "${args[@]}" "$full_solver" ""
-    run "$mesh_name" "${args[@]}" "$condensed_solver" "direct_k_c_solve=True,"
-done
-
 plots() {
-    local mesh_name=$1 kind=$2
+    local name=$1 mesh_name=$2 kind=$3
     local runs=$WORK_DIR/runs/$mesh_name figures=output/figures/matrix_blocks
-    cp "$runs/$full_solver/$figures/$full_solver/${kind}_eq1.png" \
-        "$RESULT_DIR/${kind}_${figure_prefix}full.png"
+    cp "$runs/$full_solver/$figures/$full_solver/${kind}_eq1.png" "$RESULT_DIR/${kind}_${name}_full.png"
     cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_eq1.png" \
-        "$RESULT_DIR/${kind}_${figure_prefix}condensed.png"
+        "$RESULT_DIR/${kind}_${name}_condensed.png"
     cp "$runs/$condensed_solver/$figures/$condensed_solver/${kind}_approximate_eq1.png" \
-        "$RESULT_DIR/${kind}_${figure_prefix}approximate.png"
+        "$RESULT_DIR/${kind}_${name}_approximate.png"
 }
-plots coarse spy
-plots normal block_norms
+
+for name in $FORMULATIONS; do
+    formulation "$name"
+    for mesh_name in coarse normal; do
+        if [[ $mesh_name == coarse ]]; then
+            args=("$COARSE_MESH" "$coarse_checkpoints" "$COARSE_RANKS")
+        else
+            args=("$NORMAL_MESH" "$normal_checkpoints" "$NORMAL_RANKS")
+        fi
+        run "$mesh_name" "${args[@]}" "$full_solver" ""
+        run "$mesh_name" "${args[@]}" "$condensed_solver" "direct_k_c_solve=True,"
+    done
+    plots "$name" coarse spy
+    plots "$name" normal block_norms
+done
 
 mkdir -p "$(dirname "$OUT_DIR")"
 mv -T "$RESULT_DIR" "$OUT_DIR"

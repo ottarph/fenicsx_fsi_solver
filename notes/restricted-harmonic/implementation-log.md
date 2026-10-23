@@ -131,3 +131,10 @@ pytest with the restart tests spawning 2 ranks, while the plot script and the bi
   pass another OUT_DIR then.
 - Regenerated `66b0885/` (biharmonic) and `e83a4d4/` (harmonic) with it, replacing the earlier
   folders `66b0885/` and `e83a4d4_harmonic/`.
+- Both formulations now come from one commit and one run of the script: e83a4d4, the first commit with
+  the solvers of both, differs from 66b0885 under `src/` only by the two harmonic solver files.
+  `FORMULATIONS` (default `biharmonic harmonic`) replaces `FORMULATION`, the checkpoints are set per
+  formulation and mesh (`BIHARMONIC_COARSE_CHECKPOINTS` and so on), and the figures are named
+  `spy_<formulation>_<jacobian>.png` and `block_norms_<formulation>_<jacobian>.png`.
+  `output/figures/jacobian_plots/e83a4d4/` now holds `run_info.txt` and all 12 figures, replacing
+  `66b0885/` and the harmonic-only `e83a4d4/`. The biharmonic block norms are the same as at 66b0885.
