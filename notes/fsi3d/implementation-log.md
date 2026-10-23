@@ -776,3 +776,17 @@ Job 1441099, defq, 64 ranks, two steps from the t = 4 checkpoint of
   ranks, and with it the damping SOR needs.
 - 0.4 is 11% fewer iterations and 7% less time per step than 0.5, and further
   from the breakdown, which matters for more ranks over several nodes.
+
+Over 10 steps (to t = 4.04, job 1442868, defq, 64 ranks, 3 smoothing steps):
+
+| omega | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 0.5 | 35.9 | 50.0 |
+| 0.4 | 30.8 | 42.4 |
+| 0.3 | 32.5 | 46.1 |
+
+0.4 takes 14% fewer iterations and 15% less time per step than 0.5, so
+`threeDfsi_c0ip` and `threeDfsi_mixed` now under-relax with omega = 0.4. The
+0.5 row repeats the iterations of the earlier 10-step run with 3 smoothing
+steps (35.9) but not its time (57.6 s), so the step times of different jobs
+differ by about 15% even on the same partition; within a job they compare.

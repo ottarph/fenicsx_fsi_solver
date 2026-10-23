@@ -6,8 +6,9 @@
 #   sbatch jobs/threeDfsi_c0ip_kc_experiments.sh
 #
 # Each variant is a name and a Python dict of PETSc options for the K_c solve (k_c_options in
-# solve()), which replace the solver's own; None runs the solver as it is (3 SOR smoothing steps
-# per level on the velocity block since 2026-10-22, 2 before). To run other
+# solve()), which replace the solver's own; None runs the solver as it is (on the velocity block,
+# 3 SOR smoothing steps per level since 2026-10-22, 2 before, and omega 0.4 since 2026-10-23,
+# 0.5 before). To run other
 # variants without editing this file, write them to a file, one "name|dict" per line, and
 # pass it as VARIANTS_FILE:
 #   sbatch --export=ALL,VARIANTS_FILE=/home/hellanottar/xfsi/my_variants.txt jobs/threeDfsi_c0ip_kc_experiments.sh

@@ -105,7 +105,7 @@ def solve(
     velocity block A, with the rigid body modes as near-nullspace and SOR smoothing, for
     A^{-1}, and one BoomerAMG V-cycle on the approximation -B diag(A)^{-1} G (selfp) of
     the pressure Schur complement S = -B A^{-1} G, for S^{-1}. The SOR is under-relaxed,
-    with omega = 0.5: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
+    with omega = 0.4: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
     Jacobi between ranks, and with omega = 1 it made GAMG diverge for some partitions of
     the 3d mesh. GAMG smooths with three SOR steps per level, which on many ranks takes
     fewer FGMRES iterations and less time than PETSc's two.
@@ -854,22 +854,23 @@ def solve(
 
     # GAMG smoothing with SOR. In parallel, PETSc's SOR is Gauss-Seidel within each rank and
     # Jacobi between ranks, which can diverge where the coupling across a rank boundary is strong,
-    # such as in the thin, stiff beam. With omega = 1, GAMG diverged on 26 to 30 ranks on the coarse
-    # mesh and on 30 ranks on the medium mesh; with omega = 0.7, on 30 ranks on the coarse mesh.
-    # Under-relaxed with omega = 0.5, it converged on all ranks tried, also with the beam
-    # oscillating. Damping the Richardson iteration instead (scale 0.5) converged too, but costs
-    # a separate MatMult for the residual in every smoothing step, since PETSc only applies SOR
-    # directly as the smoother when the Richardson scale is 1, and needed about 20% more FGMRES
-    # iterations: omega = 0.5 takes 14 to 16% less time per step on the medium mesh
-    # (notes/fsi3d/implementation-log.md).
-    # Three smoothing steps per level instead of PETSc's two: the SOR weakens as the ranks increase,
-    # and on the fine mesh with 64 ranks the third step cuts the FGMRES iterations by a third and
-    # the time per step by 7%, over 10 steps with the beam oscillating. A fourth gains no iterations.
+    # such as in the thin, stiff beam, and needs more damping the more ranks there are. With
+    # omega = 1, GAMG diverged on 26 to 30 ranks on the coarse mesh and on 30 ranks on the medium
+    # mesh; with omega = 0.7, on 30 ranks on the coarse mesh and on 64 ranks on the fine mesh.
+    # Damping the Richardson iteration instead converged too, but costs a separate MatMult for the
+    # residual in every smoothing step, since PETSc only applies SOR directly as the smoother when
+    # the Richardson scale is 1. On the fine mesh with 64 ranks, over 10 steps with the beam
+    # oscillating:
+    # - Three smoothing steps per level instead of PETSc's two cut the FGMRES iterations by a third
+    #   and the time per step by 7%. A fourth gains no iterations.
+    # - With three steps, omega = 0.4 takes 14% fewer iterations and 15% less time per step than
+    #   0.5. 0.3 and 0.6 take more iterations, and 0.7 diverges.
+    # (notes/fsi3d/implementation-log.md)
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
         "fieldsplit_v_mg_levels_ksp_max_it": 3,
         "fieldsplit_v_mg_levels_pc_type": "sor",
-        "fieldsplit_v_mg_levels_pc_sor_omega": 0.5,
+        "fieldsplit_v_mg_levels_pc_sor_omega": 0.4,
     }
 
     if direct_k_c_solve:
