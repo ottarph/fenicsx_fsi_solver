@@ -755,3 +755,24 @@ takes 8.8 s instead of 8.1 s: on few ranks the third step costs more than it
 saves. `threeDfsi_mixed` smooths with 3 steps too: its K_c and the K_c
 solve are the same as in `threeDfsi_c0ip`, which only differs in the mesh
 motion.
+
+### SOR omega with 3 smoothing steps (2026-10-23)
+
+Job 1441099, defq, 64 ranks, two steps from the t = 4 checkpoint of
+`fine_rank_test`, 3 smoothing steps per level:
+
+| omega | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 0.4 | 28.2 | 37.0 |
+| 0.5 (current) | 31.6 | 39.7 |
+| 0.6 | 48.4 | 51.8 |
+| 0.7 | failed | |
+
+- 0.5 with 3 steps reproduces the earlier run (31.6 iterations, 39.0 s).
+- On 64 ranks, 0.5 sits close to where the smoother breaks down: 0.6 already
+  takes half again as many iterations, and 0.7 does not converge. On 28 to 30
+  ranks, with 2 steps, 0.5 was better than 0.7 by less (and 0.7 failed only on
+  30 ranks of the coarse mesh). The Jacobi coupling between ranks grows with the
+  ranks, and with it the damping SOR needs.
+- 0.4 is 11% fewer iterations and 7% less time per step than 0.5, and further
+  from the breakdown, which matters for more ranks over several nodes.
