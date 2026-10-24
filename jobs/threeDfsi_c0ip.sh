@@ -17,6 +17,13 @@
 #   for dt in 0.004 0.002 0.001; do sbatch --export=ALL,RUN_NAME=threeDfsi_c0ip_fine_dt$dt,INITIAL_STATE_RUN=threeDfsi_c0ip_fine_t8,DT=$dt,T=10.0 jobs/threeDfsi_c0ip.sh; done
 # Such a run that stopped is resumed with RESTART=True, without INITIAL_STATE_RUN.
 #
+# K_C_OPTIONS is a Python dict of PETSc options for the K_c solve (see k_c_options in solve()),
+# which replace the solver's own. --export splits at commas, so set a dict with several entries
+# in the environment instead and pass it on with --export=ALL. Two steps from a checkpoint at
+# t = 4 of another run, with 4 smoothing steps on the velocity block:
+#   K_C_OPTIONS='{"fieldsplit_v_mg_levels_ksp_max_it": 4}' sbatch --export=ALL,RUN_NAME=fine_sweeps4,INITIAL_STATE_RUN=fine_rank_test,T=4.008 -t 0-01:00:00 jobs/threeDfsi_c0ip.sh
+# The log shows the time and the K_c iterations of every step.
+#
 # Each run gets its own directory, RUN_DIR, which holds the QoIs, checkpoints, VTX output and
 # a record of the code version and arguments.
 #
@@ -67,6 +74,7 @@ CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-250}
 VTX_SAVE_EVERY=${VTX_SAVE_EVERY:-None}
 GAMMA_REASSEMBLE=${GAMMA_REASSEMBLE:-0.2}
 DIRECT_K_C_SOLVE=${DIRECT_K_C_SOLVE:-False}
+K_C_OPTIONS=${K_C_OPTIONS:-None}
 MAX_QUADRATURE_DEGREE=${MAX_QUADRATURE_DEGREE:-8}
 C0IP_A_VAL=${C0IP_A_VAL:-2.0}
 MESH_MOTION_TELESCOPE_REDUCTION_FACTOR=${MESH_MOTION_TELESCOPE_REDUCTION_FACTOR:-None}
@@ -118,6 +126,7 @@ solve(
     initial_state_dir=$INITIAL_STATE_DIR,
     gamma_reassemble=$GAMMA_REASSEMBLE,
     direct_k_c_solve=$DIRECT_K_C_SOLVE,
+    k_c_options=$K_C_OPTIONS,
     max_quadrature_degree=$MAX_QUADRATURE_DEGREE,
     c0ip_a_val=$C0IP_A_VAL,
     mesh_motion_telescope_reduction_factor=$MESH_MOTION_TELESCOPE_REDUCTION_FACTOR,

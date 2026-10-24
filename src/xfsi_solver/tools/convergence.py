@@ -32,7 +32,8 @@ def _reason_name(reasons: type, value: int) -> str:
 
 
 class KSPConvCheck:
-    """Record the failed solves of a KSP and of every KSP nested below it in fieldsplits.
+    """Record the failed solves of a KSP and of every KSP nested below it in fieldsplits, and the
+    iterations of each solve.
 
     The converged reason is the same on every rank, so every rank records the same
     failures. Nested KSPs only exist once their parent PC is set up, which happens in
@@ -43,12 +44,14 @@ class KSPConvCheck:
 
     def __init__(self, ksp: PETSc.KSP):
         self.failures: list[tuple[str, int]] = []  # (options prefix, converged reason) since the last clear()
+        self.iterations: dict[str, list[int]] = {}  # options prefix -> iterations of each solve since the last clear()
         self._attached: set[int] = set()
         self._attach(ksp)
 
     def clear(self) -> None:
-        """Forget the recorded failures, e.g. before the next nonlinear solve."""
+        """Forget the recorded failures and iterations, e.g. before the next nonlinear solve."""
         self.failures.clear()
+        self.iterations.clear()
 
     def _attach(self, ksp: PETSc.KSP) -> None:
         if ksp.handle in self._attached:
@@ -65,6 +68,7 @@ class KSPConvCheck:
                 self._attach(sub_ksp)
 
     def _postsolve(self, ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
+        self.iterations.setdefault(ksp.getOptionsPrefix(), []).append(ksp.getIterationNumber())
         reason = ksp.getConvergedReason()
         if reason < 0:
             self.failures.append((ksp.getOptionsPrefix(), reason))

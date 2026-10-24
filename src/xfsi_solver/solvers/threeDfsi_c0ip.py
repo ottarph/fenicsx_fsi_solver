@@ -56,6 +56,7 @@ def solve(
     initial_state_dir=None,
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
+    k_c_options=None,
     max_quadrature_degree=8,
     c0ip_a_val=2.0,
     mesh_motion_telescope_reduction_factor=None,
@@ -104,9 +105,16 @@ def solve(
     velocity block A, with the rigid body modes as near-nullspace and SOR smoothing, for
     A^{-1}, and one BoomerAMG V-cycle on the approximation -B diag(A)^{-1} G (selfp) of
     the pressure Schur complement S = -B A^{-1} G, for S^{-1}. The SOR is under-relaxed,
-    with omega = 0.5: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
+    with omega = 0.4: in parallel, PETSc's SOR is Gauss-Seidel within each rank and
     Jacobi between ranks, and with omega = 1 it made GAMG diverge for some partitions of
-    the 3d mesh.
+    the 3d mesh. GAMG smooths with three SOR steps per level, which on many ranks takes
+    fewer FGMRES iterations and less time than PETSc's two.
+
+    ``k_c_options`` is a dict of PETSc options for the K_c solve, without the K_c prefix, for
+    example ``{"fieldsplit_v_mg_levels_ksp_max_it": 4}``. They are added to the options above
+    and replace those with the same name, for trying other preconditioners. Options left
+    unused by the replacement, such as the SOR omega with another smoother, are listed when
+    PETSc finalizes. The time and the K_c iterations of every time step are printed.
 
     The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
     19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
@@ -846,18 +854,23 @@ def solve(
 
     # GAMG smoothing with SOR. In parallel, PETSc's SOR is Gauss-Seidel within each rank and
     # Jacobi between ranks, which can diverge where the coupling across a rank boundary is strong,
-    # such as in the thin, stiff beam. With omega = 1, GAMG diverged on 26 to 30 ranks on the coarse
-    # mesh and on 30 ranks on the medium mesh; with omega = 0.7, on 30 ranks on the coarse mesh.
-    # Under-relaxed with omega = 0.5, it converged on all ranks tried, also with the beam
-    # oscillating. Damping the Richardson iteration instead (scale 0.5) converged too, but costs
-    # a separate MatMult for the residual in every smoothing step, since PETSc only applies SOR
-    # directly as the smoother when the Richardson scale is 1, and needed about 20% more FGMRES
-    # iterations: omega = 0.5 takes 14 to 16% less time per step on the medium mesh
-    # (notes/fsi3d/implementation-log.md).
+    # such as in the thin, stiff beam, and needs more damping the more ranks there are. With
+    # omega = 1, GAMG diverged on 26 to 30 ranks on the coarse mesh and on 30 ranks on the medium
+    # mesh; with omega = 0.7, on 30 ranks on the coarse mesh and on 64 ranks on the fine mesh.
+    # Damping the Richardson iteration instead converged too, but costs a separate MatMult for the
+    # residual in every smoothing step, since PETSc only applies SOR directly as the smoother when
+    # the Richardson scale is 1. On the fine mesh with 64 ranks, over 10 steps with the beam
+    # oscillating:
+    # - Three smoothing steps per level instead of PETSc's two cut the FGMRES iterations by a third
+    #   and the time per step by 7%. A fourth gains no iterations.
+    # - With three steps, omega = 0.4 takes 14% fewer iterations and 15% less time per step than
+    #   0.5. 0.3 and 0.6 take more iterations, and 0.7 diverges.
+    # (notes/fsi3d/implementation-log.md)
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
+        "fieldsplit_v_mg_levels_ksp_max_it": 3,
         "fieldsplit_v_mg_levels_pc_type": "sor",
-        "fieldsplit_v_mg_levels_pc_sor_omega": 0.5,
+        "fieldsplit_v_mg_levels_pc_sor_omega": 0.4,
     }
 
     if direct_k_c_solve:
@@ -900,6 +913,9 @@ def solve(
             "fieldsplit_p_pc_hypre_type": "boomeramg",
             # "fieldsplit_p_ksp_converged_reason": None,
         }
+
+    if k_c_options is not None:
+        velocity_pressure_solve_options.update(k_c_options)
 
     # A_S is a symmetric positive definite solid mass matrix, which CG with Jacobi solves to
     # round-off in about 30 iterations. That is cheaper than a MUMPS solve on many ranks.
@@ -996,8 +1012,11 @@ def solve(
 
     first_step = step
     num_newton_iterations = 0
+    step_times = []
+    k_c_iterations = []  # of every K_c solve in the run
     start = timer()
     while step < num_steps:
+        step_start = timer()
         t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
@@ -1011,6 +1030,15 @@ def solve(
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=ksp_check)
+
+        step_times.append(timer() - step_start)
+        step_k_c_iterations = ksp_check.iterations.get(ksp_q_c.getOptionsPrefix(), [])
+        k_c_iterations += step_k_c_iterations
+        PETSc.Sys.Print(
+            f"  step time {step_times[-1]:.2f} s, K_c iterations {sum(step_k_c_iterations)} in "
+            f"{len(step_k_c_iterations)} solves ({sum(step_k_c_iterations) / max(len(step_k_c_iterations), 1):.1f} "
+            "per solve)"
+        )
 
         if comm.rank == 0:
             sys.stdout.flush()
@@ -1026,6 +1054,11 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if len(step_times) > 1:
+            # The first step also sets up the K_m factorization and the AMG hierarchies.
+            print(f"Time per step after the first: {sum(step_times[1:]) / (len(step_times) - 1):.3f} s")
+        if k_c_iterations:
+            print(f"K_c iterations per solve: {sum(k_c_iterations) / len(k_c_iterations):.1f}")
         if direct_k_c_solve:
             k_c_solve_description = "MUMPS LU\n"
         else:
@@ -1033,15 +1066,18 @@ def solve(
             gamg_description = (
                 "GAMG built from A (rigid body modes as near-nullspace),\n"
                 f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
-                f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+                f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing, "
+                f"{options['fieldsplit_v_mg_levels_ksp_max_it']} steps per level"
             )
-            if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+            if options["fieldsplit_v_mg_levels_pc_type"] == "sor":
                 gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
             k_c_solve_description = (
                 f"FGMRES (rtol {options['ksp_rtol']:g}), preconditioned by the block upper triangular Schur\n"
                 f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
                 "    one V-cycle of BoomerAMG on -B diag(A)^{-1} G (selfp), for S^{-1}\n"
             )
+        if k_c_options is not None:
+            k_c_solve_description += f"    with the options {k_c_options} replacing those above\n"
         print(
             "\nSolver setup:\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"

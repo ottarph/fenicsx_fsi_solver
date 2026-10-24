@@ -700,3 +700,93 @@ has no setup apart from Jacobian reassemblies:
 - More smoothing steps lower the iterations by a quarter but make a step 17%
   slower on 24 ranks. With 58 iterations on 64 ranks the trade may differ, to be
   measured there.
+
+`threeDfsi_c0ip` now takes `k_c_options`, a dict of PETSc options that replace
+those of the K_c solve, and prints the time and the K_c iterations of every
+step, with the mean time per step after the first. `KSPConvCheck` records the
+iterations of every solve for that. `jobs/threeDfsi_c0ip.sh` passes
+`K_C_OPTIONS` on, so the experiments above can be repeated on eX3 with 64
+ranks from a checkpoint (`INITIAL_STATE_RUN`), without editing the solver.
+
+### K_c options on 64 ranks (2026-10-22)
+
+`jobs/threeDfsi_c0ip_kc_experiments.sh`, job 1439820 on n002 (defq, 64 ranks,
+the whole node: no other job ran there meanwhile), two steps from the t = 4
+checkpoint of `fine_rank_test`, one variant after the other. Every variant
+converged. Time per step after the first, which leaves out the setup:
+
+| variant (options replacing the solver's) | K_c iterations per solve | s per step |
+|---|---|---|
+| none | 47.8 | 42.8 |
+| `mg_levels_ksp_max_it 3` (3 smoothing steps instead of 2) | 31.6 | 39.0 |
+| `mg_levels_ksp_max_it 4` | 31.4 | 44.5 |
+| `pc_gamg_threshold 0.05` (instead of 0.01) | 34.2 | 91.8 |
+| `pc_gamg_threshold 0.1` | 23.9 | 101.2 |
+| `pc_gamg_process_eq_limit 1000` (instead of 50) | 47.9 | 72.8 |
+| `pc_gamg_coarse_eq_limit 5000` | 47.5 | 80.9 |
+
+(all on `fieldsplit_v_`, the GAMG on the velocity block)
+
+- The coarse levels are not where 64 ranks lose: fewer ranks on them or a
+  larger coarsest grid leave the iterations unchanged, and only cost time
+  (redistribution at every setup, and a serial coarse solve in every V-cycle).
+- A third smoothing step recovers most of it: 34% fewer iterations and 9% less
+  time per step. A fourth gains no iterations and costs time.
+- Higher thresholds cut the iterations but coarsen more slowly, into more and
+  denser levels, which are more expensive in every V-cycle and in the setup at
+  every Jacobian reassembly.
+- With 24 ranks on the workstation, 4 smoothing steps cost 17% more time per
+  step; on 64 ranks the smoother has more to make up for.
+- To confirm over 10 steps before making 3 smoothing steps the default.
+
+10 steps from the same checkpoint (to t = 4.04), defq, 64 ranks, job of
+`jobs/threeDfsi_c0ip_kc_experiments.sh`:
+
+| smoothing steps per level | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 2 (PETSc's default) | 53.2 | 61.9 |
+| 3 | 35.9 | 57.6 |
+
+33% fewer iterations and 7% less time per step, so `threeDfsi_c0ip` now
+smooths with 3 SOR steps per level (`fieldsplit_v_mg_levels_ksp_max_it`), and
+the solver summary prints the number. On one rank on the coarse mesh (the
+test), the iterations drop from 30.8 to 26.5 per solve and the second step
+takes 8.8 s instead of 8.1 s: on few ranks the third step costs more than it
+saves. `threeDfsi_mixed` smooths with 3 steps too: its K_c and the K_c
+solve are the same as in `threeDfsi_c0ip`, which only differs in the mesh
+motion.
+
+### SOR omega with 3 smoothing steps (2026-10-23)
+
+Job 1441099, defq, 64 ranks, two steps from the t = 4 checkpoint of
+`fine_rank_test`, 3 smoothing steps per level:
+
+| omega | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 0.4 | 28.2 | 37.0 |
+| 0.5 (current) | 31.6 | 39.7 |
+| 0.6 | 48.4 | 51.8 |
+| 0.7 | failed | |
+
+- 0.5 with 3 steps reproduces the earlier run (31.6 iterations, 39.0 s).
+- On 64 ranks, 0.5 sits close to where the smoother breaks down: 0.6 already
+  takes half again as many iterations, and 0.7 does not converge. On 28 to 30
+  ranks, with 2 steps, 0.5 was better than 0.7 by less (and 0.7 failed only on
+  30 ranks of the coarse mesh). The Jacobi coupling between ranks grows with the
+  ranks, and with it the damping SOR needs.
+- 0.4 is 11% fewer iterations and 7% less time per step than 0.5, and further
+  from the breakdown, which matters for more ranks over several nodes.
+
+Over 10 steps (to t = 4.04, job 1442868, defq, 64 ranks, 3 smoothing steps):
+
+| omega | K_c iterations per solve | s per step after the first |
+|---|---|---|
+| 0.5 | 35.9 | 50.0 |
+| 0.4 | 30.8 | 42.4 |
+| 0.3 | 32.5 | 46.1 |
+
+0.4 takes 14% fewer iterations and 15% less time per step than 0.5, so
+`threeDfsi_c0ip` and `threeDfsi_mixed` now under-relax with omega = 0.4. The
+0.5 row repeats the iterations of the earlier 10-step run with 3 smoothing
+steps (35.9) but not its time (57.6 s), so the step times of different jobs
+differ by about 15% even on the same partition; within a job they compare.
