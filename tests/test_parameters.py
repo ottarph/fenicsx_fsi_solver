@@ -21,7 +21,7 @@ def test_theta_value_rejects_both_shifts():
 
 def test_lame_lambda():
     # FSI2: mu_s = 5e5, nu_s = 0.4 gives lambda_s = 2e6
-    assert np.isclose(lame_lambda(5.0e5, 0.4, None), 2.0e6)
+    assert lame_lambda(5.0e5, 0.4, None) == 2.0e6
     assert lame_lambda(5.0e5, None, 3.0e6) == 3.0e6
 
 
