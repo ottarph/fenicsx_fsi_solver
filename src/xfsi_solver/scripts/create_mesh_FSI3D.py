@@ -406,8 +406,9 @@ def create_hex_mesh(
 
     num_cells = domain.topology.index_map(tdim).size_global
     num_vertices = domain.topology.index_map(0).size_global
+    num_nodes = domain.geometry.index_map().size_global
     if mesh_comm.rank == 0:
-        print(f"{num_cells = }, {num_vertices = }, {len(z_vertices) - 1} layers in z")
+        print(f"{num_cells = }, {num_vertices = }, {num_nodes = }, {len(z_vertices) - 1} layers in z")
 
     from pathlib import Path
 

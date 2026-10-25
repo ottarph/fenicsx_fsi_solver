@@ -875,3 +875,19 @@ At the same cell sizes the hex meshes have 3 to 3.8 times the degree-2 nodes
 of the tet meshes, mainly from the layers through the whole channel. The
 coarse and medium hex meshes are close to the paper's levels 2 and 3 (66k and
 504k Q2 nodes). Meshing takes 1 to 3 s.
+
+### Hex meshes with the node counts of the tet meshes
+
+Suffix `_<level>_tetnodes`: close and far of the tet level scaled by a common
+factor, picked by scanning, so that the Q2 nodes are about the tet P2 nodes.
+The count jumps with the rounded numbers of cells along the beam and of the z
+layers, so it cannot be matched exactly (coarse: 26,358 at x1.48, 22,034 at
+x1.49). Same checks as above, all passed (min/max det J per cell down to 0.27).
+
+| mesh | scale | close / far | cells | beam cells (thick x long x wide) | z layers | Q2 nodes | tet P2 nodes |
+|---|---|---|---|---|---|---|---|
+| hex coarse_tetnodes | 1.49 | 0.0298 / 0.1192 | 2,431 | 168 (2 x 12 x 7) | 11 | 22,034 | 23,455 |
+| hex medium_tetnodes | 1.63 | 0.0163 / 0.0652 | 15,980 | 528 (2 x 22 x 12) | 20 | 136,366 | 134,657 |
+| hex fine_tetnodes | 1.62 | 0.010854 / 0.0486 | 39,121 | 1,152 (2 x 32 x 18) | 29 | 328,866 | 333,734 |
+
+The script now also prints the number of geometry (Q2) nodes.
