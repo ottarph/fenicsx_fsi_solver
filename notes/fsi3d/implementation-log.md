@@ -833,3 +833,45 @@ and the frequency of B_y:
 - Plots and the table: `python -m xfsi_solver.scripts.plot_fsi3d_time_steps`
   with the three QoI files copied from eX3 as `--run` and the medium run as
   `--compare`, into `output/figures/plot_fsi3d_time_steps/`.
+
+## Hexahedral meshes (2026-10-25)
+
+`create_hex_mesh` in `scripts/create_mesh_FSI3D.py` writes
+`data/meshes/fsi3d/mesh_hex_sec<suffix>.xdmf`, with the geometry, tags and
+size parameters of the tet meshes:
+
+- gmsh meshes the cross-section z = 0 with quadrilaterals, and numpy extrudes
+  it in z into hexahedra (Q2 geometry: the quadrilaterals' 9 nodes at the z of
+  the vertex layers and their midpoints). gmsh's own extrusion does not work:
+  Blossom recombination leaves triangles (so prisms), and neither its all-quad
+  subdivision nor the quasi-structured quad algorithm can mesh extruded curves.
+  The quasi-structured algorithm also ignores the size field, and, in a 2d
+  model, gave 3 to 8 times too many quadrilaterals around the beam.
+- Cross-section: Frontal-Delaunay with twice the target cell size, recombined
+  and split into four quadrilaterals per cell (`Mesh.SubdivisionAlgorithm 1`),
+  then `Laplace2D`. The beam is a structured strip; unstructured, its cells
+  had minSICN down to 0.2. The cylinder's seam is rotated upstream, so that
+  the arc of the beam is one curve and the strip has four corners. After the
+  split the strip is two cells thick (at these resolutions), and the middle of
+  its end x = 0.9 is a vertex, so B is one at z = 0.3. Coarse cross-section:
+  499 quadrilaterals, minSICN 0.52, 1% quantile 0.64.
+- z layers: the size on the beam along it (0.1 < z < 0.3), and below and above
+  it the size the threshold field gives at the distance to the beam's end.
+  Every layer runs the whole channel length, so the far field is finer in z
+  than in the tet meshes.
+- Tags from the vertex coordinates (`locate_entities`), not from gmsh.
+- Checked on all three levels: volumes and tag areas as for the tet meshes (to
+  the arc error of the Q2 cylinder, at most 1.7e-5), positive det J at degree-6
+  quadrature points, B a vertex. min/max det J per cell is down to 0.28 (tets:
+  0.68).
+
+| mesh | close / far | cells | beam cells | z layers | vertices | Q2 nodes | tet P2 nodes |
+|---|---|---|---|---|---|---|---|
+| hex coarse | 0.02 / 0.08 | 7,984 | 360 | 16 | 9,384 | 69,366 | 23,455 |
+| hex medium | 0.01 / 0.04 | 56,608 | 1,440 | 32 | 61,710 | 473,070 | 134,657 |
+| hex fine | 0.0067 / 0.03 | 154,800 | 3,120 | 48 | 164,738 | 1,277,878 | 333,734 |
+
+At the same cell sizes the hex meshes have 3 to 3.8 times the degree-2 nodes
+of the tet meshes, mainly from the layers through the whole channel. The
+coarse and medium hex meshes are close to the paper's levels 2 and 3 (66k and
+504k Q2 nodes). Meshing takes 1 to 3 s.
