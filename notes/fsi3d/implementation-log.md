@@ -790,3 +790,45 @@ Over 10 steps (to t = 4.04, job 1442868, defq, 64 ranks, 3 smoothing steps):
 0.5 row repeats the iterations of the earlier 10-step run with 3 smoothing
 steps (35.9) but not its time (57.6 s), so the step times of different jobs
 differ by about 15% even on the same partition; within a job they compare.
+
+## Fine mesh over [8, 10] with three time steps (2026-10-25)
+
+As in Failer & Richter (Sect. 5.4): the fine run to t = 8 with dt = 0.004
+(`threeDfsi_c0ip_fine_t8`), then three runs from its checkpoint at t = 8 with
+dt = 0.004, 0.002 and 0.001 (`INITIAL_STATE_RUN`), all on one defq node with 64
+ranks, with 3 SOR smoothing steps and omega = 0.4 (commit 0f8c678).
+
+| dt | steps | Newton iterations per step | K_c iterations per solve | Jacobian assemblies | s per step | total |
+|---|---|---|---|---|---|---|
+| 0.004 | 500 | 7.3 | 32.0 | 493 | 31.9 | 4.4 h |
+| 0.002 | 1000 | 6.9 | 25.5 | 824 | 34.0 | 9.5 h |
+| 0.001 | 2000 | 6.3 | 22.7 | 1229 | 29.9 | 16.6 h |
+
+The run to t = 8 with the old smoother (2 steps, omega 0.5) took about 51 s per
+step with dt = 0.004.
+
+Mean ± amplitude over [9, 10] (eq. (16) of the paper), displacements in mm,
+and the frequency of B_y:
+
+| run | drag | lift | B_x | B_y | B_z | f(B_y) [Hz] |
+|---|---|---|---|---|---|---|
+| fine, dt = 0.004 | 181.2 ± 3.99 | 0.69 ± 43.36 | -2.223 ± 2.490 | 2.51 ± 26.51 | 0.385 ± 0.784 | 5.751 |
+| fine, dt = 0.002 | 181.0 ± 3.86 | 0.67 ± 43.34 | -2.221 ± 2.481 | 2.54 ± 26.48 | 0.390 ± 0.777 | 5.759 |
+| fine, dt = 0.001 | 180.9 ± 3.78 | 0.64 ± 43.28 | -2.217 ± 2.475 | 2.55 ± 26.46 | 0.390 ± 0.774 | 5.761 |
+| medium, dt = 0.004 (`threeDfsi_mixed`) | 171.3 ± 3.34 | 1.56 ± 40.30 | -1.923 ± 2.155 | 0.85 ± 26.07 | 0.246 ± 0.689 | 5.677 |
+| paper, level 3, k = 0.004 | 185.7 ± 3.6 | -0.70 ± 41.35 | -2.176 ± 2.419 | 2.77 ± 25.69 | -0.196 ± 0.196 | |
+| paper, level 3, k = 0.002 | 185.7 ± 3.5 | -0.73 ± 41.41 | -2.161 ± 2.401 | 2.75 ± 25.64 | 0.490 ± 0.881 | |
+| paper, level 3, k = 0.001 | 185.5 ± 3.5 | -0.72 ± 41.30 | -2.143 ± 2.383 | 2.70 ± 25.59 | 0.486 ± 0.877 | |
+
+- The time step changes the means and amplitudes by less than 0.5%, except the
+  drag amplitude (5% from 0.004 to 0.001), as in the paper. Pointwise, the runs
+  drift apart in phase, since the frequency rises slightly with smaller dt: at
+  t = 10 the dt = 0.004 run is off by up to 35% of the amplitude, and the
+  dt = 0.002 run by about a quarter of that, so second order in dt.
+- The mesh matters much more. From medium to fine, the drag mean rises from
+  171.3 to 181.2, still 2.5% below the paper's 185.5; B_x, B_z and the
+  frequency move toward the paper. The lift and B_y amplitudes overshoot the
+  paper's by 5% and 3%; the paper's own amplitudes fell by 12 to 17% from its
+  level 2 to level 3, so they are not converged either.
+- Plots: `output/figures/fsi3d_dt_comparison/` (not in git), from a scratch
+  script that reads the QoI files copied from eX3.
