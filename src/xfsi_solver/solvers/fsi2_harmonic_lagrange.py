@@ -11,6 +11,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
     LAGRANGE_QOI_HEADER,
     append_qoi_row,
@@ -42,6 +43,25 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
+    elements={
+        "U_f": ("P", 2, (2,)),
+        "V_f": ("P", 2, (2,)),
+        "U_s": ("P", 2, (2,)),
+        "V_s": ("P", 2, (2,)),
+        "P": ("P", 1),
+        "Lu": ("P", 1, (2,)),
+        "Lv": ("P", 1, (2,)),
+    },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e4,
+    mu_s=5.0e5,
+    nu_s=None,
+    lambda_s=None,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -71,8 +91,24 @@ def solve(
     The Lagrange multipliers ``lambda_u`` and ``lambda_v`` are not
     checkpointed, so a restart, or a run from ``initial_state_dir``, starts
     them from zero; see the comment where the checkpointer is set up.
+
+    ``elements`` maps the name of each function space (``U_f``, ``V_f``, ``U_s``, ``V_s``, ``P``,
+    ``Lu``, ``Lv``) to its element, the tuple passed to ``dolfinx.fem.functionspace``; the default
+    is P2 for the displacements and velocities, P1 for the pressure and P1 for the multipliers.
+
+    The physical parameters default to the FSI2 benchmark: ``rho_f = 1e3``, ``nu_f = 1e-3``,
+    ``rho_s = 1e4``, ``mu_s = 5e5``, mean inflow velocity ``U_bar = 1`` and channel height
+    ``H = 0.41``. The first Lamé parameter of the solid is given either as ``lambda_s`` or through
+    the Poisson ratio ``nu_s`` (default ``nu_s = 0.4``); giving both raises ``ValueError``. The
+    time stepping uses theta = 0.5 + ``absolute_theta_shift``, or theta = 0.5 +
+    ``relative_theta_shift * dt_val``; the default is ``relative_theta_shift = 1.0``, and giving
+    both shifts raises ``ValueError``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
+    if nu_s is None and lambda_s is None:
+        nu_s = 0.4
+    lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
 
     # load mesh and meshtags
 
@@ -165,22 +201,17 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
-    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
 
-    rho_s = dolfinx.fem.Constant(mesh, 1.0e4)
-    mu_s = dolfinx.fem.Constant(mesh, 5.0e5)
-    nu_s = dolfinx.fem.Constant(mesh, 0.4)
-    lambda_s = dolfinx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
-    # lambda_s = dolfinx.fem.Constant(mesh, 2e6)
-
-    U_bar = 1.0
-    H = 0.41
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    mu_s = dolfinx.fem.Constant(mesh, mu_s)
+    lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
 
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
@@ -200,13 +231,13 @@ def solve(
     # multiplier spaces Lu, Lv (defined on the interface submesh gamma_mesh)
     # instead of through shared degrees of freedom.
 
-    U_f = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    V_f = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    U_s = dolfinx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
-    V_s = dolfinx.fem.functionspace(solid_mesh, ("CG", 2, (2,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Lu = dolfinx.fem.functionspace(gamma_mesh, ("CG", 1, (2,)))
-    Lv = dolfinx.fem.functionspace(gamma_mesh, ("CG", 1, (2,)))
+    U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U_f"])
+    V_f = dolfinx.fem.functionspace(fluid_mesh, elements["V_f"])
+    U_s = dolfinx.fem.functionspace(solid_mesh, elements["U_s"])
+    V_s = dolfinx.fem.functionspace(solid_mesh, elements["V_s"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    Lu = dolfinx.fem.functionspace(gamma_mesh, elements["Lu"])
+    Lv = dolfinx.fem.functionspace(gamma_mesh, elements["Lv"])
     W = ufl.MixedFunctionSpace(U_f, V_f, U_s, V_s, P, Lu, Lv)
 
     # create functions
