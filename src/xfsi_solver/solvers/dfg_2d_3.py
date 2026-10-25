@@ -17,6 +17,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.parameters import theta_value
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -41,12 +42,31 @@ def solve(
     lift_plot_path,
     drag_coeff_plot_path,
     lift_coeff_plot_path,
+    elements={
+        "V": ("P", 2, (2,)),
+        "P": ("P", 1),
+    },
+    rho_f=1.0,
+    nu_f=1.0e-3,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     vtx_save_every=None,
 ):
     """Solve the DFG 2D-3 benchmark up to time ``T``, writing drag and lift every time step
     and, with ``vtx_save_every``, a VTX snapshot every ``vtx_save_every`` steps. With
     ``vtx_save_every=None``, no VTX output is written.
+
+    ``elements`` maps the name of each function space (``"V"`` and ``"P"``) to its element, as passed to
+    ``dolfinx.fem.functionspace``. The physical constants are the fluid density ``rho_f`` (default 1.0), the
+    kinematic viscosity ``nu_f`` (default 1.0e-3), the mean inflow velocity ``U_bar`` (default 1.0) and the
+    channel height ``H`` (default 0.41). The time stepping parameter is theta = 0.5 + ``absolute_theta_shift``, or
+    theta = 0.5 + ``relative_theta_shift`` * ``dt_val``; giving both raises ``ValueError``. With neither given,
+    the relative shift is 0.0, i.e. theta = 0.5.
     """
+
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 0.0)
 
     log = PETSc.Log()
     log.begin()
@@ -73,17 +93,13 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dolfinx.fem.Constant(fluid_mesh, 1.0)
-    mu_val = 1e-3
-    nu_f = dolfinx.fem.Constant(fluid_mesh, mu_val / rho_f.value)
-
-    U_bar = 1.0
-    H = 0.41
+    rho_f = dolfinx.fem.Constant(fluid_mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(fluid_mesh, nu_f)
 
     t0 = 0.0
     dt = dolfinx.fem.Constant(fluid_mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(fluid_mesh, 0.5)
+    theta = dolfinx.fem.Constant(fluid_mesh, theta_val)
 
     total_steps = int(np.ceil((T - t0) / dt_val))
     if vtx_save_every is not None and total_steps < vtx_save_every:
@@ -96,8 +112,8 @@ def solve(
 
     # create function spaces
 
-    V = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
+    V = dolfinx.fem.functionspace(fluid_mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
     W = ufl.MixedFunctionSpace(V, P)
 
     # create functions
