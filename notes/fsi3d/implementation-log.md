@@ -891,3 +891,32 @@ x1.49). Same checks as above, all passed (min/max det J per cell down to 0.27).
 | hex fine_tetnodes | 1.62 | 0.010854 / 0.0486 | 39,121 | 1,152 (2 x 32 x 18) | 29 | 328,866 | 333,734 |
 
 The script now also prints the number of geometry (Q2) nodes.
+
+### Cost of `threeDfsi_c0ip` on the hex mesh (estimate)
+
+`threeDfsi_c0ip` refuses hexahedra (no C0IP penalty parameters for them). For
+timing only, a scratch copy used the tetrahedron formula on the hexes, with
+Q2, Q2, DPC1 on `mesh_hex_sec_fine_tetnodes`, against the default P2, P2, P1
+on `mesh_sec_fine`: 8 steps from rest, dt = 0.004, 24 ranks on the
+workstation, `-log_view`. K_c has 1.14M unknowns on the hex mesh (DPC1: 152k
+pressure dofs) and 1.04M on the tet mesh.
+
+| | tet | hex | hex / tet |
+|---|---|---|---|
+| s per step after the first (2 Newton iterations) | 12.6 | 26.3 | 2.08 |
+| K_c iterations per solve | 25.2 | 26.2 | 1.04 |
+| K_c solve per FGMRES iteration (s) | 0.20 | 0.43 | 2.14 |
+| residual evaluation (s) | 0.94 | 1.43 | 1.52 |
+| first Jacobian assembly, with the C0IP terms (s) | 12.3 | 40.2 | 3.3 |
+| K_m Cholesky, symbolic + numerical, once (s) | 15.5 | 40.0 | 2.6 |
+| K_m MatMatSolve per call (s) | 0.16 | 0.39 | 2.4 |
+| GAMG setup (s) | 6.3 | 7.5 | 1.2 |
+
+MatMult and MatSOR cost about twice as much on the hex mesh (Q2 rows couple
+125 nodes at a vertex). The K_c solve is about 70% of a tet step with
+developed flow, so weighting the ratios by such a step (7.3 Newton iterations,
+about one Jacobian reassembly) also gives about 2.1. The tet fine run to t = 8
+would take about 32 to 35 s per step on one eX3 defq node with the current K_c
+options, so the hex run would take about 70 s per step, 2000 steps in about
+40 h (one node, 64 ranks), assuming the iterations stay as on the tet mesh,
+which was only checked from rest.
