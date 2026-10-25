@@ -98,3 +98,31 @@ def test_fsi2_biharmonic_fulljacobian_plots_matrices(output_dirs, tmp_path, monk
     for label in ("storage", "eq1", "split"):
         assert (figures / f"spy_{label}.png").exists()
         assert (figures / f"block_norms_{label}.png").exists()
+
+
+def test_fsi2_biharmonic_fulljacobian_rejects_both_theta_shifts(output_dirs):
+    with pytest.raises(ValueError, match="theta_shift"):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp"),
+            output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
+            absolute_theta_shift=0.01,
+            relative_theta_shift=1.0,
+        )
+
+
+def test_fsi2_biharmonic_fulljacobian_rejects_both_nu_s_and_lambda_s(output_dirs):
+    with pytest.raises(ValueError, match="nu_s and lambda_s"):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp"),
+            output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_fulljacobian_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
+            nu_s=0.4,
+            lambda_s=2.0e6,
+        )
