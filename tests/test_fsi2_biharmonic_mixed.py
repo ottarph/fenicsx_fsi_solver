@@ -67,3 +67,25 @@ def test_fsi2_biharmonic_mixed_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(
         solve, MESH, ELEMENTS, output_dirs, tmp_path, rtol=1e-6, qoi_rtol=1e-6, solve_kwargs={"direct_k_c_solve": True}
     )
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"absolute_theta_shift": 0.01, "relative_theta_shift": 1.0}, "theta_shift"),
+        ({"nu_s": 0.4, "lambda_s": 2.0e6}, "nu_s and lambda_s"),
+    ],
+    ids=["theta_shift", "nu_s_lambda_s"],
+)
+def test_fsi2_biharmonic_mixed_rejects_conflicting_options(output_dirs, kwargs, match):
+    # The error is raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "fsi2_biharmonic_mixed.bp"),
+            output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_mixed_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_mixed.txt"),
+            **kwargs,
+        )

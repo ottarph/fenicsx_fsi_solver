@@ -16,6 +16,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
@@ -46,11 +47,21 @@ def solve(
     output_path_p,
     qoi_path,
     elements={
-        "U": ("P", (2, (2,))),
-        "V": ("P", (2, (2,))),
-        "P": ("P", (1,)),
-        "Z": ("P", (2, (2,))),
+        "U": ("P", 2, (2,)),
+        "V": ("P", 2, (2,)),
+        "P": ("P", 1),
+        "Z": ("P", 2, (2,)),
     },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e4,
+    mu_s=5.0e5,
+    nu_s=None,
+    lambda_s=None,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -115,8 +126,25 @@ def solve(
     storage blocks [u, v, p, z], by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md, and in the order (v, p, u_S, z, u_I) in which the
     fieldsplit solves them. The matrices are gathered on rank 0.
+
+    ``elements`` gives the finite element, as the tuple passed to ``dolfinx.fem.functionspace``, of
+    each function space U, V, P and Z. The default is P2 for U, V and Z, and P1 for P.
+
+    ``rho_f`` and ``nu_f`` are the density and kinematic viscosity of the fluid, ``rho_s`` and ``mu_s`` the
+    density and shear modulus of the solid, and ``U_bar`` and ``H`` the mean inflow velocity and the channel
+    height. The first Lamé parameter of the solid is ``lambda_s``, or 2 mu_s nu_s / (1 - 2 nu_s) from the
+    Poisson ratio ``nu_s``; giving both raises ``ValueError``, and with neither, ``nu_s = 0.4``. The defaults
+    are those of the FSI2 benchmark.
+
+    The time stepping parameter is theta = 0.5 + ``absolute_theta_shift``, or theta = 0.5 +
+    ``relative_theta_shift`` * ``dt_val``; giving both raises ``ValueError``, and with neither,
+    ``relative_theta_shift = 1.0``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
+    if nu_s is None and lambda_s is None:
+        nu_s = 0.4
+    lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
 
     # load mesh and meshtags
 
@@ -169,23 +197,17 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
-    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
 
-    rho_s = dolfinx.fem.Constant(mesh, 1.0e4)
-    mu_s = dolfinx.fem.Constant(mesh, 5.0e5)
-    nu_s = dolfinx.fem.Constant(mesh, 0.4)
-    lambda_s = dolfinx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
-    assert np.isclose(lambda_s.value, 2e6), "Lambda value is not as expected"
-    # lambda_s = dolfinx.fem.Constant(mesh, 2e6)
-
-    U_bar = 1.0
-    H = 0.41
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    mu_s = dolfinx.fem.Constant(mesh, mu_s)
+    lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
 
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
