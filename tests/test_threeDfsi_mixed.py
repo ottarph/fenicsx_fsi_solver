@@ -42,3 +42,25 @@ def test_threeDfsi_mixed_starts_from_initial_state(output_dirs, tmp_path):
         qoi_rtol=1e-6,
         solve_kwargs={"direct_k_c_solve": True},
     )
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"absolute_theta_shift": 0.01, "relative_theta_shift": 1.0}, "theta_shift"),
+        ({"nu_s": 0.4, "lambda_s": 8.0e6}, "nu_s and lambda_s"),
+    ],
+    ids=["theta_shift", "nu_s_lambda_s"],
+)
+def test_threeDfsi_mixed_rejects_ambiguous_options(output_dirs, kwargs, match):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.004,
+            dt_val=0.004,
+            output_path=str(output_dirs["pv"] / "ambiguous.bp"),
+            output_path_p=str(output_dirs["pv"] / "ambiguous_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "ambiguous.txt"),
+            **kwargs,
+        )

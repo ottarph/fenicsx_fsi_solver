@@ -17,6 +17,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
@@ -48,6 +49,22 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
+    elements={
+        "U": ("P", 2, (3,)),
+        "V": ("P", 2, (3,)),
+        "P": ("P", 1),
+        "Z": ("P", 2, (3,)),
+    },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e3,
+    mu_s=2.0e6,
+    nu_s=None,
+    lambda_s=None,
+    U_bar=1.75,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -68,6 +85,19 @@ def solve(
     with the same formulation and the same solver options. The QoIs are the drag and the lift
     on the cylinder and the beam, and the displacement of the point B = (0.9, 0.2, 0.3) on the
     back face of the beam.
+
+    The function spaces are given by ``elements``, a dict from the name of each space, ``"U"``, ``"V"``,
+    ``"P"`` and ``"Z"``, to the element passed to ``dolfinx.fem.functionspace``. The default is Taylor-Hood,
+    P2 for the displacement, velocity and mesh motion, and P1 for the pressure.
+
+    The physical constants are ``rho_f`` and ``nu_f`` (density and kinematic viscosity of the fluid),
+    ``rho_s`` and ``mu_s`` (density and shear modulus of the solid), the mean inflow velocity ``U_bar`` and
+    the channel height ``H``, by default those of the 3d configuration in Table 1 of Failer & Richter. The
+    first Lamé parameter of the solid is ``lambda_s``, or computed from the Poisson ratio ``nu_s`` as
+    2 mu_s nu_s / (1 - 2 nu_s); with neither given, ``lambda_s = 8.0e6``, and giving both raises
+    ``ValueError``. Theta of the time stepping is 0.5 + ``absolute_theta_shift``, or
+    0.5 + ``relative_theta_shift`` * ``dt_val``; with neither given, ``relative_theta_shift = 1.0``, and giving
+    both raises ``ValueError``.
 
     The solid stress in the momentum equation is written in terms of the velocity, with
     the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
@@ -123,6 +153,10 @@ def solve(
     the same ``t0``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
+    if nu_s is None and lambda_s is None:
+        lambda_s = 8.0e6
+    lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
 
     # load mesh and meshtags
 
@@ -177,20 +211,19 @@ def solve(
 
     gdim = mesh.geometry.dim
 
-    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
-    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
 
-    rho_s = dolfinx.fem.Constant(mesh, 1.0e3)
-    mu_s = dolfinx.fem.Constant(mesh, 2.0e6)
-    lambda_s = dolfinx.fem.Constant(mesh, 8.0e6)
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    mu_s = dolfinx.fem.Constant(mesh, mu_s)
+    lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
 
-    U_bar = 1.75
-    H = 0.41  # channel height (y) and width (z)
+    # U_bar is the mean inflow velocity, H the channel height (y) and width (z)
 
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
@@ -204,10 +237,10 @@ def solve(
 
     # create function spaces
 
-    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (gdim,)))
-    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (gdim,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (gdim,)))
+    U = dolfinx.fem.functionspace(mesh, elements["U"])
+    V = dolfinx.fem.functionspace(mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
     W = ufl.MixedFunctionSpace(U, V, P, Z)
 
     # create functions
