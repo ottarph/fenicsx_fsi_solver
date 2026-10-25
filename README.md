@@ -128,7 +128,9 @@ VTX output is optional: ``solve(..., vtx_save_every=n)`` writes a snapshot every
 the default ``vtx_save_every=None`` no VTX files are written.
 
 ``python -m xfsi_solver.scripts.plot_qois`` plots the QoI files, each on its own and in comparisons, into
-``output/figures/qoi/<script>/``. The solvers with ``plot_matrices=True`` save spy and block-norm plots of
+``output/figures/qoi/<script>/``. ``python -m xfsi_solver.scripts.plot_fsi3d_time_steps`` compares runs of
+the 3d benchmark with different time steps over [9, 10] with the values of Failer & Richter, as figures in
+``output/figures/plot_fsi3d_time_steps/`` and a table of means and amplitudes. The solvers with ``plot_matrices=True`` save spy and block-norm plots of
 their Jacobians into ``output/figures/matrix_blocks/<script>/``.
 ``jobs/fsi2_jacobian_plots.sh`` plots the full, condensed and approximate Jacobians from a developed
 checkpoint, with the source of a pinned commit.

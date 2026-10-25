@@ -830,5 +830,6 @@ and the frequency of B_y:
   frequency move toward the paper. The lift and B_y amplitudes overshoot the
   paper's by 5% and 3%; the paper's own amplitudes fell by 12 to 17% from its
   level 2 to level 3, so they are not converged either.
-- Plots: `output/figures/fsi3d_dt_comparison/` (not in git), from a scratch
-  script that reads the QoI files copied from eX3.
+- Plots and the table: `python -m xfsi_solver.scripts.plot_fsi3d_time_steps`
+  with the three QoI files copied from eX3 as `--run` and the medium run as
+  `--compare`, into `output/figures/plot_fsi3d_time_steps/`.
