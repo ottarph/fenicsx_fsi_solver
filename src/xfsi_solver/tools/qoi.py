@@ -25,7 +25,7 @@ INCOMPRESSIBLE_QOI_HEADER = QOI_HEADER + "\tsolid_area_change\tdet_F_rms\tdet_F_
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 
 
-def find_point_dof(space: dolfinx.fem.FunctionSpace, point: np.ndarray, atol: float = 1e-6) -> int | None:
+def find_point_dof(space: dolfinx.fem.FunctionSpace, point: np.ndarray, atol: float = 1e-4) -> int | None:
     """Local index of the owned node of ``space`` at ``point``, or ``None`` on the ranks that do not own it.
 
     Collective: raises if the node is not found on exactly one rank.
@@ -34,6 +34,10 @@ def find_point_dof(space: dolfinx.fem.FunctionSpace, point: np.ndarray, atol: fl
     coordinates = space.tabulate_dof_coordinates()[:num_owned, :]
     candidates = np.flatnonzero(np.all(np.isclose(coordinates, point, atol=atol), axis=1))
     num_found = space.mesh.comm.allreduce(len(candidates), op=MPI.SUM)
+    if num_found == 0:
+        raise RuntimeError(f"No dofs found for measurement point ({atol:.1e}).")
+    if num_found > 1:
+        raise RuntimeError(f"Several dofs found for measurement point ({atol:.1e}).")
     assert num_found == 1, "None or multiple dofs found for measurement point"
     return candidates[0] if len(candidates) > 0 else None
 

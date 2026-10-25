@@ -45,6 +45,12 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
+    elements={
+        "U": ("P", (2, (2,))),
+        "V": ("P", (2, (2,))),
+        "P": ("P", (1,)),
+        "Z": ("P", (2, (2,))),
+    },
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -192,11 +198,11 @@ def solve(
         )
 
     # create function spaces
-
-    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    # breakpoint()
+    U = dolfinx.fem.functionspace(mesh, elements["U"])
+    V = dolfinx.fem.functionspace(mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
     W = ufl.MixedFunctionSpace(U, V, P, Z)
 
     # create functions
@@ -903,13 +909,19 @@ def main():
     args = parser.parse_args()
 
     solve(
-        mesh_path="data/meshes/fsi2/mesh_fine_sec.xdmf",
+        mesh_path="data/meshes/fsi2/mesh_quad_ssq_sec.xdmf",
         T=16.0 + 10 * 0.0025,
         dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_mixed_fine.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_fine_p.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_fine.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_fine",
+        elements={
+            "U": ("P", 2, (2,)),
+            "V": ("P", 2, (2,)),
+            "P": ("DPC", 1),
+            "Z": ("P", 2, (2,)),
+        },
+        output_path="output/pv/fsi2_biharmonic_mixed_quad.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_quad_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_quad.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_quad",
         checkpoint_every=400,
         vtx_save_every=None,
         plot_matrices=False,
