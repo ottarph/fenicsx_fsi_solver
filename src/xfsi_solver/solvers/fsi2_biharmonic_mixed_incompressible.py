@@ -16,6 +16,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.parameters import theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     INCOMPRESSIBLE_QOI_HEADER,
@@ -50,6 +51,22 @@ def solve(
     output_path_p,
     output_path_p_S,
     qoi_path,
+    elements={
+        "U": ("P", 2, (2,)),
+        "V": ("P", 2, (2,)),
+        "P": ("P", 1),
+        "P_S": ("P", 1),
+        "Z": ("P", 2, (2,)),
+    },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e4,
+    c1=0.0,
+    c2=2.5e5,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -59,7 +76,6 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     full_direct_solve=False,
-    relative_theta_shift=2.0,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, up to time ``T``, in
     ``round((T - t0) / dt_val)`` time steps, writing the initial state at ``t0`` as the
@@ -74,9 +90,10 @@ def solve(
     stress, shifted by its value 2 (c1 - c2) I in the reference configuration, is
     theta-averaged in time, while the pressure stress -p_S I and the constraint are
     fully implicit. The time stepping is shifted Crank-Nicolson, with theta = 0.5 +
-    ``relative_theta_shift`` * ``dt_val``. The shift damps the stiff modes of the solid velocity
-    by the factor (1 - theta) / theta per step, among them a mode that flips sign every step and
-    that the displacement does not see.
+    ``absolute_theta_shift``, or theta = 0.5 + ``relative_theta_shift`` * ``dt_val``; with neither
+    given, ``relative_theta_shift=2.0``, and giving both raises ``ValueError``. The shift damps
+    the stiff modes of the solid velocity by the factor (1 - theta) / theta per step, among them
+    a mode that flips sign every step and that the displacement does not see.
 
     The solid stress in the momentum equation is written in terms of the velocity, with
     the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
@@ -132,8 +149,16 @@ def solve(
     storage blocks [u, v, p, p_S, z] and by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md. The matrices are gathered on rank 0. With
     ``full_direct_solve=True``, only the full Jacobian is plotted.
+
+    ``elements`` gives the finite element, as the tuple passed to ``dolfinx.fem.functionspace``, of each
+    function space ``U``, ``V``, ``P``, ``P_S`` and ``Z``; the defaults are P2 for ``U``, ``V`` and ``Z``,
+    and P1 for ``P`` and ``P_S``. The physical constants are the fluid density ``rho_f`` (default 1.0e3) and
+    kinematic viscosity ``nu_f`` (1.0e-3), the solid density ``rho_s`` (1.0e4) and Mooney-Rivlin
+    coefficients ``c1`` (0.0) and ``c2`` (2.5e5), the mean inflow velocity ``U_bar`` (1.0), and the channel
+    height ``H`` (0.41).
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 2.0)
 
     # load mesh and meshtags
 
@@ -189,23 +214,20 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
-    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
 
-    rho_s = dolfinx.fem.Constant(mesh, 1.0e4)
-    c1 = dolfinx.fem.Constant(mesh, 0.0e5)
-    c2 = dolfinx.fem.Constant(mesh, 2.5e5)
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    c1 = dolfinx.fem.Constant(mesh, c1)
+    c2 = dolfinx.fem.Constant(mesh, c2)
     # FSI2i parameters: Wichrowski et al., Int. J. Numer. Methods Eng. 124 (2023), 5446-5470.
     # https://doi.org/10.1002/nme.7350 — Section 2.3.2 and Table 4.
     # Their mu1 = 0, mu2 = 5e5 Pa correspond to our c1 = mu1/2, c2 = mu2/2.
 
-    U_bar = 1.0
-    H = 0.41
-
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + relative_theta_shift * dt.value)
+    theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
@@ -219,11 +241,11 @@ def solve(
 
     # create function spaces
 
-    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    P_S = dolfinx.fem.functionspace(solid_mesh, ("CG", 1))
-    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    U = dolfinx.fem.functionspace(mesh, elements["U"])
+    V = dolfinx.fem.functionspace(mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    P_S = dolfinx.fem.functionspace(solid_mesh, elements["P_S"])
+    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
     W = ufl.MixedFunctionSpace(U, V, P, P_S, Z)
 
     # create functions
@@ -931,7 +953,7 @@ def solve(
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
 
         solid_description = (
-            f"  Time stepping: theta = 0.5 + {relative_theta_shift:g} * dt = {theta.value:g}\n"
+            f"  Time stepping: theta = 0.5 + {theta.value - 0.5:g} = {theta.value:g}\n"
             f"  Solid: incompressible Mooney-Rivlin, c1 = {c1.value:g}, c2 = {c2.value:g}, with solid pressure p_S\n"
             "    for det(F) = 1, elastic stress theta-averaged, pressure and constraint fully implicit\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"

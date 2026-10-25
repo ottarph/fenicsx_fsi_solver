@@ -1,3 +1,4 @@
+import pytest
 from restart_helpers import check_start_from_initial_state
 
 from xfsi_solver.solvers.fsi2_biharmonic_mixed_incompressible import solve
@@ -21,3 +22,19 @@ def test_fsi2_biharmonic_mixed_incompressible_starts_from_initial_state(output_d
         output_kwargs={"output_path_p_S": "_p_S.bp"},
         solve_kwargs={"direct_k_c_solve": True},
     )
+
+
+def test_fsi2_biharmonic_mixed_incompressible_rejects_both_theta_shifts(output_dirs):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match="theta_shift"):
+        solve(
+            mesh_path="data/meshes/does_not_exist.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "rejected.bp"),
+            output_path_p=str(output_dirs["pv"] / "rejected_p.bp"),
+            output_path_p_S=str(output_dirs["pv"] / "rejected_p_S.bp"),
+            qoi_path=str(output_dirs["qoi"] / "rejected.txt"),
+            absolute_theta_shift=0.01,
+            relative_theta_shift=1.0,
+        )
