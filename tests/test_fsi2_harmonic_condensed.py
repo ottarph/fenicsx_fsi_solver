@@ -194,3 +194,25 @@ def test_fsi2_harmonic_condensed_plots_matrices(output_dirs, tmp_path, monkeypat
     for label in ("storage", "eq1", "split", "approximate_storage", "approximate_eq1", "approximate_split"):
         assert (figures / f"spy_{label}.png").exists()
         assert (figures / f"block_norms_{label}.png").exists()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"absolute_theta_shift": 0.01, "relative_theta_shift": 1.0},
+        {"nu_s": 0.4, "lambda_s": 2e6},
+    ],
+    ids=["theta_shifts", "nu_s_and_lambda_s"],
+)
+def test_fsi2_harmonic_condensed_rejects_conflicting_options(output_dirs, kwargs):
+    # The error is raised before the mesh is read
+    with pytest.raises(ValueError, match="at most one"):
+        solve(
+            mesh_path="nonexistent_mesh.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "fsi2_harmonic_condensed.bp"),
+            output_path_p=str(output_dirs["pv"] / "fsi2_harmonic_condensed_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "fsi2_harmonic_condensed.txt"),
+            **kwargs,
+        )
