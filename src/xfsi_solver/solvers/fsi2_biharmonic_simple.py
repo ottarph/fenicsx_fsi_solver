@@ -14,6 +14,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -42,6 +43,22 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
+    elements={
+        "U": ("P", 2, (2,)),
+        "V": ("P", 2, (2,)),
+        "P": ("P", 1),
+        "Z": ("P", 2, (2,)),
+    },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e4,
+    mu_s=5.0e5,
+    nu_s=None,
+    lambda_s=None,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
     vtx_save_every=None,
@@ -67,8 +84,24 @@ def solve(
     the time of that checkpoint, the run writes its own QoI file, VTX output and checkpoints,
     and it only reads from ``initial_state_dir``. A restart of such a run continues it from
     the same ``t0``.
+
+    The function spaces are given by ``elements``, a dict from the name of each function space in the
+    solver (U, V, P, Z) to the element tuple passed to ``dolfinx.fem.functionspace``; the default is
+    piecewise quadratic vector fields and piecewise linear pressure.
+
+    The physical constants are ``rho_f``, ``nu_f`` (fluid density and kinematic viscosity), ``rho_s``, ``mu_s`` (solid
+    density and shear modulus), ``U_bar`` (mean inflow velocity) and ``H`` (channel height), by default the FSI2
+    values. The first Lamé parameter of the solid is given either directly as ``lambda_s`` or through the Poisson
+    ratio ``nu_s``, as 2 mu_s nu_s / (1 - 2 nu_s); with neither given, ``nu_s = 0.4``. Giving both raises
+    ``ValueError``. The time stepping parameter is ``theta = 0.5 + absolute_theta_shift`` or
+    ``theta = 0.5 + relative_theta_shift * dt_val``; with neither given, ``relative_theta_shift = 1.0``. Giving
+    both raises ``ValueError``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
+    if nu_s is None and lambda_s is None:
+        nu_s = 0.4
+    lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
 
     # load mesh and meshtags
 
@@ -121,23 +154,17 @@ def solve(
 
     # create problem parameters
 
-    rho_f = dolfinx.fem.Constant(mesh, 1.0e3)
-    nu_f = dolfinx.fem.Constant(mesh, 1.0e-3)
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
 
-    rho_s = dolfinx.fem.Constant(mesh, 1.0e4)
-    mu_s = dolfinx.fem.Constant(mesh, 5.0e5)
-    nu_s = dolfinx.fem.Constant(mesh, 0.4)
-    lambda_s = dolfinx.fem.Constant(mesh, -mu_s.value / (1 - 0.5 / nu_s.value))
-    assert np.isclose(lambda_s.value, 2e6), "Lambda value is not as expected"
-    # lambda_s = dolfinx.fem.Constant(mesh, 2e6)
-
-    U_bar = 1.0
-    H = 0.41
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    mu_s = dolfinx.fem.Constant(mesh, mu_s)
+    lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
 
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
 
-    theta = dolfinx.fem.Constant(mesh, 0.5 + dt.value)
+    theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
     if vtx_save_every is not None and num_steps < vtx_save_every:
@@ -151,10 +178,10 @@ def solve(
 
     # create function spaces
 
-    U = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    V = dolfinx.fem.functionspace(mesh, ("CG", 2, (2,)))
-    P = dolfinx.fem.functionspace(fluid_mesh, ("CG", 1))
-    Z = dolfinx.fem.functionspace(fluid_mesh, ("CG", 2, (2,)))
+    U = dolfinx.fem.functionspace(mesh, elements["U"])
+    V = dolfinx.fem.functionspace(mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
     W = ufl.MixedFunctionSpace(U, V, P, Z)
 
     # create functions
