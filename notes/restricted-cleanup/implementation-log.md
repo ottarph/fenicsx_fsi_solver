@@ -322,3 +322,6 @@ Other decisions:
   the developed state: the onset of the oscillation does not amplify the quadrature error, and it stays
   20 to 100 times below the difference to mesh_fine_sec and three orders of magnitude below that to the
   2006 reference.
+  The run took 392 s on 16 ranks, 0.060 s per step over the 6500 steps (7 Newton iterations per step at
+  the end). There is no uncapped run of this solver from rest to compare it with; the simplified solver
+  took 0.092 s per step from rest on 16 ranks.
