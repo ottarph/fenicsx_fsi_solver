@@ -18,6 +18,7 @@ from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, rest
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -70,6 +71,7 @@ def solve(
     restart=False,
     initial_state_dir=None,
     gamma_reassemble=0.2,
+    max_quadrature_degree=None,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -85,8 +87,13 @@ def solve(
     gives the same iterates as fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v, p and z, as the
-    other FSI2 solvers do, so runs can restart from or start from each other's states. The other
-    arguments are those of ``fsi2_biharmonic_mixed.solve``.
+    other FSI2 solvers do, so runs can restart from or start from each other's states.
+
+    If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
+    Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
+    degree are integrated inexactly at that degree, and the others keep their estimate. With the
+    default None, every integral keeps the degree UFL estimates. The other arguments are those of
+    ``fsi2_biharmonic_mixed.solve``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -289,6 +296,7 @@ def solve(
         rho_f,
         [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
         entity_maps,
+        max_quadrature_degree=max_quadrature_degree,
     )
 
     def write_output(t, step):
@@ -467,6 +475,9 @@ def solve(
     # residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
 
     residual_blocks = ufl.extract_blocks(residual)
+    if max_quadrature_degree is not None:
+        # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
+        residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
     jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
 
@@ -741,6 +752,7 @@ def main():
         checkpoint_every=400,
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
+        max_quadrature_degree=None,  # Default None, no cap.
         restart=args.restart,
         initial_state_dir=args.initial_state_dir,
     )
