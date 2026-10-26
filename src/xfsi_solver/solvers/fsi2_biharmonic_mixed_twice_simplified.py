@@ -1,0 +1,720 @@
+# Copyright (C) 2025 Ottar Hellan
+#
+# SPDX-License-Identifier: MIT
+
+import warnings
+from timeit import default_timer as timer
+
+import dolfinx
+import dolfinx.fem.forms
+import dolfinx.fem.petsc
+import numpy as np
+import ufl
+from mpi4py import MPI
+from mpi4py.MPI import COMM_WORLD as comm
+from petsc4py import PETSc
+
+from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
+from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.parameters import lame_lambda, theta_value
+from xfsi_solver.tools.qoi import (
+    append_qoi_row,
+    assemble_force,
+    drag_lift_forms,
+    find_point_dof,
+    init_qoi_file,
+    point_value,
+)
+
+PHYSICAL_MARKERS = {
+    "solid": 1,
+    "ALE_fluid": 2,
+    #
+    "solid_fluid_interface": 11,
+    #
+    "obstacle": 21,  # no-slip for fluid
+    "inflow": 22,  # parabolic inflow for fluid
+    "outflow": 23,  # do-nothing for fluid
+    "channel_side": 24,  # no-slip for fluid
+    "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
+}
+
+
+def solve(
+    mesh_path,
+    T,
+    dt_val,
+    output_path,
+    output_path_p,
+    qoi_path,
+    elements={
+        "U": ("P", 2, (2,)),
+        "V": ("P", 2, (2,)),
+        "P": ("P", 1),
+        "Z": ("P", 2, (2,)),
+    },
+    rho_f=1.0e3,
+    nu_f=1.0e-3,
+    rho_s=1.0e4,
+    mu_s=5.0e5,
+    nu_s=None,
+    lambda_s=None,
+    U_bar=1.0,
+    H=0.41,
+    absolute_theta_shift=None,
+    relative_theta_shift=None,
+    checkpoint_dir=None,
+    checkpoint_every=None,
+    vtx_save_every=None,
+    restart=False,
+    initial_state_dir=None,
+    gamma_reassemble=0.2,
+):
+    """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
+
+    The solid stress is written in terms of v through the kinematic relation, as in
+    fsi2_biharmonic_mixed, and the Jacobian is that of the momentum and continuity equations with
+    respect to (v, p), solved by MUMPS LU. The displacements are not unknowns of the Newton system:
+    after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
+    displacement u_s on the solid mesh from the kinematic relation, and extends it into the fluid as
+    u_f on the fluid mesh with the mixed biharmonic mesh motion, before SNES evaluates the residual
+    there. With exact solves, this gives the same iterates as fsi2_biharmonic_mixed.
+
+    Checkpoints store the displacement as one function u on the parent mesh, with v, p and z, as the
+    other FSI2 solvers do, so runs can restart from or start from each other's states. The other
+    arguments are those of ``fsi2_biharmonic_mixed.solve``.
+    """
+    check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
+    if nu_s is None and lambda_s is None:
+        nu_s = 0.4
+    lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
+
+    # load mesh and meshtags
+
+    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
+        mesh = infile.read_mesh()
+        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
+        mesh.topology.create_connectivity(1, 2)
+        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
+
+    assert (
+        len(
+            np.setdiff1d(
+                np.union1d(cell_tags.values, facet_tags.values), [PHYSICAL_MARKERS[i] for i in PHYSICAL_MARKERS]
+            )
+        )
+        == 0
+    ), "Physical markers and cell tags do not match"
+
+    # create submesh for fluid
+
+    fluid_mesh, fluid_cell_map, fluid_vertex_map, _ = dolfinx.mesh.create_submesh(
+        mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
+    )
+
+    # create submesh for solid
+
+    solid_mesh, solid_cell_map, solid_vertex_map, _ = dolfinx.mesh.create_submesh(
+        mesh, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+    )
+
+    # create entity maps for mixed mesh integration
+
+    entity_maps = [fluid_cell_map, solid_cell_map]
+
+    # Need facet tags on the solid mesh, for its Dirichlet condition
+    solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+    )
+
+    fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
+    solid_mesh.topology.create_connectivity(solid_mesh.topology.dim - 1, solid_mesh.topology.dim)
+
+    # Create measure with  meshtags
+
+    dx = ufl.Measure("dx", domain=mesh, subdomain_data=cell_tags)
+    ds = ufl.Measure("ds", domain=mesh, subdomain_data=facet_tags)
+
+    dx_fluid = dx(PHYSICAL_MARKERS["ALE_fluid"])
+    dx_solid = dx(PHYSICAL_MARKERS["solid"])
+
+    # Create measure for interface / solid-fluid boundary
+
+    import scifem
+
+    new_tag_fluid = 101
+    interface_facets = facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    idata = scifem.compute_interface_data(cell_tags, interface_facets)
+    if idata.shape[0] > 0 and cell_tags.values[idata[0, 0]] == PHYSICAL_MARKERS["ALE_fluid"]:
+        fluid_entities = idata[:, :2]
+    else:
+        fluid_entities = idata[:, 2:]
+    new_measure_fluid = ufl.Measure("ds", domain=mesh, subdomain_data=[(new_tag_fluid, fluid_entities.flatten())])
+    ds_interface_fluid = new_measure_fluid(new_tag_fluid)
+
+    # create problem parameters
+
+    rho_f = dolfinx.fem.Constant(mesh, rho_f)
+    nu_f = dolfinx.fem.Constant(mesh, nu_f)
+
+    rho_s = dolfinx.fem.Constant(mesh, rho_s)
+    mu_s = dolfinx.fem.Constant(mesh, mu_s)
+    lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
+
+    t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
+    dt = dolfinx.fem.Constant(mesh, dt_val)
+
+    theta = dolfinx.fem.Constant(mesh, theta_val)
+
+    num_steps = round((T - t0) / dt_val)
+    if vtx_save_every is not None and num_steps < vtx_save_every:
+        warnings.warn(
+            f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
+            f"steps ({num_steps}); at most one VTX snapshot will be written to "
+            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
+            f"series in ParaView.",
+            stacklevel=2,
+        )
+
+    # create function spaces
+    # breakpoint()
+    V = dolfinx.fem.functionspace(mesh, elements["V"])
+    P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
+    U_s = dolfinx.fem.functionspace(solid_mesh, elements["U"])
+    U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U"])
+    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
+    W = ufl.MixedFunctionSpace(V, P)
+
+    # create functions
+
+    v, p, u_s, u_f, z = (
+        dolfinx.fem.Function(V, name="v"),
+        dolfinx.fem.Function(P, name="p"),
+        dolfinx.fem.Function(U_s, name="u_s"),
+        dolfinx.fem.Function(U_f, name="u_f"),
+        dolfinx.fem.Function(Z, name="z"),
+    )
+    v_old, u_s_old, u_f_old = dolfinx.fem.Function(V), dolfinx.fem.Function(U_s), dolfinx.fem.Function(U_f)
+
+    # trial_v, trial_p = ufl.TrialFunctions(W)
+    dv, dp = ufl.TestFunctions(W)
+
+    # trial_u_s, trial_u_f, trial_z = ufl.TrialFunction(U_s), ufl.TrialFunction(U_f), ufl.TrialFunction(Z)
+    # du_s, du_f, dz = ufl.TestFunction(U_s), ufl.TestFunction(U_f), ufl.TestFunction(Z)
+
+    du_s = ufl.TestFunction(U_s)
+    dz, du_f = ufl.TestFunctions(ufl.MixedFunctionSpace(Z, U_f))
+
+    # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
+    # the checkpoints hold in place of u_s and u_f.
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, elements["U"]), name="u")
+    checkpoint_fields = (u, v, p, z)
+
+    def all_cells(submesh):
+        index_map = submesh.topology.index_map(submesh.topology.dim)
+        return np.arange(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
+
+    solid_cells, fluid_cells = all_cells(solid_mesh), all_cells(fluid_mesh)
+    solid_parent_cells = solid_cell_map.sub_topology_to_topology(solid_cells, inverse=False)
+    fluid_parent_cells = fluid_cell_map.sub_topology_to_topology(fluid_cells, inverse=False)
+
+    def gather_displacement():
+        """u <- u_s and u_f, cell by cell, which is exact since the elements match."""
+        u.interpolate(u_s, cells0=solid_cells, cells1=solid_parent_cells)
+        u.interpolate(u_f, cells0=fluid_cells, cells1=fluid_parent_cells)
+        u.x.scatter_forward()
+
+    def scatter_displacement():
+        """u_s, u_f <- u."""
+        u_s.interpolate(u, cells0=solid_parent_cells, cells1=solid_cells)
+        u_f.interpolate(u, cells0=fluid_parent_cells, cells1=fluid_cells)
+
+    # Set up output, checkpointing, and qoi tracking.
+
+    # (t, step) are the time and number of completed steps of the current state
+    t = t0
+    step = 0
+    checkpointer = None
+    if checkpoint_dir is not None:
+        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)])
+    if restart:
+        t, step = checkpointer.read(checkpoint_fields, dt_val)
+        scatter_displacement()
+        if step >= num_steps:
+            raise ValueError(
+                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
+                f"up to {T = } ({num_steps = })"
+            )
+        output_path = restart_output_path(output_path, t)
+        output_path_p = restart_output_path(output_path_p, t)
+        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
+        PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
+    elif checkpoint_every is not None:
+        checkpointer.clear()
+    if initial_state_dir is not None:
+        t, _ = Checkpointer(initial_state_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)]).read(
+            checkpoint_fields, None
+        )
+        scatter_displacement()
+        if t != t0:
+            raise RuntimeError(
+                f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
+                "start from a copy of a run that is still writing checkpoints"
+            )
+        if num_steps <= 0:
+            raise ValueError(
+                f"Cannot start from the state at {t = :.4f} in {initial_state_dir}: "
+                f"no time step is left to solve up to {T = }"
+            )
+        if mesh.comm.rank == 0:
+            print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
+
+    writers = []
+    if vtx_save_every is not None:
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
+
+    # Quantities of interest: the displacement at the tip of the structure, and the drag and
+    # lift on the obstacle and on the fluid side of the solid-fluid interface.
+    spot_dof = find_point_dof(U_s, np.array([0.6, 0.2, 0.0], dtype=np.float64))
+    drag_forms, lift_forms = drag_lift_forms(
+        mesh,
+        u_f,
+        v,
+        p,
+        nu_f,
+        rho_f,
+        [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
+        entity_maps,
+    )
+
+    def write_output(t, step):
+        """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
+        if vtx_save_every is not None and step % vtx_save_every == 0:
+            for writer in writers:
+                writer.write(t)
+
+        u_spot = point_value(u_s, spot_dof)
+        drag = assemble_force(drag_forms, comm)
+        lift = assemble_force(lift_forms, comm)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
+
+    # create Dirichlet boundary condition
+
+    from functools import reduce
+
+    inflow_bc_func = dolfinx.fem.Function(V)
+    inflow_bc_func.x.array[:] = 0.0
+    inflow_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["inflow"]),
+        ],
+    )
+    inflow_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, inflow_bc_facets)
+
+    inflow_bc = dolfinx.fem.dirichletbc(inflow_bc_func, inflow_bc_dofs)
+
+    class InflowFunc:
+        def __init__(self, t: float = 0.0):
+            self.t = t
+
+        def __call__(self, x: np.ndarray) -> np.ndarray:
+            values = np.zeros((2, x.shape[1]), dtype=x.dtype)
+            values[0] = 1.5 * U_bar * 4 * x[1] * (H - x[1]) / H**2
+            if self.t < 2.0:
+                values[0] *= 0.5 * (1.0 - np.cos(0.5 * np.pi * self.t))
+            return values
+
+    noslip_bc_func = dolfinx.fem.Function(V)
+    noslip_bc_func.x.array[:] = 0.0
+    noslip_bc_facets = reduce(
+        np.union1d,
+        [
+            facet_tags.find(PHYSICAL_MARKERS["obstacle"]),
+            facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+            facet_tags.find(PHYSICAL_MARKERS["channel_side"]),
+        ],
+    )
+    noslip_bc_dofs = dolfinx.fem.locate_dofs_topological(V, mesh.geometry.dim - 1, noslip_bc_facets)
+
+    noslip_bc = dolfinx.fem.dirichletbc(noslip_bc_func, noslip_bc_dofs)
+
+    # Create fluid ALE Dirichlet boundary condition
+
+    u_f_bc_func = dolfinx.fem.Function(U_f)
+    u_f_bc_func.x.array[:] = 0.0
+    u_f_bc_facets = dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
+    u_f_bc_dofs = dolfinx.fem.locate_dofs_topological(U_f, fluid_mesh.geometry.dim - 1, u_f_bc_facets)
+    u_f_bc = dolfinx.fem.dirichletbc(u_f_bc_func, u_f_bc_dofs)
+
+    # Create solid Dirichlet boundary condition
+
+    u_s_bc_func = dolfinx.fem.Function(U_s)
+    u_s_bc_func.x.array[:] = 0.0
+    u_s_bc_facets = reduce(
+        np.union1d,
+        [
+            solid_facet_tags.find(PHYSICAL_MARKERS["solid_obstacle_interface"]),
+        ],
+    )
+    u_s_bc_dofs = dolfinx.fem.locate_dofs_topological(U_s, solid_mesh.geometry.dim - 1, u_s_bc_facets)
+    u_s_bc = dolfinx.fem.dirichletbc(u_s_bc_func, u_s_bc_dofs)
+
+    # Create Dirichlet boundary condition for restricting test functions.
+
+    total_interface_facets_found = mesh.comm.allreduce(interface_facets.size, op=MPI.SUM)
+    assert total_interface_facets_found > 0, "Interface not found."
+
+    # Collect Dirichlet boundary conditions to pass to NonlinearProblem
+
+    bcs = [inflow_bc, noslip_bc]
+
+    # DESCRIBE FSI PROBLEM
+    # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
+    # SOLID: Homogeneous Dirichlet on left side
+
+    from xfsi_solver.fsi.materials import Fluid, Solid
+
+    # create residual form with u condensed out.
+
+    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+
+        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u_f - u_f_old) / dt), dv) * dx_fluid
+
+        return residual
+
+    def A_T_mass(v, v_old, u_f, u_f_old):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_old)
+        J_old = ufl.det(F_old)
+        J_mid = 0.5 * (J + J_old)
+
+        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
+
+        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
+
+        return residual
+
+    def A_T(v, v_old, u_f, u_f_old):
+        return A_T_mass(v, v_old, u_f, u_f_old) + A_T_mesh_transport(v, v_old, u_f, u_f_old)
+
+    def A_I(v, u_f):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+
+        residual = ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
+
+        return residual
+
+    def A_E_fluid_viscous(v, u_f):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+
+        residual = ufl.inner(J * Fluid.NS_velocity(u_f, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+
+        return residual
+
+    def A_E_fluid_transport(v, u_f):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+
+        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
+
+        return residual
+
+    def A_E_fluid(v, u_f):
+
+        return A_E_fluid_viscous(v, u_f) + A_E_fluid_transport(v, u_f)
+
+    def A_E_solid(u_s):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s)
+        J = ufl.det(F)
+
+        residual = ufl.inner(J * Solid.STVK(u_s, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
+
+        return residual
+
+    def A_P(p, u_f):
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
+        J = ufl.det(F)
+
+        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+
+        return residual
+
+    residual = A_T(v, v_old, u_f, u_f_old)
+    residual += A_I(v, u_f)
+    residual += A_P(p, u_f)
+    residual += theta * A_E_fluid(v, u_f)
+    residual += (1.0 - theta) * A_E_fluid(v_old, u_f_old)
+
+    u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
+    residual += theta * A_E_solid(u_s_condensed)
+    residual += (1.0 - theta) * A_E_solid(u_s_old)
+
+    # Add in u_s with zero constants for correct sparsity patterns
+    # residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
+    # residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
+
+    # The term we do separately in the other solvers
+    # residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
+
+    residual_blocks = ufl.extract_blocks(residual)
+
+    jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
+
+    # --------------------------------------------
+
+    # Do-nothing condition
+    # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
+
+    problem = dolfinx.fem.petsc.NonlinearProblem(
+        residual_blocks,
+        (v, p),
+        J=jacobian,
+        bcs=bcs,
+        petsc_options_prefix="solver_",
+        entity_maps=entity_maps,
+        petsc_options={
+            # SNES options
+            "snes_linesearch_type": "none",
+            "snes_max_it": 20,
+            "snes_atol": 1.0e-7,
+            "snes_rtol": 1.0e-12,
+            "snes_stol": 0.0,
+            # KSP options
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_cntl_1": 1e-4,
+            # Turn off errors, catch manually instead.
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
+            # Print to console.
+            # "snes_monitor": None,
+            "snes_converged_reason": None,
+        },
+    )
+
+    # Add extra callbacks to change how residual and jacobian is assembled,
+    # to account for test function restriction on the interface.
+
+    solver = problem.solver
+    b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
+    J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
+
+    # State of the Jacobian reuse in wrapped_jacobian_approximate. previous_norm is the
+    # residual norm at the previous Newton iterate of the current time step.
+    jacobian_state = {
+        "assembled": False,
+        "previous_norm": None,
+        "num_assemblies": 0,
+    }
+
+    def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
+        norm = snes.getFunctionNorm()  # residual norm at the current iterate x
+        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
+        jacobian_state["previous_norm"] = norm
+        # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
+        # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
+        # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
+        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+            return
+        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        jacobian_state["assembled"] = True
+        jacobian_state["num_assemblies"] += 1
+
+    def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
+        fem_residual(snes, x, b, *res_args, **res_kargs)
+
+    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
+    solver.setFunction(wrapped_residual, b_vec)
+
+    # The two problems below are linear, with matrices that are the same for the whole run: one SNES
+    # iteration (ksponly) solves each exactly, and the lagged Jacobian is assembled and factorized only
+    # in the first solve.
+    solid_displacement_problem = dolfinx.fem.petsc.NonlinearProblem(
+        ufl.inner(u_s - u_s_old - dt * (theta * v + (1.0 - theta) * v_old), du_s) * dx_solid,
+        u_s,
+        petsc_options_prefix="solid_displacement_",
+        bcs=[u_s_bc],
+        petsc_options={
+            # SNES options
+            "snes_type": "ksponly",
+            "snes_lag_jacobian": -2,
+            "snes_lag_jacobian_persists": True,
+            # KSP options
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_cntl_1": 1e-4,
+            # Turn off errors, catch manually instead.
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
+            # Print to console.
+            # "snes_converged_reason": None,
+        },
+        entity_maps=entity_maps,
+    )
+
+    # The zero term gives the (u_f, u_f) block, where dolfinx puts the unit diagonal of the Dirichlet
+    # rows; without it, those rows are zero and the factorization fails. The unknowns are in the order
+    # of the test functions, (Z, U_f), which ufl.extract_blocks orders the residual blocks by.
+    mesh_motion_problem = dolfinx.fem.petsc.NonlinearProblem(
+        ufl.extract_blocks(
+            (ufl.inner(z, dz) - ufl.inner(ufl.grad(u_f), ufl.grad(dz)) - ufl.inner(ufl.grad(z), ufl.grad(du_f)))
+            * dx_fluid
+            + dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u_f, du_f) * dx_fluid
+        ),
+        [z, u_f],
+        petsc_options_prefix="mesh_motion_",
+        bcs=[u_f_bc],
+        petsc_options={
+            # SNES options
+            "snes_type": "ksponly",
+            "snes_lag_jacobian": -2,
+            "snes_lag_jacobian_persists": True,
+            # KSP options
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+            "mat_mumps_cntl_1": 1e-4,
+            # Turn off errors, catch manually instead.
+            "snes_error_if_not_converged": False,
+            "ksp_error_if_not_converged": False,
+            # Print to console.
+            # "snes_converged_reason": None,
+        },
+        entity_maps=entity_maps,
+    )
+
+    num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
+
+    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary.
+    # interpolate_nonmatching locates the points across the ranks, so it does not depend on which
+    # solid cells a rank holds, and gives 0 at the points outside the solid. The meshes do not move,
+    # so the search is done once. It writes only the dofs of the cells it is given, so these are all
+    # local fluid cells with an interface dof, including cells that touch the interface only at a
+    # vertex: locate_dofs_topological finds the interface dofs also on ranks that hold them only
+    # through such cells (remote=True), which no interface facet of the rank would reach.
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+    )
+    fluid_interface_dofs = dolfinx.fem.locate_dofs_topological(
+        U_f, fluid_mesh.topology.dim - 1, fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]), remote=True
+    )
+    interface_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_interface_dofs).any(axis=1)]
+    interface_data = dolfinx.fem.create_interpolation_data(U_f, U_s, interface_cells, padding=1e-8)
+
+    def check_side_solve(side_problem, name):
+        """Raise if a solve of the displacements failed, which their error options leave silent."""
+        side_solver = side_problem.solver
+        if side_solver.getConvergedReason() < 0:
+            raise RuntimeError(
+                f"The {name} solve failed: SNES reason {side_solver.getConvergedReason()}, "
+                f"KSP reason {side_solver.getKSP().getConvergedReason()}"
+            )
+
+    def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
+        """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
+        where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
+        sets the next iterate to v - Y and evaluates the residual there."""
+        v.x.array[:num_v] -= x.getArray(readonly=True)[:num_v]  # the owned v rows come first in x
+        v.x.scatter_forward()
+
+        solid_displacement_problem.solve()
+        check_side_solve(solid_displacement_problem, "solid displacement")
+
+        u_f_bc_func.interpolate_nonmatching(u_s, interface_cells, interface_data)
+        u_f_bc_func.x.scatter_forward()
+
+        mesh_motion_problem.solve()
+        check_side_solve(mesh_motion_problem, "mesh motion")
+
+    # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
+    # The K_c solve is a direct one, and check_converged reports a failure of it through the SNES.
+    solver.getKSP().setPostSolve(post_velocity_solve_update)
+
+    # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
+    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+
+    if not restart:
+        write_output(t, step)
+
+    PETSc.Sys.Print()
+    mesh.comm.barrier()
+
+    first_step = step
+    num_newton_iterations = 0
+    start = timer()
+    while step < num_steps:
+        t = t0 + (step + 1) * dt_val
+        inflow_bc_func.interpolate(InflowFunc(t))
+        inflow_bc_func.x.scatter_forward()
+
+        v_old.x.array[:] = v.x.array[:]
+        u_s_old.x.array[:] = u_s.x.array[:]
+        u_f_old.x.array[:] = u_f.x.array[:]
+
+        PETSc.Sys.Print(f"\n\n{t = :.3f}")
+
+        problem.solve()
+        num_newton_iterations += solver.getIterationNumber()
+        check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
+
+        step += 1
+        write_output(t, step)
+
+        if checkpoint_every is not None and step % checkpoint_every == 0:
+            gather_displacement()
+            checkpointer.write(checkpoint_fields, t, step, dt_val, t0)
+
+    end = timer()
+    if comm.rank == 0:
+        print(f"\n{comm.size = }")
+        print(f"Elapsed time: {end - start:.3f} s")
+        print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+
+    for writer in writers:
+        writer.close()
+
+    # Destroying the MUMPS factorization and the AMG hierarchies is collective, so destroy them on
+    # all ranks here instead of leaving it to garbage collection, which can run at different points
+    # on different ranks.
+    solver.destroy()
+    solid_displacement_problem.solver.destroy()
+    mesh_motion_problem.solver.destroy()
+
+    return
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
+    parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
+    args = parser.parse_args()
+
+    solve(
+        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
+        T=16.0 + 10 * 0.0025,
+        dt_val=0.0025,
+        output_path="output/pv/fsi2_biharmonic_mixed_twice_simplified.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_twice_simplified_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_twice_simplified.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_twice_simplified",
+        checkpoint_every=400,
+        vtx_save_every=None,
+        gamma_reassemble=0.2,  # Default 0.2.
+        restart=args.restart,
+        initial_state_dir=args.initial_state_dir,
+    )
+
+
+if __name__ == "__main__":
+    main()
