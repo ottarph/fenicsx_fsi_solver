@@ -231,3 +231,34 @@ Other decisions:
 - Block norms on mesh_sec at t = 15.0025: the (v, u_S) block is 2.7e8 in the full Jacobian (E_S + F_S)
   and 8.8e3 in the condensed one (F_S), where (v, v) grows from 7.0e3 (H) to 3.4e5 (H_c). The approximate
   Jacobian drops (v, u_S), (v, u_I), (p, u_S) and (p, u_I).
+
+## Simplified mixed solver with Python PCs for u (2026-10-26)
+
+- `fsi2_biharmonic_mixed_simplified.py` (sketched by Ottar, finished here) drops all rows of u from the
+  residual of `fsi2_biharmonic_mixed`, apart from the Dirichlet rows. It keeps the multiplicative
+  fieldsplit q_c = (v, p), u_S, m = (z, u_I), with MUMPS on K_c, and solves the two displacement splits by
+  PCPYTHON contexts that set u of the next Newton iterate directly:
+  - `NodalUpdatePC` (u_S): y_S = u - u_old - dt (theta v + (1 - theta) v_old) + theta dt y_v, node by
+    node, with y_v read from the q_c sub-KSP (`ksp_q_c.getSolution()`), which the multiplicative
+    fieldsplit solves first. Without rows of u, the split's right-hand side holds nothing but the
+    Dirichlet rows, so the kinematic defect is taken from the iterate (the fields hold it since the
+    residual was assembled there). U and V must have the same element, which is checked.
+  - `SeparateSolverPC` (m): interpolates the next displacement onto the fluid submesh, extends it from the
+    whole fluid boundary (which includes the interface) with `component_solvers/biharm.py` (mixed
+    biharmonic, MUMPS LU on both components at once, assembled once), and returns u - u_new on u_I and
+    z - z_new on z. The extension's auxiliary field solves the same equation as z.
+  - At Dirichlet rows both return the right-hand side x - g, like the unit diagonal of dolfinx's Newton
+    system. Neither PC is linear in its right-hand side, so the outer KSP must stay `preonly`.
+- Fixed in the sketch: `NonlinearProblem` got the monolithic residual instead of `residual_blocks`, the
+  Jacobian blocks were indexed `[i, j]`, and the trial functions were `TestFunctions`. The
+  `IdenticalBlocksPC` component index sets are gone with the K_m solve they served.
+- Validation against `fsi2_biharmonic_mixed` (direct K_c, dt = 0.0025):
+  | start | mesh, ranks | steps | Newton its, mixed / simplified | max rel. field difference |
+  |---|---|---|---|---|
+  | rest | mesh_sec_coarse, 1 and 4 | 40 | 79 / 79 | QoIs equal to the 7 printed digits |
+  | t = 16, `fsi2_biharm_dm_restr_split_approx` checkpoint | mesh_sec, 4 | 40 | 294 / 294 | u 6e-11, v 2e-11, p 2e-12, z 1e-8 |
+  With exact solves in both displacement splits, the PCs give the same corrections as the rows of u in the
+  mixed solver, so the iterates agree to round-off. Time per step from t = 16 on 4 ranks: 0.270 s against
+  0.280 s for the mixed solver.
+- `tests/test_fsi2_biharmonic_mixed_simplified.py` runs both solvers for six steps on mesh_sec_coarse and
+  compares their QoIs.
