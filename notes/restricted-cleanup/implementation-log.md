@@ -301,3 +301,12 @@ Other decisions:
   accurate. A cap of 6 is a free 20%; 5 gives 34% for a change of 3e-5 of the range, which was not
   compared to the space or time discretization error. The default stays None, so the benchmark runs
   are unchanged.
+- In the benchmark quantities (mean, amplitude and frequency over the last full period of u_y, as in
+  `compare_fsi_qois.py`), cap 5 changes every mean, amplitude and frequency by at most 5e-5 relative to
+  the uncapped run (the mean lift, 0.57 against an amplitude of 244, by 1e-3 N). For scale: the earlier
+  mesh_sec benchmark run, one period near t = 15 instead of t = 17.2, differs by up to 2e-4 (u_x mean,
+  1e-3 in the u_y mean); mesh_fine_sec (`fsi_2.txt`, same dt) by 3e-4 to 4e-3 (drag mean +0.43%, lift
+  amplitude -0.30%, frequency -0.05%); and the 2006 reference of Turek & Hron by 2-9% (drag amplitude
+  -8.5%). Their level 4 results with dt = 0.002 differ from their reference by up to 8% (drag amplitude
+  67.61 against 73.75). The quadrature error of cap 5 is 20 to 100 times below the mesh difference and
+  three orders of magnitude below the spread of the published values.
