@@ -17,6 +17,7 @@ from petsc4py import PETSc
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
+from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -76,9 +77,12 @@ def solve(
     fsi2_biharmonic_mixed, and the Jacobian is that of the momentum and continuity equations with
     respect to (v, p), solved by MUMPS LU. The displacements are not unknowns of the Newton system:
     after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
-    displacement u_s on the solid mesh from the kinematic relation, and extends it into the fluid as
-    u_f on the fluid mesh with the mixed biharmonic mesh motion, before SNES evaluates the residual
-    there. With exact solves, this gives the same iterates as fsi2_biharmonic_mixed.
+    displacement u_s on the solid mesh from the kinematic relation, node by node, and extends it into
+    the fluid as u_f on the fluid mesh with the mixed biharmonic mesh motion, before SNES evaluates the
+    residual there. The mesh motion does not couple the x and y components, which have the same
+    matrix, so only the x component is factorized, by MUMPS once for the whole run, and both
+    components are solved with that factorization at once, by one MatMatSolve. With exact solves, this
+    gives the same iterates as fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v, p and z, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states. The other
@@ -203,7 +207,6 @@ def solve(
     # trial_u_s, trial_u_f, trial_z = ufl.TrialFunction(U_s), ufl.TrialFunction(U_f), ufl.TrialFunction(Z)
     # du_s, du_f, dz = ufl.TestFunction(U_s), ufl.TestFunction(U_f), ufl.TestFunction(Z)
 
-    du_s = ufl.TestFunction(U_s)
     dz, du_f = ufl.TestFunctions(ufl.MixedFunctionSpace(Z, U_f))
 
     # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
@@ -534,36 +537,25 @@ def solve(
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
-    # The two problems below are linear, with matrices that are the same for the whole run: one SNES
-    # iteration (ksponly) solves each exactly, and the lagged Jacobian is assembled and factorized only
-    # in the first solve.
-    solid_displacement_problem = dolfinx.fem.petsc.NonlinearProblem(
-        ufl.inner(u_s - u_s_old - dt * (theta * v + (1.0 - theta) * v_old), du_s) * dx_solid,
-        u_s,
-        petsc_options_prefix="solid_displacement_",
-        bcs=[u_s_bc],
-        petsc_options={
-            # SNES options
-            "snes_type": "ksponly",
-            "snes_lag_jacobian": -2,
-            "snes_lag_jacobian_persists": True,
-            # KSP options
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_cntl_1": 1e-4,
-            # Turn off errors, catch manually instead.
-            "snes_error_if_not_converged": False,
-            "ksp_error_if_not_converged": False,
-            # Print to console.
-            # "snes_converged_reason": None,
-        },
-        entity_maps=entity_maps,
-    )
+    # The solid displacement is updated node by node by the kinematic relation. U_s and V have the same
+    # element, so the dofs of a solid cell are in the same order in both, and the dofmaps of the solid
+    # cells give the dof of v at each local dof of u_s.
+    if elements["U"] != elements["V"]:
+        raise ValueError(
+            f"The nodal update needs the same element for U and V, not {elements['U']} and {elements['V']}"
+        )
+    num_u_s_dofs = U_s.dofmap.index_map.size_local + U_s.dofmap.index_map.num_ghosts
+    v_dof_of_u_s = np.empty(num_u_s_dofs, dtype=np.int32)
+    v_dof_of_u_s[U_s.dofmap.list[solid_cells]] = V.dofmap.list[solid_parent_cells]
+    block_size_u = U_s.dofmap.index_map_bs
+    v_dof_of_u_s = (block_size_u * v_dof_of_u_s[:, None] + np.arange(block_size_u)).ravel()  # unrolled
 
-    # The zero term gives the (u_f, u_f) block, where dolfinx puts the unit diagonal of the Dirichlet
-    # rows; without it, those rows are zero and the factorization fails. The unknowns are in the order
-    # of the test functions, (Z, U_f), which ufl.extract_blocks orders the residual blocks by.
+    # The mesh motion is linear, with a matrix that is the same for the whole run: one SNES iteration
+    # (ksponly) solves it exactly, and the lagged Jacobian is assembled and factorized only in the
+    # first solve. The zero term gives the (u_f, u_f) block, where dolfinx puts the unit diagonal of
+    # the Dirichlet rows; without it, those rows are zero and the factorization fails. The unknowns
+    # are in the order of the test functions, (Z, U_f), which ufl.extract_blocks orders the residual
+    # blocks by.
     mesh_motion_problem = dolfinx.fem.petsc.NonlinearProblem(
         ufl.extract_blocks(
             (ufl.inner(z, dz) - ufl.inner(ufl.grad(u_f), ufl.grad(dz)) - ufl.inner(ufl.grad(z), ufl.grad(du_f)))
@@ -580,9 +572,7 @@ def solve(
             "snes_lag_jacobian_persists": True,
             # KSP options
             "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_cntl_1": 1e-4,
+            "pc_type": "python",  # IdenticalBlocksPC
             # Turn off errors, catch manually instead.
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
@@ -591,6 +581,39 @@ def solve(
         },
         entity_maps=entity_maps,
     )
+
+    # The mesh motion does not couple the x and y components, and the components have the same
+    # matrix, also in their Dirichlet rows, so IdenticalBlocksPC factorizes the x component only and
+    # solves both components with that factorization at once. Each rank stores its owned dofs as
+    # [z | u_f], with the components interleaved per node, (x, y), so the k-th row of each component
+    # is the same node.
+    mesh_motion_offsets, _ = mesh_motion_problem.b.getAttr("_blocks")
+    mesh_motion_first_row = mesh_motion_problem.A.getOwnershipRange()[0]
+    block_size_z = Z.dofmap.index_map_bs
+    if block_size_z != U_f.dofmap.index_map_bs:
+        raise ValueError(f"The mesh motion needs the same element for Z and U, not {elements['Z']} and {elements['U']}")
+    mesh_motion_components = [
+        PETSc.IS().createGeneral(
+            mesh_motion_first_row
+            + np.concatenate(
+                [np.arange(mesh_motion_offsets[k] + c, mesh_motion_offsets[k + 1], block_size_z) for k in range(2)]
+            ).astype(PETSc.IntType),
+            comm=comm,
+        )
+        for c in range(block_size_z)
+    ]
+    mesh_motion_pc = IdenticalBlocksPC(mesh_motion_components)
+    mesh_motion_pc_outer = mesh_motion_problem.solver.getKSP().getPC()
+    mesh_motion_pc_outer.setPythonContext(mesh_motion_pc)
+
+    # Set through the options database, since IdenticalBlocksPC reads them when it is set up in the
+    # first solve, and dolfinx deletes the options in petsc_options once the solver is set up.
+    opts = PETSc.Options()
+    opts.prefixPush(mesh_motion_pc_outer.getOptionsPrefix() + "block_")  # mesh_motion_block_
+    opts["pc_type"] = "lu"
+    opts["pc_factor_mat_solver_type"] = "mumps"
+    opts["mat_mumps_cntl_1"] = 1e-4
+    opts.prefixPop()
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
@@ -610,13 +633,16 @@ def solve(
     interface_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_interface_dofs).any(axis=1)]
     interface_data = dolfinx.fem.create_interpolation_data(U_f, U_s, interface_cells, padding=1e-8)
 
-    def check_side_solve(side_problem, name):
-        """Raise if a solve of the displacements failed, which their error options leave silent."""
-        side_solver = side_problem.solver
-        if side_solver.getConvergedReason() < 0:
+    def check_mesh_motion_solve():
+        """Raise if the mesh motion solve failed, which its error options leave silent. A failed
+        factorization of the component block shows only in the PC of IdenticalBlocksPC."""
+        mesh_motion_solver = mesh_motion_problem.solver
+        block_reason = mesh_motion_pc.block_pc.getFailedReason()
+        if mesh_motion_solver.getConvergedReason() < 0 or block_reason != 0:
             raise RuntimeError(
-                f"The {name} solve failed: SNES reason {side_solver.getConvergedReason()}, "
-                f"KSP reason {side_solver.getKSP().getConvergedReason()}"
+                f"The mesh motion solve failed: SNES reason {mesh_motion_solver.getConvergedReason()}, "
+                f"KSP reason {mesh_motion_solver.getKSP().getConvergedReason()}, "
+                f"PC failed reason of the component block {block_reason}"
             )
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
@@ -626,14 +652,18 @@ def solve(
         v.x.array[:num_v] -= x.getArray(readonly=True)[:num_v]  # the owned v rows come first in x
         v.x.scatter_forward()
 
-        solid_displacement_problem.solve()
-        check_side_solve(solid_displacement_problem, "solid displacement")
+        # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
+        # Dirichlet values hold already, since v and v_old vanish there, and are set again exactly.
+        u_s.x.array[:] = u_s_old.x.array + dt_val * (
+            theta_val * v.x.array[v_dof_of_u_s] + (1.0 - theta_val) * v_old.x.array[v_dof_of_u_s]
+        )
+        u_s_bc.set(u_s.x.array)
 
         u_f_bc_func.interpolate_nonmatching(u_s, interface_cells, interface_data)
         u_f_bc_func.x.scatter_forward()
 
         mesh_motion_problem.solve()
-        check_side_solve(mesh_motion_problem, "mesh motion")
+        check_mesh_motion_solve()
 
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # The K_c solve is a direct one, and check_converged reports a failure of it through the SNES.
@@ -686,8 +716,8 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
-    solid_displacement_problem.solver.destroy()
     mesh_motion_problem.solver.destroy()
+    mesh_motion_pc.destroy_solvers()
 
     return
 

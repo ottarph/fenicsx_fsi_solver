@@ -931,19 +931,13 @@ def main():
     args = parser.parse_args()
 
     solve(
-        mesh_path="data/meshes/fsi2/mesh_quad_ssq_sec.xdmf",
+        mesh_path="data/meshes/fsi2/mesh_fine_sec.xdmf",
         T=16.0 + 10 * 0.0025,
         dt_val=0.0025,
-        elements={
-            "U": ("P", 2, (2,)),
-            "V": ("P", 2, (2,)),
-            "P": ("DPC", 1),
-            "Z": ("P", 2, (2,)),
-        },
-        output_path="output/pv/fsi2_biharmonic_mixed_quad.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_quad_p.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_quad.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_quad",
+        output_path="output/pv/fsi2_biharmonic_mixed_fine.bp",
+        output_path_p="output/pv/fsi2_biharmonic_mixed_fine_p.bp",
+        qoi_path="output/qoi/fsi2_biharmonic_mixed_fine.txt",
+        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_fine",
         checkpoint_every=400,
         vtx_save_every=None,
         plot_matrices=False,
