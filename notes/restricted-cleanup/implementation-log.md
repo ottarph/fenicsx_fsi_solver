@@ -262,3 +262,8 @@ Other decisions:
   0.280 s for the mixed solver.
 - `tests/test_fsi2_biharmonic_mixed_simplified.py` runs both solvers for six steps on mesh_sec_coarse and
   compares their QoIs.
+- Benchmark run (c9bff97, `main()`: mesh_sec, dt = 0.0025, from rest to T = 16.025, 16 ranks): finished all
+  6410 steps without a failed solve, in 589 s (0.092 s/step), with 38067 Newton iterations (at most 12 in a
+  step). Over t in [14, 16.025]: drag 217.9 +- 80.7, lift -0.51 +- 244.2, u_x -1.523e-2 +- 1.302e-2,
+  u_y 1.28e-3 +- 8.27e-2 (mean +- half the peak-to-peak range). QoIs in
+  `output/qoi/fsi2_biharmonic_mixed_simple.txt`, log in `output/logs/fsi2_biharmonic_mixed_simple.txt`.
