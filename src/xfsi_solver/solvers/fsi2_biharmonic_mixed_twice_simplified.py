@@ -18,7 +18,6 @@ from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, rest
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
-from xfsi_solver.tools.quadrature import cap_quadrature_degree
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -27,6 +26,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -467,10 +467,6 @@ def solve(
     residual += theta * A_E_solid(u_s_condensed)
     residual += (1.0 - theta) * A_E_solid(u_s_old)
 
-    # Add in u_s with zero constants for correct sparsity patterns
-    # residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
-    # residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
-
     # The term we do separately in the other solvers
     # residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
 
@@ -752,8 +748,9 @@ def main():
         checkpoint_every=400,
         vtx_save_every=None,
         gamma_reassemble=0.2,  # Default 0.2.
-        max_quadrature_degree=None,  # Default None, no cap.
-        restart=args.restart,
+        max_quadrature_degree=6,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+        # restart=args.restart,
+        restart=True,
         initial_state_dir=args.initial_state_dir,
     )
 
