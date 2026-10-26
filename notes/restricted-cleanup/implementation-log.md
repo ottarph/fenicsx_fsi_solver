@@ -310,3 +310,15 @@ Other decisions:
   -8.5%). Their level 4 results with dt = 0.002 differ from their reference by up to 8% (drag amplitude
   67.61 against 73.75). The quadrature error of cap 5 is 20 to 100 times below the mesh difference and
   three orders of magnitude below the spread of the published values.
+- Cap 5 from rest (Ottar's run of `main()` with `max_quadrature_degree=5`, `restart=False`, to t = 16.25;
+  QoIs in `output/qoi/fsi2_biharmonic_mixed_twice_simplified.txt`, which replaced those of the uncapped
+  run), compared with the uncapped run from rest, `output/qoi/fsi2_biharmonic_mixed_simple.txt` (whose
+  last rows equal those of the uncapped twice simplified run). The largest pointwise deviation, relative
+  to half the peak-to-peak range over t >= 14, is 1e-6 up to t = 6, grows to 6e-5 while the oscillation
+  builds up (t = 8 to 10; |u_y| first exceeds half its final amplitude at t = 8.07 in both runs), and
+  settles at 3e-5 from t = 12. The quantities over the last period before t = 16.025 (t = 15.10 to 15.62,
+  the same in both runs) change by at most 9e-6 relative, apart from the u_y mean (1.29 mm, 5e-5) and the
+  lift mean (0.59 against an amplitude of 244; 1.1e-3, 4e-6 of the amplitude). This is the same as from
+  the developed state: the onset of the oscillation does not amplify the quadrature error, and it stays
+  20 to 100 times below the difference to mesh_fine_sec and three orders of magnitude below that to the
+  2006 reference.
