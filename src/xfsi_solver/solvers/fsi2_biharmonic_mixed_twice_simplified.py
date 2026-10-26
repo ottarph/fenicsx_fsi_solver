@@ -715,6 +715,18 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if max_quadrature_degree is None:
+            quadrature_description = "as estimated by UFL"
+        else:
+            quadrature_description = f"at most {max_quadrature_degree}"
+        print(
+            "\nSolver setup:\n"
+            f"  Quadrature degree: {quadrature_description}\n"
+            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
+            f"with {gamma_reassemble = }\n"
+            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
+            f"over {step - first_step} time steps\n"
+        )
 
     for writer in writers:
         writer.close()
