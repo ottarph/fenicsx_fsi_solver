@@ -749,22 +749,67 @@ def main():
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
+    mesh_path = "data/meshes/fsi2/mesh_fine_sec.xdmf"
+    T = 16.0 + 100 * 0.0025
+    dt_val = 0.0025
+    output_path = "output/pv/fsi2_biharmonic_mixed_twice_simplified_fine.bp"
+    output_path_p = "output/pv/fsi2_biharmonic_mixed_twice_simplified_fine_p.bp"
+    qoi_path = "output/qoi/fsi2_biharmonic_mixed_twice_simplified_fine.txt"
+    checkpoint_dir = "output/checkpoints/fsi2_biharmonic_mixed_twice_simplified_fine"
+    checkpoint_every = 400
+    vtx_save_every = None
+    gamma_reassemble = 0.2  # Default 0.2.
+    max_quadrature_degree = 5  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+    restart = args.restart
+    initial_state_dir = args.initial_state_dir
     solve(
-        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=16.0 + 10 * 0.0025,
-        dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_mixed_twice_simplified.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_twice_simplified_p.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_twice_simplified.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_twice_simplified",
-        checkpoint_every=400,
-        vtx_save_every=None,
-        gamma_reassemble=0.2,  # Default 0.2.
-        max_quadrature_degree=6,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
-        # restart=args.restart,
-        restart=True,
-        initial_state_dir=args.initial_state_dir,
+        mesh_path=mesh_path,
+        T=T,
+        dt_val=dt_val,
+        output_path=output_path,
+        output_path_p=output_path_p,
+        qoi_path=qoi_path,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        vtx_save_every=vtx_save_every,
+        gamma_reassemble=gamma_reassemble,  # Default 0.2.
+        max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+        restart=restart,
+        initial_state_dir=initial_state_dir,
     )
+
+    from xfsi_solver.scripts.plot_qois import plot_qoi
+
+    if MPI.COMM_WORLD.rank == 0:
+        for qoi, qoi_label in zip(
+            ["drag", "lift", "A_x", "A_y"],
+            ["Drag", "Lift", "$x$-displacement of A [m]", "$y$-displacement of A [m]"],
+            strict=True,
+        ):
+            plot_qoi(
+                qoi,
+                qoi_file=qoi_path,
+                save_path="output/figures/qoi/fsi2_biharmonic_mixed_twice_simplified_fine/full_" + qoi + ".pdf",
+                label=None,
+                title=None,
+                xlabel="Time [s]",
+                ylabel=qoi_label,
+                time_interval=[0, max(T, 15.0)],
+                reference_file="data/fsi2_reference.txt",
+                reference_label="FeatFlow-reference",
+            )
+            plot_qoi(
+                qoi,
+                qoi_file=qoi_path,
+                save_path="output/figures/qoi/fsi2_biharmonic_mixed_twice_simplified_fine/closeup_" + qoi + ".pdf",
+                label=None,
+                title=None,
+                xlabel="Time [s]",
+                ylabel=qoi_label,
+                time_interval=[10.0, 15.0],
+                reference_file="data/fsi2_reference.txt",
+                reference_label="FeatFlow-reference",
+            )
 
 
 if __name__ == "__main__":
