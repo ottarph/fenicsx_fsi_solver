@@ -267,3 +267,37 @@ Other decisions:
   step). Over t in [14, 16.025]: drag 217.9 +- 80.7, lift -0.51 +- 244.2, u_x -1.523e-2 +- 1.302e-2,
   u_y 1.28e-3 +- 8.27e-2 (mean +- half the peak-to-peak range). QoIs in
   `output/qoi/fsi2_biharmonic_mixed_simple.txt`, log in `output/logs/fsi2_biharmonic_mixed_simple.txt`.
+
+## Quadrature cap in the twice simplified solver (2026-10-26)
+
+- `fsi2_biharmonic_mixed_twice_simplified.solve` takes `max_quadrature_degree` (default None, no cap),
+  applied with `cap_quadrature_degree` to the residual blocks before `derivative_block`, so the Jacobian
+  keeps it, and to the drag and lift forms. On mesh_sec (quadratic geometry, P2/P1), UFL estimates the
+  degrees 6, 14, 14, 8, 12, 9, 12, 12, 12, 12 for the integrals of the v residual and 13 for the p
+  residual. The default triangle rules have 42 points at degree 14, 25 at 10, 16 at 8, 12 at 6, 7 at 5,
+  and 6 at both 4 and 3.
+- `jobs/fsi2_quadrature_cap.sh` runs the solver from a developed state (a copy of its benchmark run's
+  t = 16 checkpoint in `output/quadrature_cap/initial_state`) to t = 18, 800 steps of dt = 0.0025, once
+  per cap, one after the other on 16 ranks. Errors are the largest deviation from the uncapped run over
+  the 800 steps, relative to half the peak-to-peak range of the uncapped QoI (drag 80.65, lift 244.2,
+  u_x 1.302e-2, u_y 8.274e-2):
+
+  | cap | s/step | speed-up | Newton its (max/step) | drag | lift | u_x | u_y |
+  |---|---|---|---|---|---|---|---|
+  | none | 0.099 | 1.00 | 6002 (12) | - | - | - | - |
+  | 10 | 0.095 | 1.04 | 6002 (12) | 0 | 0 | 0 | 0 |
+  | 8 | 0.084 | 1.18 | 6002 (12) | 0 | 0 | 0 | 0 |
+  | 6 | 0.081 | 1.22 | 6002 (12) | 0 | 4e-8 | 8e-7 | 1e-7 |
+  | 5 | 0.074 | 1.34 | 6002 (12) | 3e-5 | 2e-5 | 3e-5 | 9e-6 |
+  | 4 | 0.076 | 1.30 | 6000 (12) | 4e-4 | 3e-4 | 4e-4 | 1e-4 |
+  | 3 | 0.073 | 1.36 | 6030 (12) | 1.6e-2 | 1.2e-2 | 1.2e-2 | 5e-3 |
+
+  0 means equal in the 7 printed digits. A repeat of the uncapped and cap 6 runs gave the same QoIs and
+  0.097 and 0.081 s/step, so the timings vary by about 2%.
+- Down to degree 6 the QoIs do not change, with 22% less time per step; at degree 5 they change by
+  3e-5 of their range. The Newton iterations stay the same down to degree 4. The speed-up levels off at
+  about 1.35, since the rest of a step (MUMPS solves of K_c and the mesh motion) does not depend on the
+  quadrature. Degree 3 has the same 6 points as degree 4 and is not faster, but is 40 times less
+  accurate. A cap of 6 is a free 20%; 5 gives 34% for a change of 3e-5 of the range, which was not
+  compared to the space or time discretization error. The default stays None, so the benchmark runs
+  are unchanged.
