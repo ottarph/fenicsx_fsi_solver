@@ -634,11 +634,17 @@ def solve(
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
         facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
     )
-    fluid_interface_dofs = dolfinx.fem.locate_dofs_topological(
-        U_f, fluid_mesh.topology.dim - 1, fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]), remote=True
+
+    fluid_movable_dofs = dolfinx.fem.locate_dofs_topological(
+        U_f,
+        fluid_mesh.topology.dim - 1,
+        fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
+        remote=True,
     )
-    interface_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_interface_dofs).any(axis=1)]
-    interface_data = dolfinx.fem.create_interpolation_data(U_f, U_s, interface_cells, padding=1e-8)
+    movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
+    movable_data = dolfinx.fem.create_interpolation_data(U_f, U_s, movable_cells, padding=1e-8)
+    # Owned nodes off the FSI interface; ghosts get their owners' values from scatter_forward
+    fluid_reset_nodes = np.setdiff1d(np.arange(U_f.dofmap.index_map.size_local, dtype=np.int32), fluid_movable_dofs)
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
@@ -656,7 +662,9 @@ def solve(
         )
         u_s_bc.set(u_s.x.array)
 
-        u_f_bc_func.interpolate_nonmatching(u_s, interface_cells, interface_data)
+        u_f_bc_func.interpolate_nonmatching(u_s, movable_cells, movable_data)
+        # Clear the values extrapolated off the FSI interface. The reshape is a view of x.array.
+        u_f_bc_func.x.array.reshape(-1, U_f.dofmap.index_map_bs)[fluid_reset_nodes, :] = 0.0
         u_f_bc_func.x.scatter_forward()
 
         mesh_motion.solve()
@@ -753,6 +761,7 @@ def main():
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     initial_state_dir = args.initial_state_dir
     restart = args.restart
+    restart = True
     solve(
         mesh_path=mesh_path,
         T=T,
