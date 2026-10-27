@@ -287,6 +287,23 @@ def test_load_start_state_rejects_initial_state_with_no_step_left(tmp_path):
         _load_start_state(initial_state_dir=tmp_path, t0=2 * DT, num_steps=0)
 
 
+def test_read_leaves_missing_optional_function(mesh_kind, tmp_path):
+    """A function named in optional that the checkpoint does not hold is left as it is, and one that it
+    holds is read; a missing function that is not optional still fails the read."""
+    mesh, submeshes, functions = _setup(mesh_kind)
+    _fill(functions, DT)
+    Checkpointer(tmp_path, mesh, submeshes).write(functions[:-1], DT, 0, DT)  # without the last, on a submesh
+
+    mesh, submeshes, functions = _setup(mesh_kind)
+    functions[-1].x.array[:] = 7.0
+    t, _ = Checkpointer(tmp_path, mesh, submeshes).read(functions, DT, optional=[functions[0].name, functions[-1].name])
+    _assert_state(functions[:-1], t)
+    np.testing.assert_array_equal(functions[-1].x.array, 7.0)
+
+    with pytest.raises(KeyError):
+        Checkpointer(tmp_path, mesh, submeshes).read(functions, DT)
+
+
 def test_missing_checkpoint(mesh_kind, tmp_path):
     mesh, submeshes, functions = _setup(mesh_kind)
     with pytest.raises(FileNotFoundError):

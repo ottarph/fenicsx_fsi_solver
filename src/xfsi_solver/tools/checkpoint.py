@@ -34,6 +34,7 @@ so that such a run can be resumed too.
 """
 
 import shutil
+from collections.abc import Collection
 from pathlib import Path
 from typing import NamedTuple
 
@@ -150,13 +151,18 @@ class Checkpointer:
         attrs, _ = self._latest()
         return float(attrs["t"][0]), float(attrs.get("t0", [0.0])[0])
 
-    def read(self, functions: list[dolfinx.fem.Function], dt: float | None) -> tuple[float, int]:
+    def read(
+        self, functions: list[dolfinx.fem.Function], dt: float | None, optional: Collection[str] = ()
+    ) -> tuple[float, int]:
         """Read ``functions`` from the latest complete checkpoint.
 
         The functions are matched by name, so they must have the names they
         were written with; other functions in the checkpoint are ignored.
-        Returns the time ``t`` and step counter ``step`` of the checkpoint, and
-        makes the next :meth:`write` go to the other file. Raises
+        Functions named in ``optional`` that the checkpoint does not hold are
+        left as they are, for a field that a solver with other unknowns does
+        not write, such as z of a mixed mesh motion. Returns the time ``t``
+        and step counter ``step`` of the checkpoint, and makes the next
+        :meth:`write` go to the other file. Raises
         ``FileNotFoundError`` if there is no complete checkpoint and
         ``ValueError`` if it was written on a different mesh, or, unless ``dt``
         is None, with a time step other than ``dt``.
@@ -171,6 +177,8 @@ class Checkpointer:
                 f"not {_num_global_cells(self.mesh)}"
             )
         for f in functions:
+            if f.name in optional and len(io4dolfinx.read_timestamps(self._file(i), self.mesh.comm, f.name)) == 0:
+                continue
             g, cells = self._on_parent(f)
             io4dolfinx.read_function(self._file(i), g, time=t, name=f.name)
             if cells is not None:
@@ -237,6 +245,7 @@ def load_start_state(
     submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = (),
     output_paths=(),
     write_vtx: bool = False,
+    optional: Collection[str] = (),
 ) -> StartState:
     """Read the state a solver run starts from into ``functions``, and set up the run's checkpointer.
 
@@ -247,7 +256,8 @@ def load_start_state(
     the checkpoints of an earlier run in ``checkpoint_dir`` are removed. With ``initial_state_dir``,
     ``functions`` are read from the latest checkpoint there, at ``t0``, which counts as step 0. On a
     new run from rest, ``functions`` are left as they are. ``write_vtx`` only adds the output paths
-    to the restart message.
+    to the restart message. Functions named in ``optional`` are read only if the checkpoint holds them,
+    as :meth:`Checkpointer.read` does.
 
     Raises ``ValueError`` if no time step is left to solve up to ``T``, and ``RuntimeError`` if the
     checkpoint in ``initial_state_dir`` is no longer the one at ``t0``.
@@ -258,7 +268,7 @@ def load_start_state(
     if checkpoint_dir is not None:
         checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes)
     if restart:
-        t, step = checkpointer.read(functions, dt)
+        t, step = checkpointer.read(functions, dt, optional)
         if step >= num_steps:
             raise ValueError(
                 f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
@@ -271,7 +281,7 @@ def load_start_state(
     elif checkpoint_every is not None:
         checkpointer.clear()
     if initial_state_dir is not None:
-        t, _ = Checkpointer(initial_state_dir, mesh, submeshes).read(functions, None)
+        t, _ = Checkpointer(initial_state_dir, mesh, submeshes).read(functions, None, optional)
         if t != t0:
             raise RuntimeError(
                 f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
