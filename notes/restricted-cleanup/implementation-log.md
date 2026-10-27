@@ -394,3 +394,18 @@ Other decisions:
 - The twice simplified solver uses both, and scatters u unconditionally after loading the start state
   (u is 0 on a new run from rest). A 5-step start from the t = 16 `mesh_sec` checkpoint on 4 ranks gives
   byte-identical QoIs to before. The other 15 solvers with the same block still have their own copy.
+
+## load_start_state in the other solvers (2026-10-27)
+
+- The other 15 solvers with the restart / initial-state block (the 12 in `solvers/` and `cfd_benchmark`,
+  `csm_benchmark`, `fsi2D_benchmark`) call `load_start_state` with their own checkpoint functions,
+  submeshes and VTX output paths. `cfd_benchmark` and `csm_benchmark` have no initial-state option and
+  pass `initial_state_dir=None`; they keep their local import of the helper.
+- The restart message lists three or more output paths as `a, b and c` (`_join_and`), as
+  `fsi2_harmonic_lagrange` did; with `' and '.join` it would read `a and b and c`.
+  `fsi2_biharmonic_mixed_incompressible` loses the comma before its `and`. The one- and two-path
+  messages are unchanged. Solvers that printed with `comm.rank == 0` or `PETSc.Sys.Print` now print on
+  `mesh.comm.rank == 0`, which is the same rank since every mesh is read on `COMM_WORLD`.
+- `SubmeshComposite` replaces no other code: only `SeparateSolverPC` in `fsi2_biharmonic_mixed_simplified`
+  copies between the parent mesh and a submesh by hand, and it copies between different functions in
+  each direction (u_next -> u_bc, u_h -> u_new), without the `scatter_forward` of `gather()`.
