@@ -43,7 +43,7 @@ def solve(
     lift_plot_path,
     drag_coeff_plot_path,
     lift_coeff_plot_path,
-    elements={
+    elements={  # noqa: B006
         "V": ("P", 2, (2,)),
         "P": ("P", 1),
     },

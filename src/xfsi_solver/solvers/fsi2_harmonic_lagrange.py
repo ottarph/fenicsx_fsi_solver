@@ -45,7 +45,7 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
-    elements={
+    elements={  # noqa: B006
         "U_f": ("P", 2, (2,)),
         "V_f": ("P", 2, (2,)),
         "U_s": ("P", 2, (2,)),

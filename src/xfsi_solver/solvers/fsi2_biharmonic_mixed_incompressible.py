@@ -53,7 +53,7 @@ def solve(
     output_path_p,
     output_path_p_S,
     qoi_path,
-    elements={
+    elements={  # noqa: B006
         "U": ("P", 2, (2,)),
         "V": ("P", 2, (2,)),
         "P": ("P", 1),
