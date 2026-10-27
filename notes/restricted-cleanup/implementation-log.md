@@ -325,3 +325,28 @@ Other decisions:
   The run took 392 s on 16 ranks, 0.060 s per step over the 6500 steps (7 Newton iterations per step at
   the end). There is no uncapped run of this solver from rest to compare it with; the simplified solver
   took 0.092 s per step from rest on 16 ranks.
+
+## Quadrature cap and QoI plots in every solver (2026-10-27)
+
+- `cap_quadrature_degree(form, None)` returns the form unchanged, and `quadrature_description` gives
+  the line `Quadrature degree: ...` that every solver now prints in its end-of-run summary.
+- `plot_run_qois` in `scripts/plot_qois.py` generalises the plots at the end of `main()` of the twice
+  simplified solver: `full_<qoi>.pdf` and `closeup_<qoi>.pdf` per QoI in
+  `output/figures/qoi/<qoi file stem>/`, with the FeatFlow reference for the QoIs that are a column of
+  it. Label sets: `FSI2_QOI_LABELS`, `LAGRANGE_QOI_LABELS`, `INCOMPRESSIBLE_QOI_LABELS` (no reference,
+  closeup over the last 2 s) and `QOI_LABELS_3D` (no reference file, closeup over t in [9, 10]).
+- Every FSI2 solver has `solve(..., max_quadrature_degree=None)`: the residual blocks, any separately
+  built kinematic residual (`residual_post_u`, `res_miss_ufl`) and the drag and lift are capped, before
+  differentiation. Diagnostics (interface gaps, det F violation) are not capped. Every `main()` binds
+  its run settings to local variables, with `max_quadrature_degree = None`, and plots with
+  `plot_run_qois` on rank 0. `dfg_2d_3` has the cap option but keeps its own plots in `solve()`.
+- The 3d solvers keep the default cap 8 and raise `ValueError` for `None`: UFL's estimated degrees
+  (19 in the residual, 25 in the Jacobian) are far too expensive on tetrahedra. An attempted test of
+  None against 8 on `mesh_sec_coarse` took 4.5 to 8 minutes per pair and gave QoIs identical at the
+  `%.6e` precision of the QoI file over 2 steps; it was dropped.
+- On the FSI2 coarse test mesh, a cap of 4 changes the QoIs over 2 steps by at most 3e-5 relative
+  (5e-5 for the Lagrange solver, 7e-5 for det_F_max of the incompressible one); each solver has a test
+  of this, with rtol = 1e-3. For dfg_2d_3, a cap of 4 (UFL estimates 5 for the convection) changes the
+  lift by up to 6e-5.
+- The 3d solve, initial-state and K_c-option tests are marked `slow` and left out by default
+  (`pytest -m slow` runs them).
