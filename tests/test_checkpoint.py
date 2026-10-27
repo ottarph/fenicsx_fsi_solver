@@ -7,7 +7,7 @@ import pytest
 from mpi4py import MPI
 from restart_helpers import run_mpi_python
 
-from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options
+from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, load_start_state, restart_output_path
 
 DT = 0.1
 
@@ -189,6 +189,77 @@ def test_check_start_options_accepts(tmp_path):
     check_start_options(True, tmp_path / "run", 1, None)
     check_start_options(False, tmp_path / "run", 1, tmp_path / "other")
     check_start_options(False, None, None, tmp_path / "other")
+
+
+def _load_start_state(
+    directory=None, restart=False, checkpoint_every=None, initial_state_dir=None, t0=0.0, num_steps=5
+):
+    """load_start_state on the unit square, as a solver with output paths a.bp and b.bp calls it."""
+    mesh, submeshes, functions = _setup("unit_square")
+    state = load_start_state(
+        mesh,
+        functions,
+        t0=t0,
+        T=t0 + num_steps * DT,
+        dt=DT,
+        num_steps=num_steps,
+        restart=restart,
+        checkpoint_dir=directory,
+        checkpoint_every=checkpoint_every,
+        initial_state_dir=initial_state_dir,
+        submeshes=submeshes,
+        output_paths=["out/a.bp", "out/b.bp"],
+        write_vtx=True,
+    )
+    return state, functions
+
+
+def test_load_start_state_from_rest_clears_earlier_checkpoints(tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    (t, step, checkpointer, output_paths), functions = _load_start_state(tmp_path, checkpoint_every=1)
+    assert (t, step, output_paths) == (0.0, 0, ["out/a.bp", "out/b.bp"])
+    assert checkpointer.directory == tmp_path
+    assert not any(tmp_path.iterdir())
+    for f in functions:
+        assert not f.x.array.any()
+
+
+def test_load_start_state_restart_reads_latest_checkpoint(tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    (t, step, checkpointer, output_paths), functions = _load_start_state(tmp_path, restart=True, checkpoint_every=1)
+    assert (t, step) == (2 * DT, 1)
+    assert output_paths == [restart_output_path("out/a.bp", t), restart_output_path("out/b.bp", t)]
+    _assert_state(functions, t)
+    # The checkpoint read is kept: the next write goes to the other file
+    checkpointer.write(functions, 3 * DT, 2, DT)
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_load_start_state_restart_rejects_no_step_left(tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    with pytest.raises(ValueError, match="no time step is left"):
+        _load_start_state(tmp_path, restart=True, num_steps=1)
+
+
+def test_load_start_state_from_initial_state(tmp_path):
+    _write_steps("unit_square", tmp_path / "other", [0, 1])
+    (t, step, checkpointer, output_paths), functions = _load_start_state(
+        initial_state_dir=tmp_path / "other", t0=2 * DT
+    )
+    assert (t, step, checkpointer, output_paths) == (2 * DT, 0, None, ["out/a.bp", "out/b.bp"])
+    _assert_state(functions, t)
+
+
+def test_load_start_state_rejects_changed_initial_state(tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    with pytest.raises(RuntimeError, match="changed"):
+        _load_start_state(initial_state_dir=tmp_path, t0=DT)
+
+
+def test_load_start_state_rejects_initial_state_with_no_step_left(tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    with pytest.raises(ValueError, match="no time step is left"):
+        _load_start_state(initial_state_dir=tmp_path, t0=2 * DT, num_steps=0)
 
 
 def test_missing_checkpoint(mesh_kind, tmp_path):

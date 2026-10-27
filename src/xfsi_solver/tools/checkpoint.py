@@ -35,10 +35,13 @@ so that such a run can be resumed too.
 
 import shutil
 from pathlib import Path
+from typing import NamedTuple
 
 import dolfinx
 import io4dolfinx
 import numpy as np
+
+from xfsi_solver.tools.submesh import all_cells
 
 _ATTRIBUTES = "checkpoint"
 # Checkpoints written before t0 was stored have no t0; they were all written by runs starting at t0 = 0
@@ -48,11 +51,6 @@ _NUM_FILES = 2
 
 def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
-
-
-def _all_cells(mesh: dolfinx.mesh.Mesh) -> np.ndarray:
-    index_map = mesh.topology.index_map(mesh.topology.dim)
-    return np.arange(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
 
 
 class Checkpointer:
@@ -76,7 +74,7 @@ class Checkpointer:
         for submesh, entity_map in submeshes:
             if submesh.topology.dim != mesh.topology.dim:
                 raise NotImplementedError("Only functions on cell submeshes (codimension 0) can be checkpointed")
-            sub_cells = _all_cells(submesh)
+            sub_cells = all_cells(submesh)
             parent_cells = entity_map.sub_topology_to_topology(sub_cells, inverse=False)
             self._submesh_cells.append((submesh, (sub_cells, parent_cells)))
         self._parent_functions = {}
@@ -213,6 +211,80 @@ def start_time(mesh: dolfinx.mesh.Mesh, restart: bool, checkpoint_dir, initial_s
     if initial_state_dir is not None:
         return Checkpointer(initial_state_dir, mesh).latest_times()[0]
     return 0.0
+
+
+class StartState(NamedTuple):
+    """The state a solver run starts from, returned by :func:`load_start_state`."""
+
+    t: float  # time of the state
+    step: int  # number of time steps of the run completed at t
+    checkpointer: Checkpointer | None  # writes the checkpoints of the run, None without checkpoint_dir
+    output_paths: list[str]  # the VTX output paths, renamed on a restart so earlier output is kept
+
+
+def load_start_state(
+    mesh: dolfinx.mesh.Mesh,
+    functions: list[dolfinx.fem.Function],
+    *,
+    t0: float,
+    T: float,
+    dt: float,
+    num_steps: int,
+    restart: bool,
+    checkpoint_dir,
+    checkpoint_every,
+    initial_state_dir,
+    submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = (),
+    output_paths=(),
+    write_vtx: bool = False,
+) -> StartState:
+    """Read the state a solver run starts from into ``functions``, and set up the run's checkpointer.
+
+    The arguments are those of the solver: ``t0`` is from :func:`start_time`, ``num_steps`` the number
+    of time steps from ``t0`` to ``T``, and ``mesh`` and ``submeshes`` those of :class:`Checkpointer`.
+    On a restart, ``functions`` are read from the latest checkpoint in ``checkpoint_dir`` and the
+    ``output_paths`` renamed by :func:`restart_output_path`; on a new run with ``checkpoint_every``,
+    the checkpoints of an earlier run in ``checkpoint_dir`` are removed. With ``initial_state_dir``,
+    ``functions`` are read from the latest checkpoint there, at ``t0``, which counts as step 0. On a
+    new run from rest, ``functions`` are left as they are. ``write_vtx`` only adds the output paths
+    to the restart message.
+
+    Raises ``ValueError`` if no time step is left to solve up to ``T``, and ``RuntimeError`` if the
+    checkpoint in ``initial_state_dir`` is no longer the one at ``t0``.
+    """
+    output_paths = [str(path) for path in output_paths]
+    t, step = t0, 0
+    checkpointer = None
+    if checkpoint_dir is not None:
+        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes)
+    if restart:
+        t, step = checkpointer.read(functions, dt)
+        if step >= num_steps:
+            raise ValueError(
+                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
+                f"up to {T = } ({num_steps = })"
+            )
+        output_paths = [restart_output_path(path, t) for path in output_paths]
+        vtx_message = f", writing VTX output to {' and '.join(output_paths)}" if write_vtx else ""
+        if mesh.comm.rank == 0:
+            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
+    elif checkpoint_every is not None:
+        checkpointer.clear()
+    if initial_state_dir is not None:
+        t, _ = Checkpointer(initial_state_dir, mesh, submeshes).read(functions, None)
+        if t != t0:
+            raise RuntimeError(
+                f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
+                "start from a copy of a run that is still writing checkpoints"
+            )
+        if num_steps <= 0:
+            raise ValueError(
+                f"Cannot start from the state at {t = :.4f} in {initial_state_dir}: "
+                f"no time step is left to solve up to {T = }"
+            )
+        if mesh.comm.rank == 0:
+            print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
+    return StartState(t, step, checkpointer, output_paths)
 
 
 def restart_output_path(path: str | Path, t: float) -> str:
