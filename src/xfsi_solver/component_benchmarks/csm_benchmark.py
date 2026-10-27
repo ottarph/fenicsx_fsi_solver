@@ -231,26 +231,24 @@ def solve(
 
     # Set up output, checkpointing, and qoi tracking.
 
-    from xfsi_solver.tools.checkpoint import Checkpointer, restart_output_path
+    from xfsi_solver.tools.checkpoint import load_start_state
 
     # (t, step) are the time and number of completed steps of the current state
-    t = t0
-    step = 0
-    checkpointer = None
-    if checkpoint_dir is not None:
-        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(solid_mesh, solid_cell_map)])
-    if restart:
-        t, step = checkpointer.read([u, v], dt_val)
-        if step >= num_steps:
-            raise ValueError(
-                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
-                f"up to {T = } ({num_steps = })"
-            )
-        output_path = restart_output_path(output_path, t)
-        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path}"
-        PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
-    elif checkpoint_every is not None:
-        checkpointer.clear()
+    t, step, checkpointer, (output_path,) = load_start_state(
+        mesh,
+        [u, v],
+        t0=t0,
+        T=T,
+        dt=dt_val,
+        num_steps=num_steps,
+        restart=restart,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        initial_state_dir=None,
+        submeshes=[(solid_mesh, solid_cell_map)],
+        output_paths=[output_path],
+        write_vtx=vtx_save_every is not None,
+    )
 
     writers = []
     if vtx_save_every is not None:
