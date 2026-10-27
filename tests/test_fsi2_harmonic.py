@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from restart_helpers import (
     check_initial_state_rejects_T_not_after_it,
@@ -29,6 +30,33 @@ def test_fsi2_harmonic_solve(output_dirs):
 
     assert (output_dirs["qoi"] / "fsi2_harmonic.txt").exists()
     assert (output_dirs["pv"] / "fsi2_harmonic.bp").exists()
+
+
+def test_fsi2_harmonic_quadrature_cap_changes_the_qois_slightly(output_dirs):
+    dt_val = 0.0025
+
+    def run(name, max_quadrature_degree):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            max_quadrature_degree=max_quadrature_degree,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    exact = run("no_cap", None)
+    capped = run("cap_4", 4)
+    assert exact.shape == capped.shape == (3, 5)
+    # The cap makes the integration of the nonlinear terms inexact, so the QoIs are not identical, but
+    # they stay close. On this mesh the rows differ by up to 3e-5 relative to the uncapped values, so
+    # rtol = 1e-3 leaves a margin of more than 30 while still failing for a wrong residual. The initial
+    # row of zeros is the same in both.
+    np.testing.assert_allclose(capped, exact, rtol=1e-3, atol=0)
+    assert not np.array_equal(capped, exact)
 
 
 def test_fsi2_harmonic_writes_no_vtx_by_default(output_dirs):
