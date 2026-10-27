@@ -2,7 +2,6 @@ import sys
 import warnings
 from timeit import default_timer as timer
 
-import basix.ufl
 import dolfinx
 import dolfinx.fem.petsc
 import numpy as np
