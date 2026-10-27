@@ -920,3 +920,25 @@ would take about 32 to 35 s per step on one eX3 defq node with the current K_c
 options, so the hex run would take about 70 s per step, 2000 steps in about
 40 h (one node, 64 ranks), assuming the iterations stay as on the tet mesh,
 which was only checked from rest.
+
+## threeDfsi_simplified: the simplified solver in 3d (2026-10-27)
+
+- `solvers/threeDfsi_simplified.py` ports `fsi2_simplified` to the 3d benchmark: Newton on (v, p)
+  only, with u_s set node by node from the kinematic relation and u_f by a `mesh_motion` solve in a
+  post-solve hook of the KSP. The benchmark set-up is that of `threeDfsi_c0ip`: Table 1 constants
+  (`lambda_s = 8.0e6` by default), bi-parabolic inflow ramped over t < 1, QoIs at B = (0.9, 0.2, 0.3)
+  with `QOI_HEADER_3D`, and a required quadrature cap, by default 8.
+- `DEFAULT_ITERATIVE_SOLVER_OPTIONS` are the K_c options of `threeDfsi_c0ip` (FGMRES, upper Schur
+  factor with selfp, one GAMG V-cycle with three SOR steps per level at omega = 0.4, one BoomerAMG
+  V-cycle), applied to the nest (v, p) Jacobian. They are the default here, unlike in
+  `fsi2_simplified`, which defaults to MUMPS LU; `DEFAULT_DIRECT_SOLVER_OPTIONS` selects LU.
+- The default mesh motion is `biharmonic_c0ip_mesh_motion`, as in `threeDfsi_c0ip`, factorized by
+  MUMPS Cholesky on the x component (`default_solver_options(3)` with `block_pc_type cholesky`); the
+  other mesh motions keep the package default, LU. Unlike in `threeDfsi_c0ip`, the C0IP forms are not
+  capped: UFL estimates degree 3 on the cells and 12 on the facets for P2 on P2 tetrahedra, and
+  `MeshMotion` integrates them in every residual (and its lifting), once per Newton iteration.
+- Each step prints its time and the linear iterations per Newton step (`getLinearSolveIterations`),
+  since `KSPConvCheck` cannot share the KSP's post-solve hook; a failed linear solve stops the SNES
+  with DIVERGED_LINEAR_SOLVE.
+- Only the option checks (fast tests) have run. The slow tests (iterative against direct over two
+  steps, start from an initial state) are not yet run.
