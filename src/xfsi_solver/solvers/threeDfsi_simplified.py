@@ -141,6 +141,7 @@ def solve(
     gamma_reassemble=0.2,
     max_quadrature_degree=8,
     mesh_motion_options=None,
+    mesh_motion_max_quadrature_degree=8,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -168,8 +169,10 @@ def solve(
     MUMPS once for the whole run, and the three components are solved with that factorization at once,
     by one MatMatSolve: by Cholesky for the symmetric positive definite C0IP matrix, as in
     threeDfsi_c0ip, and by LU for the other mesh motions. ``mesh_motion_options``, the PETSc options of
-    its KSP, replace that default. The mesh motion forms are integrated with the quadrature degree UFL
-    estimates, without the cap below.
+    its KSP, replace that default. The quadrature degree of the mesh motion forms is capped at
+    ``mesh_motion_max_quadrature_degree``, by default 8, as threeDfsi_c0ip caps its C0IP forms: UFL
+    estimates degree 12 on the facets for P2 on the P2 tetrahedral mesh, and the mesh motion residual is
+    assembled in every Newton iteration. This cap is required too, and None raises ``ValueError``.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the 3d
     solvers do, so runs can restart from or start from each other's states. They hold no field of the
@@ -187,6 +190,11 @@ def solve(
         raise ValueError(
             "the 3d solver needs a quadrature cap, so max_quadrature_degree cannot be None: the degrees that "
             "UFL estimates (19 in the residual, 25 in the Jacobian) are far too expensive on tetrahedra"
+        )
+    if mesh_motion_max_quadrature_degree is None:
+        raise ValueError(
+            "the 3d solver needs a quadrature cap on the mesh motion, so mesh_motion_max_quadrature_degree cannot "
+            "be None: its residual is assembled in every Newton iteration"
         )
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
     if nu_s is None and lambda_s is None:
@@ -659,7 +667,9 @@ def solve(
         )
     else:
         mesh_motion_description = f"{mesh_motion_name}, with the KSP options {mesh_motion_options}"
-    mesh_motion = mesh_motion_type(u_f, [u_f_bc], solver_options=mesh_motion_options)
+    mesh_motion = mesh_motion_type(
+        u_f, [u_f_bc], solver_options=mesh_motion_options, max_quadrature_degree=mesh_motion_max_quadrature_degree
+    )
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
@@ -773,6 +783,7 @@ def solve(
             "    linear solve\n"
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
+            f"  Mesh motion quadrature degree: {quadrature_description(mesh_motion_max_quadrature_degree)}\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
@@ -811,6 +822,7 @@ def main():
     vtx_save_every = None
     gamma_reassemble = 0.2  # Default 0.2.
     max_quadrature_degree = 8  # Default 8.
+    mesh_motion_max_quadrature_degree = 8  # Default 8.
     solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     solve(
         mesh_path=mesh_path,
@@ -824,6 +836,7 @@ def main():
         vtx_save_every=vtx_save_every,
         gamma_reassemble=gamma_reassemble,
         max_quadrature_degree=max_quadrature_degree,
+        mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,
         solver_options=solver_options,
         restart=args.restart,
         initial_state_dir=args.initial_state_dir,

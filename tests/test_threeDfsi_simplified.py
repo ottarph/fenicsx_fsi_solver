@@ -66,9 +66,10 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
     [
         ({"absolute_theta_shift": 0.01, "relative_theta_shift": 1.0}, "theta_shift"),
         ({"nu_s": 0.4, "lambda_s": 8.0e6}, "nu_s and lambda_s"),
-        ({"max_quadrature_degree": None}, "quadrature cap"),
+        ({"max_quadrature_degree": None}, "quadrature cap,"),
+        ({"mesh_motion_max_quadrature_degree": None}, "quadrature cap on the mesh motion"),
     ],
-    ids=["theta_shift", "nu_s_lambda_s", "quadrature_cap"],
+    ids=["theta_shift", "nu_s_lambda_s", "quadrature_cap", "mesh_motion_quadrature_cap"],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):
     # Raised before the mesh is read

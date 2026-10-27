@@ -934,9 +934,15 @@ which was only checked from rest.
   `fsi2_simplified`, which defaults to MUMPS LU; `DEFAULT_DIRECT_SOLVER_OPTIONS` selects LU.
 - The default mesh motion is `biharmonic_c0ip_mesh_motion`, as in `threeDfsi_c0ip`, factorized by
   MUMPS Cholesky on the x component (`default_solver_options(3)` with `block_pc_type cholesky`); the
-  other mesh motions keep the package default, LU. Unlike in `threeDfsi_c0ip`, the C0IP forms are not
-  capped: UFL estimates degree 3 on the cells and 12 on the facets for P2 on P2 tetrahedra, and
-  `MeshMotion` integrates them in every residual (and its lifting), once per Newton iteration.
+  other mesh motions keep the package default, LU.
+- The mesh motion functions take `max_quadrature_degree` (default None, no cap), applied with
+  `cap_quadrature_degree` to the residual before `MeshMotion` differentiates it, so the matrix keeps
+  it. UFL estimates degree 3 on the cells and 12 on the facets for the C0IP forms of P2 on P2
+  tetrahedra, and `MeshMotion` integrates them in every residual (and its lifting), once per Newton
+  iteration. The 3d solver caps them by `mesh_motion_max_quadrature_degree`, by default 8 as in
+  `threeDfsi_c0ip`, and rejects None. On `fsi2/mesh_sec_coarse` a cap of 2 changes a bending mesh
+  motion by 7e-6 (harmonic), 2.8e-3 (mixed) and 2.9e-5 (C0IP) of the largest displacement; a cap of 4
+  by 0, 2.2e-6 and 4.5e-8.
 - Each step prints its time and the linear iterations per Newton step (`getLinearSolveIterations`),
   since `KSPConvCheck` cannot share the KSP's post-solve hook; a failed linear solve stops the SNES
   with DIVERGED_LINEAR_SOLVE.
