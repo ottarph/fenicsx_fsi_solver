@@ -739,7 +739,7 @@ def main():
     args = parser.parse_args()
 
     mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
-    run_name = "fsi2_biharmonic_mixed_twice_simplified"
+    run_name = "fsi2_simplified"
     dt_val = 0.0025
     T = 16.0 + 10 * dt_val
     output_path = f"output/pv/{run_name}.bp"

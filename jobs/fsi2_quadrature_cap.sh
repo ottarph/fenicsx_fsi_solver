@@ -1,5 +1,5 @@
 #!/bin/bash
-# Speed and accuracy of fsi2_biharmonic_mixed_twice_simplified with a capped quadrature degree.
+# Speed and accuracy of fsi2_simplified with a capped quadrature degree.
 #
 # Runs the solver from the developed state in INITIAL_STATE (by default a copy of the t = 16
 # checkpoint of its benchmark run) up to time T, once for each cap in CAPS, one run after the
@@ -32,7 +32,7 @@ for cap in $CAPS; do
     echo "$(date '+%F %T') cap $cap: started"
     OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 conda run --no-capture-output -n xfsi_solver \
         mpirun -n "$RANKS" python -u -c "
-from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import solve
+from xfsi_solver.solvers.fsi2_simplified import solve
 
 solve(
     mesh_path='$MESH',

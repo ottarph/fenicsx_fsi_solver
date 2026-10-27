@@ -11,7 +11,7 @@ from restart_helpers import (
 
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_motion
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
-from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import (
+from xfsi_solver.solvers.fsi2_simplified import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     solve,
@@ -25,16 +25,16 @@ ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagra
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_solve(output_dirs):
+def test_fsi2_simplified_solve(output_dirs):
     dt_val = 0.0025
-    qoi_path = output_dirs["qoi"] / "fsi2_biharmonic_mixed_twice_simplified.txt"
+    qoi_path = output_dirs["qoi"] / "fsi2_simplified.txt"
     solve(
         mesh_path=MESH,
         # Run enough steps to save at least 2 VTX snapshots
         T=6 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "fsi2_biharmonic_mixed_twice_simplified.bp"),
-        output_path_p=str(output_dirs["pv"] / "fsi2_biharmonic_mixed_twice_simplified_p.bp"),
+        output_path=str(output_dirs["pv"] / "fsi2_simplified.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_simplified_p.bp"),
         qoi_path=str(qoi_path),
         vtx_save_every=4,
     )
@@ -45,10 +45,10 @@ def test_fsi2_biharmonic_mixed_twice_simplified_solve(output_dirs):
     # The inflow drives the fluid in the x-direction, so the drag grows, and the structure moves.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
-    assert (output_dirs["pv"] / "fsi2_biharmonic_mixed_twice_simplified.bp").exists()
+    assert (output_dirs["pv"] / "fsi2_simplified.bp").exists()
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
+def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
     dt_val = 0.0025
 
     def run(name, max_quadrature_degree):
@@ -75,7 +75,7 @@ def test_fsi2_biharmonic_mixed_twice_simplified_quadrature_cap_changes_the_qois_
     assert not np.array_equal(capped, exact)
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_iterative_solve_matches_direct(output_dirs):
+def test_fsi2_simplified_iterative_solve_matches_direct(output_dirs):
     dt_val = 0.0025
 
     def run(name, solver_options):
@@ -103,7 +103,7 @@ def test_fsi2_biharmonic_mixed_twice_simplified_iterative_solve_matches_direct(o
 @pytest.mark.parametrize(
     "mesh_motion_type", [biharmonic_c0ip_mesh_motion, harmonic_mesh_motion], ids=["biharmonic_c0ip", "harmonic"]
 )
-def test_fsi2_biharmonic_mixed_twice_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_type):
+def test_fsi2_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_type):
     """The other mesh motions move the fluid mesh differently from the default mixed biharmonic one,
     which changes the QoIs only slightly while the structure has barely moved: by up to 7e-7 relative
     over these steps. The checkpoints hold no field of the mesh motion, so a run can start from the
@@ -136,7 +136,7 @@ def test_fsi2_biharmonic_mixed_twice_simplified_other_mesh_motions(output_dirs, 
 
 
 @pytest.mark.parametrize("ranks", [(1, 1), (2, 3)], ids=["serial", "2_to_3_ranks"])
-def test_fsi2_biharmonic_mixed_twice_simplified_restart_reproduces_continuous_run(output_dirs, tmp_path, ranks):
+def test_fsi2_simplified_restart_reproduces_continuous_run(output_dirs, tmp_path, ranks):
     # The restarted run assembles the Jacobian at its first Newton iteration, where the continuous run
     # reuses the one from the time step before, so the two agree within the Newton tolerance.
     check_restart_reproduces_continuous_run(
@@ -152,23 +152,23 @@ def test_fsi2_biharmonic_mixed_twice_simplified_restart_reproduces_continuous_ru
     )
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_restart_rejects_different_dt(output_dirs, tmp_path):
+def test_fsi2_simplified_restart_rejects_different_dt(output_dirs, tmp_path):
     check_restart_rejects_different_dt(solve, MESH, output_dirs, tmp_path)
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_restart_rejects_T_not_after_checkpoint(output_dirs, tmp_path):
+def test_fsi2_simplified_restart_rejects_T_not_after_checkpoint(output_dirs, tmp_path):
     check_restart_rejects_T_not_after_checkpoint(solve, MESH, output_dirs, tmp_path)
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_starts_from_initial_state(output_dirs, tmp_path):
+def test_fsi2_simplified_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(solve, MESH, ELEMENTS, output_dirs, tmp_path, rtol=1e-6, qoi_rtol=1e-6)
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_path):
+def test_fsi2_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_path):
     check_initial_state_rejects_T_not_after_it(solve, MESH, output_dirs, tmp_path)
 
 
-def test_fsi2_biharmonic_mixed_twice_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp_path):
+def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp_path):
     # The two solvers compute the same iterates, and their checkpoints have the same layout, so their
     # states agree, and each continues from the other's checkpoint as from its own.
     dt_val = 0.0025
@@ -187,31 +187,31 @@ def test_fsi2_biharmonic_mixed_twice_simplified_checkpoints_interchangeable_with
         )
 
     mixed = fsi2_biharmonic_mixed.solve
-    run(solve, "twice_simplified", 4 * dt_val)
+    run(solve, "simplified", 4 * dt_val)
     run(mixed, "mixed", 4 * dt_val, direct_k_c_solve=True)
-    _, _, state_twice_simplified = read_checkpoint_state(MESH, tmp_path / "twice_simplified", dt_val, ELEMENTS)
+    _, _, state_simplified = read_checkpoint_state(MESH, tmp_path / "simplified", dt_val, ELEMENTS)
     _, _, state_mixed = read_checkpoint_state(MESH, tmp_path / "mixed", dt_val, ELEMENTS)
     for name in ELEMENTS:
         values = state_mixed[name].x.array
         np.testing.assert_allclose(
-            state_twice_simplified[name].x.array, values, rtol=0, atol=1e-6 * np.max(np.abs(values)), err_msg=name
+            state_simplified[name].x.array, values, rtol=0, atol=1e-6 * np.max(np.abs(values)), err_msg=name
         )
 
-    run(solve, "twice_simplified_from_twice_simplified", 8 * dt_val, initial_state_dir=tmp_path / "twice_simplified")
-    run(solve, "twice_simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed")
+    run(solve, "simplified_from_simplified", 8 * dt_val, initial_state_dir=tmp_path / "simplified")
+    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed")
     run(
         mixed,
-        "mixed_from_twice_simplified",
+        "mixed_from_simplified",
         8 * dt_val,
-        initial_state_dir=tmp_path / "twice_simplified",
+        initial_state_dir=tmp_path / "simplified",
         direct_k_c_solve=True,
     )
     run(mixed, "mixed_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed", direct_k_c_solve=True)
     reference = np.loadtxt(output_dirs["qoi"] / "mixed_from_mixed.txt", ndmin=2)
     for name in (
-        "twice_simplified_from_twice_simplified",
-        "twice_simplified_from_mixed",
-        "mixed_from_twice_simplified",
+        "simplified_from_simplified",
+        "simplified_from_mixed",
+        "mixed_from_simplified",
     ):
         rows = np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2)
         assert rows.shape == reference.shape

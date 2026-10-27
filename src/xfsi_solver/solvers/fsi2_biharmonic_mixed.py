@@ -490,9 +490,9 @@ def solve(
         submeshes=[(fluid_mesh, fluid_cell_map)],
         output_paths=[output_path, output_path_p],
         write_vtx=vtx_save_every is not None,
-        # fsi2_biharmonic_mixed_twice_simplified does not checkpoint z, which its mesh motion computes
-        # again in every solve. Starting from its state, z is 0: the mesh motion equations are linear,
-        # so this only changes Newton's initial guess for them.
+        # fsi2_simplified does not checkpoint z, which its mesh motion computes again in every solve.
+        # Starting from its state, z is 0: the mesh motion equations are linear, so this only changes
+        # Newton's initial guess for them.
         optional=("z",),
     )
 

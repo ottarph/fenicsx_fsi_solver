@@ -457,3 +457,14 @@ Other decisions:
   optional, so it can still start from the twice simplified solver's states, with z = 0 as Newton's
   initial guess for the linear mesh motion equations; its QoIs then agree with a start from its own
   state within the test's 1e-6. The other solvers that checkpoint z still require it.
+
+## Solver renames (2026-10-27)
+
+- `solvers/fsi2_biharmonic_mixed_twice_simplified.py` is now `solvers/fsi2_simplified.py`, and
+  `solvers/fsi2_biharmonic_mixed_simplified.py` is now
+  `solvers/fsi2_biharmonic_mixed_intermediate_simplified.py`, with their tests renamed to match
+  (`tests/test_fsi2_simplified.py`, `tests/test_fsi2_biharmonic_mixed_intermediate_simplified.py`).
+  The entries above use the old names. `jobs/fsi2_quadrature_cap.sh` imports the new module.
+- `fsi2_simplified.main()` names its outputs `fsi2_simplified` (`output/checkpoints/fsi2_simplified`
+  and so on). The outputs of earlier runs keep the old name, `fsi2_biharmonic_mixed_twice_simplified`,
+  and were not moved. The intermediate solver's `main()` keeps its outputs `fsi2_biharmonic_mixed_simple`.
