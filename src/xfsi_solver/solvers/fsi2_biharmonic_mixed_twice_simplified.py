@@ -109,9 +109,9 @@ def solve(
         "U": ("P", 2, (2,)),
         "V": ("P", 2, (2,)),
         "P": ("P", 1),
-        "Z": ("P", 2, (2,)),
     },
     solver_options=None,
+    mesh_motion_type=None,
     rho_f=1.0e3,
     nu_f=1.0e-3,
     rho_s=1.0e4,
@@ -140,16 +140,19 @@ def solve(
     Jacobian. The displacements are not unknowns of the Newton system:
     after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
     displacement u_s on the solid mesh from the kinematic relation, node by node, and extends it into
-    the fluid as u_f on the fluid mesh with the mixed biharmonic mesh motion of
-    ``xfsi_solver.mesh_motion``, before SNES evaluates the residual there. By default, the mesh motion
-    is solved as there: it does not couple the x and y components, which have the same matrix, so only
-    the x component is factorized, by MUMPS once for the whole run, and both components are solved
-    with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
-    its KSP, replace that default. With exact solves, this gives the same iterates as
+    the fluid as u_f on the fluid mesh with the mesh motion ``mesh_motion_type``, one of the functions
+    of ``xfsi_solver.mesh_motion``, by default ``biharmonic_mixed_mesh_motion``, before SNES evaluates
+    the residual there. By default, the mesh motion is solved as there: it does not couple the x and y
+    components, which have the same matrix, so only the x component is factorized, by MUMPS once for
+    the whole run, and both components are solved with that factorization at once, by one
+    MatMatSolve. ``mesh_motion_options``, the PETSc options of its KSP, replace that default. With the
+    mixed biharmonic mesh motion and exact solves, this gives the same iterates as
     fsi2_biharmonic_mixed.
 
-    Checkpoints store the displacement as one function u on the parent mesh, with v, p and z, as the
-    other FSI2 solvers do, so runs can restart from or start from each other's states.
+    Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the
+    other FSI2 solvers do, so runs can restart from or start from each other's states. They hold no
+    field of the mesh motion, which each solve computes again, so a run can also start from the state
+    of a run with another mesh motion.
 
     If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
@@ -165,6 +168,8 @@ def solve(
 
     if solver_options is None:
         solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
+    if mesh_motion_type is None:
+        mesh_motion_type = biharmonic_mixed_mesh_motion
 
     # load mesh and meshtags
 
@@ -254,31 +259,30 @@ def solve(
         )
 
     # create function spaces
-    # breakpoint()
     V = dolfinx.fem.functionspace(mesh, elements["V"])
     P = dolfinx.fem.functionspace(fluid_mesh, elements["P"])
     U_s = dolfinx.fem.functionspace(solid_mesh, elements["U"])
     U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U"])
-    Z = dolfinx.fem.functionspace(fluid_mesh, elements["Z"])
     W = ufl.MixedFunctionSpace(V, P)
 
     # create functions
 
-    v, p, u_s, u_f, z = (
+    v, p, u_s, u_f = (
         dolfinx.fem.Function(V, name="v"),
         dolfinx.fem.Function(P, name="p"),
         dolfinx.fem.Function(U_s, name="u_s"),
         dolfinx.fem.Function(U_f, name="u_f"),
-        dolfinx.fem.Function(Z, name="z"),
     )
     v_old, u_s_old, u_f_old = dolfinx.fem.Function(V), dolfinx.fem.Function(U_s), dolfinx.fem.Function(U_f)
 
     dv, dp = ufl.TestFunctions(W)
 
     # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
-    # the checkpoints and the VTX output hold in place of u_s and u_f.
+    # the checkpoints and the VTX output hold in place of u_s and u_f. The checkpoints hold no other
+    # field of the mesh motion, such as z of the mixed form: every mesh motion solve computes those
+    # again from u_s, so the state is (u, v, p) whichever mesh motion is used.
     u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, elements["U"]), name="u")
-    checkpoint_fields = (u, v, p, z)
+    checkpoint_fields = (u, v, p)
 
     displacement = SubmeshComposite(u, [(u_s, solid_cell_map), (u_f, fluid_cell_map)])
 
@@ -607,16 +611,16 @@ def solve(
     v_dof_of_u_s = (block_size_u * v_dof_of_u_s[:, None] + np.arange(block_size_u)).ravel()  # unrolled
 
     # The mesh motion is linear, with a matrix that is the same for the whole run, so it is assembled
-    # once, and by default factorized once, in the first solve. z holds the Laplacian of u_f, which
-    # the checkpoints store.
-    mesh_motion = biharmonic_mixed_mesh_motion(u_f, [u_f_bc], z=z, solver_options=mesh_motion_options)
+    # once, and by default factorized once, in the first solve.
+    mesh_motion = mesh_motion_type(u_f, [u_f_bc], solver_options=mesh_motion_options)
+    mesh_motion_name = mesh_motion_type.__name__.removesuffix("_mesh_motion")
     if mesh_motion_options is None:
         mesh_motion_description = (
-            "mixed biharmonic, MUMPS LU on the x component, once for the whole run, for both components\n"
-            "    at once by MatMatSolve"
+            f"{mesh_motion_name}, MUMPS LU on the x component, once for the whole run, for both\n"
+            "    components at once by MatMatSolve"
         )
     else:
-        mesh_motion_description = f"mixed biharmonic, with the KSP options {mesh_motion_options}"
+        mesh_motion_description = f"{mesh_motion_name}, with the KSP options {mesh_motion_options}"
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
@@ -761,9 +765,9 @@ def main():
         vtx_save_every=vtx_save_every,
         gamma_reassemble=gamma_reassemble,  # Default 0.2.
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+        solver_options=solver_options,
         restart=restart,
         initial_state_dir=initial_state_dir,
-        solver_options=solver_options,
     )
 
     if MPI.COMM_WORLD.rank == 0:

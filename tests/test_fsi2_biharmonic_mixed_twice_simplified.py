@@ -9,6 +9,7 @@ from restart_helpers import (
     read_checkpoint_state,
 )
 
+from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_motion
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
 from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
@@ -17,8 +18,9 @@ from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import (
 )
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
-# p and z live on the fluid submesh but are checkpointed on the full mesh
-ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
+# p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
+# in the mixed mesh motion, is not checkpointed: every mesh motion solve computes it again.
+ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1)}
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 
@@ -96,6 +98,41 @@ def test_fsi2_biharmonic_mixed_twice_simplified_iterative_solve_matches_direct(o
     # iterates. The QoIs differ by up to 1.3e-5 relative, in the small lift of the first step (9.5e-4),
     # so rtol = 1e-4 leaves a margin of more than 7. The initial row of zeros is the same in both.
     np.testing.assert_allclose(iterative, direct, rtol=1e-4, atol=0)
+
+
+@pytest.mark.parametrize(
+    "mesh_motion_type", [biharmonic_c0ip_mesh_motion, harmonic_mesh_motion], ids=["biharmonic_c0ip", "harmonic"]
+)
+def test_fsi2_biharmonic_mixed_twice_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_type):
+    """The other mesh motions move the fluid mesh differently from the default mixed biharmonic one,
+    which changes the QoIs only slightly while the structure has barely moved: by up to 7e-7 relative
+    over these steps. The checkpoints hold no field of the mesh motion, so a run can start from the
+    state of a run with another mesh motion."""
+    dt_val = 0.0025
+
+    def run(name, T, **kwargs):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=T,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            **kwargs,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    mixed = run("mixed", 2 * dt_val, checkpoint_dir=tmp_path / "mixed", checkpoint_every=2)
+    other = run("other", 2 * dt_val, mesh_motion_type=mesh_motion_type)
+    assert other.shape == mixed.shape == (3, 5)
+    np.testing.assert_allclose(other, mixed, rtol=1e-4, atol=0)
+
+    continued = run("continued", 4 * dt_val, mesh_motion_type=mesh_motion_type, initial_state_dir=tmp_path / "mixed")
+    # The initial row, at the time of the checkpoint, holds the QoIs of the state read
+    assert continued.shape == (3, 5)
+    np.testing.assert_allclose(continued[0], mixed[-1], rtol=1e-6, atol=0)
+    assert continued[-1, 0] == pytest.approx(4 * dt_val)
 
 
 @pytest.mark.parametrize("ranks", [(1, 1), (2, 3)], ids=["serial", "2_to_3_ranks"])

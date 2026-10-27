@@ -438,3 +438,22 @@ Other decisions:
   built anyway, and first removes the options left by an earlier problem with the same prefix.
 - The twice simplified solver takes `mesh_motion_options` (default None, the MUMPS default above) and
   names the mesh motion setup in its end-of-run summary.
+
+## Twice simplified solver: checkpoints without z, selectable mesh motion (2026-10-27)
+
+- The checkpoints of the twice simplified solver hold (u, v, p) only. z, the Laplacian of u_f in the
+  mixed mesh motion, is an auxiliary unknown that every mesh motion solve computes again from the
+  boundary values, so it needs no checkpoint. Restart and initial-state tests pass at their earlier
+  tolerances, and the 5-step `mesh_sec` start from t = 16 on 4 ranks gives byte-identical QoIs
+  without reading z.
+- `solve(..., mesh_motion_type=...)` takes any function of `xfsi_solver.mesh_motion`, by default
+  `biharmonic_mixed_mesh_motion`; the summary names it. Over 3 steps from rest on `mesh_sec_coarse`,
+  C0IP and harmonic mesh motion change the QoIs by up to 7e-7 relative. A run can start from a state
+  written with another mesh motion. The unused `"Z"` element left the default `elements`.
+- `Checkpointer.read(..., optional=names)` and `load_start_state(..., optional=names)` leave the named
+  functions as they are when the checkpoint does not hold them (checked by
+  `io4dolfinx.read_timestamps`, which returns no times for an absent function; `read_function_names`
+  is not implemented for ADIOS2). `fsi2_biharmonic_mixed`, where z is a Newton unknown, reads z as
+  optional, so it can still start from the twice simplified solver's states, with z = 0 as Newton's
+  initial guess for the linear mesh motion equations; its QoIs then agree with a start from its own
+  state within the test's 1e-6. The other solvers that checkpoint z still require it.
