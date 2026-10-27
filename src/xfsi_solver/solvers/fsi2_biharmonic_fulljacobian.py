@@ -14,6 +14,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -25,6 +26,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -68,6 +70,7 @@ def solve(
     restart=False,
     initial_state_dir=None,
     mesh_motion_scaling=None,
+    max_quadrature_degree=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -116,6 +119,11 @@ def solve(
     the storage blocks [u, v, p, z], by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md, and in the order (v, p, u_S, z, u_I) in which the
     fieldsplit of fsi2_biharmonic_mixed.py solves them. The matrix is gathered on rank 0.
+
+    If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
+    Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
+    degree are integrated inexactly at that degree, and the others keep their estimate. With the
+    default None, every integral keeps the degree UFL estimates.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -371,6 +379,8 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     residual_blocked = ufl.extract_blocks(residual)
+    # Cap the quadrature degree before the Jacobian is derived from the residual, so that it keeps the cap.
+    residual_blocked = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocked]
 
     max_iter = 20
     atol = 1.0e-7
@@ -457,6 +467,7 @@ def solve(
         rho_f,
         [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
         entity_maps,
+        max_quadrature_degree=max_quadrature_degree,
     )
 
     def write_output(t, step):
@@ -482,7 +493,10 @@ def solve(
     # Prevent possibly overwriting the sparsity pattern on zeroRows.
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
-    res_miss_ufl = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
+    # The same cap as for the residual above, before the derivatives are taken.
+    res_miss_ufl = cap_quadrature_degree(
+        rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid, max_quadrature_degree
+    )
     res_miss = dolfinx.fem.form(res_miss_ufl)
     jac_uu = dolfinx.fem.form(ufl.derivative(res_miss_ufl, u, ufl.TrialFunction(U)))
     jac_uv = dolfinx.fem.form(ufl.derivative(res_miss_ufl, v, ufl.TrialFunction(V)))
@@ -671,6 +685,7 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        print(f"\nSolver setup:\n  Quadrature degree: {quadrature_description(max_quadrature_degree)}")
 
     for writer in writers:
         writer.close()
@@ -722,21 +737,38 @@ def main():
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
+    mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
+    T = 15.5
+    dt_val = 0.0025
+    output_path = "output/pv/fsi2_biharmonic_fulljacobian.bp"
+    output_path_p = "output/pv/fsi2_biharmonic_fulljacobian_p.bp"
+    qoi_path = "output/qoi/fsi2_biharmonic_fulljacobian.txt"
+    checkpoint_dir = "output/checkpoints/fsi2_biharmonic_fulljacobian"
+    checkpoint_every = 100
+    vtx_save_every = 4
+    mesh_motion_scaling = None
+    # mesh_motion_scaling = 1.0e-9
+    max_quadrature_degree = None  # Default None, no cap.
+    restart = args.restart
+    initial_state_dir = args.initial_state_dir
     solve(
-        mesh_path="data/meshes/fsi2/mesh_sec.xdmf",
-        T=15.5,
-        dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_fulljacobian.bp",
-        output_path_p="output/pv/fsi2_biharmonic_fulljacobian_p.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_fulljacobian.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_fulljacobian",
-        checkpoint_every=100,
-        vtx_save_every=4,
-        restart=args.restart,
-        initial_state_dir=args.initial_state_dir,
-        mesh_motion_scaling=None,
-        # mesh_motion_scaling=1.0e-9,
+        mesh_path=mesh_path,
+        T=T,
+        dt_val=dt_val,
+        output_path=output_path,
+        output_path_p=output_path_p,
+        qoi_path=qoi_path,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        vtx_save_every=vtx_save_every,
+        mesh_motion_scaling=mesh_motion_scaling,
+        max_quadrature_degree=max_quadrature_degree,
+        restart=restart,
+        initial_state_dir=initial_state_dir,
     )
+
+    if MPI.COMM_WORLD.rank == 0:
+        plot_run_qois(qoi_path, T)
 
 
 if __name__ == "__main__":
