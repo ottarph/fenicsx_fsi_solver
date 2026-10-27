@@ -28,6 +28,7 @@ from xfsi_solver.tools.qoi import (
     point_value,
 )
 from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
+from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -42,6 +43,59 @@ PHYSICAL_MARKERS = {
     "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
 
+DEFAULT_SOLVER_OPTIONS = {
+    # SNES options
+    "snes_linesearch_type": "none",
+    "snes_max_it": 20,
+    "snes_atol": 1.0e-7,
+    "snes_rtol": 1.0e-12,
+    "snes_stol": 0.0,
+    # Turn off errors, catch manually instead.
+    "snes_error_if_not_converged": False,
+    "ksp_error_if_not_converged": False,
+    # Print to console.
+    # "snes_monitor": None,
+    "snes_converged_reason": None,
+}
+DEFAULT_DIRECT_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
+    # KSP options
+    "ksp_type": "preonly",
+    "pc_type": "lu",
+    "pc_factor_mat_solver_type": "mumps",
+    "mat_mumps_cntl_1": 1e-4,
+}
+DEFAULT_ITERATIVE_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
+    "ksp_converged_reason": None,
+    "ksp_type": "fgmres",
+    "ksp_rtol": 1e-5,
+    "ksp_max_it": 200,
+    #
+    "pc_type": "fieldsplit",
+    "pc_fieldsplit_type": "schur",
+    "pc_fieldsplit_schur_fact_type": "upper",
+    # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
+    # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
+    # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
+    # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
+    # inertia term rho_f / dt dominates diag(A) at small time steps.
+    "pc_fieldsplit_schur_precondition": "selfp",
+    #
+    # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
+    "fieldsplit_v_ksp_type": "preonly",
+    "fieldsplit_v_pc_type": "gamg",
+    "fieldsplit_v_pc_gamg_threshold": 0.01,
+    "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+    "fieldsplit_v_mg_levels_ksp_type": "richardson",
+    "fieldsplit_v_mg_levels_pc_type": "sor",
+    # "fieldsplit_v_ksp_converged_reason": None,
+    #
+    # One BoomerAMG V-cycle on \hat S.
+    "fieldsplit_p_ksp_type": "preonly",
+    "fieldsplit_p_pc_type": "hypre",
+    "fieldsplit_p_pc_hypre_type": "boomeramg",
+    # "fieldsplit_p_ksp_converged_reason": None,
+}
+
 
 def solve(
     mesh_path,
@@ -50,12 +104,13 @@ def solve(
     output_path,
     output_path_p,
     qoi_path,
-    elements={
+    elements={  # noqa: B006
         "U": ("P", 2, (2,)),
         "V": ("P", 2, (2,)),
         "P": ("P", 1),
         "Z": ("P", 2, (2,)),
     },
+    solver_options=None,
     rho_f=1.0e3,
     nu_f=1.0e-3,
     rho_s=1.0e4,
@@ -78,7 +133,9 @@ def solve(
 
     The solid stress is written in terms of v through the kinematic relation, as in
     fsi2_biharmonic_mixed, and the Jacobian is that of the momentum and continuity equations with
-    respect to (v, p), solved by MUMPS LU. The displacements are not unknowns of the Newton system:
+    respect to (v, p), solved as ``solver_options`` sets: by MUMPS LU by default, or, with
+    ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, by FGMRES with a Schur complement fieldsplit on a nest
+    Jacobian. The displacements are not unknowns of the Newton system:
     after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
     displacement u_s on the solid mesh from the kinematic relation, node by node, and extends it into
     the fluid as u_f on the fluid mesh with the mixed biharmonic mesh motion, before SNES evaluates the
@@ -101,6 +158,9 @@ def solve(
     if nu_s is None and lambda_s is None:
         nu_s = 0.4
     lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
+
+    if solver_options is None:
+        solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
 
     # load mesh and meshtags
 
@@ -209,11 +269,7 @@ def solve(
     )
     v_old, u_s_old, u_f_old = dolfinx.fem.Function(V), dolfinx.fem.Function(U_s), dolfinx.fem.Function(U_f)
 
-    # trial_v, trial_p = ufl.TrialFunctions(W)
     dv, dp = ufl.TestFunctions(W)
-
-    # trial_u_s, trial_u_f, trial_z = ufl.TrialFunction(U_s), ufl.TrialFunction(U_f), ufl.TrialFunction(Z)
-    # du_s, du_f, dz = ufl.TestFunction(U_s), ufl.TestFunction(U_f), ufl.TestFunction(Z)
 
     dz, du_f = ufl.TestFunctions(ufl.MixedFunctionSpace(Z, U_f))
 
@@ -468,9 +524,6 @@ def solve(
     residual += theta * A_E_solid(u_s_condensed)
     residual += (1.0 - theta) * A_E_solid(u_s_old)
 
-    # The term we do separately in the other solvers
-    # residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
-
     residual_blocks = ufl.extract_blocks(residual)
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
     residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
@@ -482,6 +535,9 @@ def solve(
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
+    # The fieldsplit preconditioner takes the (v, v) and (p, p) blocks of the Jacobian, which a nest
+    # matrix holds as separate matrices; LU needs the Jacobian as one matrix.
+    use_fieldsplit = solver_options.get("pc_type") == "fieldsplit"
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocks,
         (v, p),
@@ -489,26 +545,29 @@ def solve(
         bcs=bcs,
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
-        petsc_options={
-            # SNES options
-            "snes_linesearch_type": "none",
-            "snes_max_it": 20,
-            "snes_atol": 1.0e-7,
-            "snes_rtol": 1.0e-12,
-            "snes_stol": 0.0,
-            # KSP options
-            "ksp_type": "preonly",
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_cntl_1": 1e-4,
-            # Turn off errors, catch manually instead.
-            "snes_error_if_not_converged": False,
-            "ksp_error_if_not_converged": False,
-            # Print to console.
-            # "snes_monitor": None,
-            "snes_converged_reason": None,
-        },
+        kind="nest" if use_fieldsplit else None,
+        petsc_options=solver_options,
     )
+
+    if use_fieldsplit:
+        # NonlinearProblem gives the PC the nest index sets only if it has a preconditioner form, and
+        # then names the splits v_0 and p_1, so set them here with the names of the fieldsplit_v_ and
+        # fieldsplit_p_ options.
+        is_v, is_p = problem.A.getNestISs()[0]
+        # The owned v dofs are stored interleaved per node, (x, y), so A has block size 2, which GAMG
+        # uses for its aggregates. PCFIELDSPLIT attaches the near-nullspace to A when it extracts it.
+        is_v.setBlockSize(V.dofmap.index_map_bs)
+        is_v.compose("nearnullspace", rigid_body_modes(V))
+        problem.solver.getKSP().getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
+
+        # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
+        # dolfinx has deleted the options in petsc_options, so set those of the sub-KSPs again.
+        opts = PETSc.Options()
+        opts.prefixPush(problem.solver.getOptionsPrefix())
+        for key, value in solver_options.items():
+            if key.startswith("fieldsplit_"):
+                opts[key] = value
+        opts.prefixPop()
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
@@ -656,7 +715,9 @@ def solve(
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
         where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
         sets the next iterate to v - Y and evaluates the residual there."""
-        v.x.array[:num_v] -= x.getArray(readonly=True)[:num_v]  # the owned v rows come first in x
+        # The owned v rows come first in x, or are its first block if x is a nest vector.
+        x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
+        v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
         v.x.scatter_forward()
 
         # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
@@ -745,19 +806,21 @@ def main():
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
-    mesh_path = "data/meshes/fsi2/mesh_fine_sec.xdmf"
-    T = 16.0 + 100 * 0.0025
+    mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
+    run_name = "fsi2_biharmonic_mixed_twice_simplified"
     dt_val = 0.0025
-    output_path = "output/pv/fsi2_biharmonic_mixed_twice_simplified_fine.bp"
-    output_path_p = "output/pv/fsi2_biharmonic_mixed_twice_simplified_fine_p.bp"
-    qoi_path = "output/qoi/fsi2_biharmonic_mixed_twice_simplified_fine.txt"
-    checkpoint_dir = "output/checkpoints/fsi2_biharmonic_mixed_twice_simplified_fine"
+    T = 16.0 + 10 * dt_val
+    output_path = f"output/pv/{run_name}.bp"
+    output_path_p = f"output/pv/{run_name}_p.bp"
+    qoi_path = f"output/qoi/{run_name}.txt"
+    checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 400
     vtx_save_every = None
     gamma_reassemble = 0.2  # Default 0.2.
     max_quadrature_degree = 5  # Default None, no cap. 6 gives the same QoIs, 20% faster.
-    restart = args.restart
+    solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     initial_state_dir = args.initial_state_dir
+    restart = args.restart
     solve(
         mesh_path=mesh_path,
         T=T,
@@ -772,6 +835,7 @@ def main():
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
         restart=restart,
         initial_state_dir=initial_state_dir,
+        solver_options=solver_options,
     )
 
     if MPI.COMM_WORLD.rank == 0:

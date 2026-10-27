@@ -10,7 +10,11 @@ from restart_helpers import (
 )
 
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
-from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import solve
+from xfsi_solver.solvers.fsi2_biharmonic_mixed_twice_simplified import (
+    DEFAULT_DIRECT_SOLVER_OPTIONS,
+    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
+    solve,
+)
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p and z live on the fluid submesh but are checkpointed on the full mesh
@@ -67,6 +71,31 @@ def test_fsi2_biharmonic_mixed_twice_simplified_quadrature_cap_changes_the_qois_
     # row of zeros is the same in both.
     np.testing.assert_allclose(capped, exact, rtol=1e-3, atol=0)
     assert not np.array_equal(capped, exact)
+
+
+def test_fsi2_biharmonic_mixed_twice_simplified_iterative_solve_matches_direct(output_dirs):
+    dt_val = 0.0025
+
+    def run(name, solver_options):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            solver_options=solver_options,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS)
+    # Fails with DIVERGED_LINEAR_SOLVE if the fieldsplit does not get the v and p splits or their options.
+    iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS)
+    # Newton stops at the same absolute residual tolerance with either linear solver, but at different
+    # iterates. The QoIs differ by up to 1.3e-5 relative, in the small lift of the first step (9.5e-4),
+    # so rtol = 1e-4 leaves a margin of more than 7. The initial row of zeros is the same in both.
+    np.testing.assert_allclose(iterative, direct, rtol=1e-4, atol=0)
 
 
 @pytest.mark.parametrize("ranks", [(1, 1), (2, 3)], ids=["serial", "2_to_3_ranks"])

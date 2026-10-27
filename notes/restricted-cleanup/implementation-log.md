@@ -350,3 +350,25 @@ Other decisions:
   lift by up to 6e-5.
 - The 3d solve, initial-state and K_c-option tests are marked `slow` and left out by default
   (`pytest -m slow` runs them).
+
+## Fieldsplit on a nest Jacobian in the twice simplified solver (2026-10-27)
+
+- `fsi2_biharmonic_mixed_twice_simplified.solve` takes `solver_options` (default
+  `DEFAULT_DIRECT_SOLVER_OPTIONS`, MUMPS LU); with `pc_type = fieldsplit`, as in
+  `DEFAULT_ITERATIVE_SOLVER_OPTIONS`, the `NonlinearProblem` is built with `kind="nest"`.
+- Three things kept the fieldsplit options from taking effect:
+  - `NonlinearProblem` passes the nest index sets to the PC only when it has a preconditioner form `P`
+    (`LinearProblem` always does), and then names the splits `<u.name>_<i>`, here `v_0` and `p_1`, so
+    `fieldsplit_v_*` would not match. The dolfinx Stokes demo relies on unnamed functions, whose
+    splits are `0` and `1`. The solver now sets `("v", is_v), ("p", is_p)` from `A.getNestISs()`
+    itself, with block size 2 and the rigid body modes composed on `is_v`, as in
+    `fsi2_biharmonic_mixed`.
+  - dolfinx deletes `petsc_options` from the options database right after `SNESSetFromOptions`, but
+    PCFIELDSPLIT reads its sub-KSP options only in `PCSetUp`, in the first solve. The `fieldsplit_*`
+    options are set again under the `solver_` prefix after the problem is built.
+  - The KSP post-solve hook read `x.getArray()`, which needs a contiguous vector; with a nest `x` it
+    reads the first nest block.
+- Check on `mesh_sec`, 4 ranks, 5 steps from the t = 16 checkpoint: FGMRES takes 13 to 16 iterations
+  per Newton step, the Newton counts (6 per step) and the QoIs match the MUMPS run at the `%.6e`
+  precision of the QoI file, at 0.26 s per step against 0.19 s for MUMPS. `ksp_view` shows GAMG with 3
+  near-nullspace vectors (coarse `bs=3`) on `fieldsplit_v` and BoomerAMG on `fieldsplit_p`.
