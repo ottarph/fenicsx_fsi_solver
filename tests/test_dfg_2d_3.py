@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from xfsi_solver.solvers.dfg_2d_3 import solve
+from xfsi_solver.component_solvers.dfg_2d_3 import solve
 
 
 @pytest.mark.parametrize(
