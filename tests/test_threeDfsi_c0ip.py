@@ -80,3 +80,17 @@ def test_threeDfsi_c0ip_rejects_ambiguous_options(output_dirs, kwargs, match):
             qoi_path=str(output_dirs["qoi"] / "ambiguous.txt"),
             **kwargs,
         )
+
+
+def test_threeDfsi_c0ip_requires_a_quadrature_cap(output_dirs):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match="quadrature cap"):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.004,
+            dt_val=0.004,
+            output_path=str(output_dirs["pv"] / "uncapped.bp"),
+            output_path_p=str(output_dirs["pv"] / "uncapped_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "uncapped.txt"),
+            max_quadrature_degree=None,
+        )

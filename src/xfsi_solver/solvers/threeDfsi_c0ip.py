@@ -16,6 +16,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -29,7 +30,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
-from xfsi_solver.tools.quadrature import cap_quadrature_degree
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -146,10 +147,12 @@ def solve(
     unused by the replacement, such as the SOR omega with another smoother, are listed when
     PETSc finalizes. The time and the K_c iterations of every time step are printed.
 
-    The quadrature degree is capped at ``max_quadrature_degree``: UFL estimates degrees up to
-    19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in the
-    Jacobian), with 1000 quadrature points per tetrahedron, against 45 points at degree 8.
-    Integrals with a lower estimate keep it.
+    The quadrature degree is capped at ``max_quadrature_degree``, by default 8: UFL estimates
+    degrees up to 19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in
+    the Jacobian), with 1000 quadrature points per tetrahedron, against 45 points at degree 8.
+    Integrals with a lower estimate keep it. The cap is required, and ``max_quadrature_degree=None``
+    raises ``ValueError``. It is applied to the residual, the C0IP mesh motion and the missing residual
+    term before they are differentiated, so that the Jacobian keeps it, and to the drag and lift forms.
 
     The approximate Jacobian is only reassembled, and the physical block K_c only
     refactorized, when the Newton residual norm decreased by less than a factor
@@ -174,6 +177,11 @@ def solve(
     the same ``t0``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    if max_quadrature_degree is None:
+        raise ValueError(
+            "the 3d solver needs a quadrature cap, so max_quadrature_degree cannot be None: the degrees that "
+            "UFL estimates (19 in the residual, 25 in the Jacobian) are far too expensive on tetrahedra"
+        )
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
     if nu_s is None and lambda_s is None:
         lambda_s = 8.0e6
@@ -1127,7 +1135,7 @@ def solve(
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
-            f"  Quadrature degree: at most {max_quadrature_degree}\n"
+            f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
         )
 
     for writer in writers:
@@ -1152,23 +1160,40 @@ def main():
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
+    mesh_path = "data/meshes/fsi3d/mesh_sec_medium.xdmf"
+    T = 10.0
+    dt_val = 0.004
+    output_path = "output/pv/threeDfsi_c0ip_medium.bp"
+    output_path_p = "output/pv/threeDfsi_c0ip_medium_p.bp"
+    qoi_path = "output/qoi/threeDfsi_c0ip_medium.txt"
+    checkpoint_dir = "output/checkpoints/threeDfsi_c0ip_medium"
+    checkpoint_every = 250
+    vtx_save_every = None
+    gamma_reassemble = 0.2  # Default 0.2.
+    direct_k_c_solve = False
+    max_quadrature_degree = 8  # Default 8.
+    c0ip_a_val = 2.0
+
     solve(
-        mesh_path="data/meshes/fsi3d/mesh_sec_medium.xdmf",
-        T=10.0,
-        dt_val=0.004,
-        output_path="output/pv/threeDfsi_c0ip_medium.bp",
-        output_path_p="output/pv/threeDfsi_c0ip_medium_p.bp",
-        qoi_path="output/qoi/threeDfsi_c0ip_medium.txt",
-        checkpoint_dir="output/checkpoints/threeDfsi_c0ip_medium",
-        checkpoint_every=250,
-        vtx_save_every=None,
-        gamma_reassemble=0.2,  # Default 0.2.
-        direct_k_c_solve=False,
-        max_quadrature_degree=8,
-        c0ip_a_val=2.0,
+        mesh_path=mesh_path,
+        T=T,
+        dt_val=dt_val,
+        output_path=output_path,
+        output_path_p=output_path_p,
+        qoi_path=qoi_path,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        vtx_save_every=vtx_save_every,
+        gamma_reassemble=gamma_reassemble,
+        direct_k_c_solve=direct_k_c_solve,
+        max_quadrature_degree=max_quadrature_degree,
+        c0ip_a_val=c0ip_a_val,
         restart=args.restart,
         initial_state_dir=args.initial_state_dir,
     )
+
+    if MPI.COMM_WORLD.rank == 0:
+        plot_run_qois(qoi_path, T, qoi_labels=QOI_LABELS_3D, reference_file=None, closeup_interval=(9.0, 10.0))
 
 
 if __name__ == "__main__":
