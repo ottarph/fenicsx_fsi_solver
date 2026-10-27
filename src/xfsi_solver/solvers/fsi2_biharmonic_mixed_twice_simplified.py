@@ -586,11 +586,7 @@ def solve(
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
-    def wrapped_residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
-        fem_residual(snes, x, b, *res_args, **res_kargs)
-
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
-    solver.setFunction(wrapped_residual, b_vec)
 
     # The solid displacement is updated node by node by the kinematic relation. U_s and V have the same
     # element, so the dofs of a solid cell are in the same order in both, and the dofmaps of the solid
