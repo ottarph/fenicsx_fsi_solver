@@ -409,3 +409,32 @@ Other decisions:
 - `SubmeshComposite` replaces no other code: only `SeparateSolverPC` in `fsi2_biharmonic_mixed_simplified`
   copies between the parent mesh and a submesh by hand, and it copies between different functions in
   each direction (u_next -> u_bc, u_h -> u_new), without the `scatter_forward` of `gather()`.
+
+## Mesh motion package (2026-10-27)
+
+- `src/xfsi_solver/mesh_motion/` sets up the mesh motion of a displacement u on the mesh it lives on
+  (in the FSI solvers, the fluid submesh), with Dirichlet conditions on the whole boundary:
+  `harmonic_mesh_motion` (-div grad u = 0, no scaling), `biharmonic_mixed_mesh_motion` (with z = div
+  grad u as a second unknown; optional `z` for checkpointing) and `biharmonic_c0ip_mesh_motion`
+  (penalties of `tools/dg_optpar.py`, `a_val = 2.0`, triangles, quadrilaterals and tetrahedra). The
+  biharmonic forms set the normal derivative of u to zero on the boundary, naturally (mixed) or by
+  Nitsche (C0IP).
+- Each returns a `MeshMotion`: a `NonlinearProblem` solved by one `ksponly` step with an explicitly
+  lagged Jacobian (`snes_lag_jacobian -2`, persisting), so the matrix is assembled and factorized in
+  the first solve only. `solve()` raises on a failed SNES, KSP, PC or block PC; `destroy()` is
+  collective. The default `solver_options` select `IdenticalInterleavedBlocksPC` from the options
+  alone, with MUMPS LU (`cntl_1 = 1e-4`) on the first component applied to all by MatMatSolve; its
+  interleaved split also fits the block matrix [z | u] of the mixed form, since every rank's z and u
+  rows are whole (x, y) pairs. Options passed replace the defaults.
+- A `LinearProblem` version (`MyLinearProblem`, matrix assembled once, right-hand side by lifting)
+  solved the mesh motion alone to round-off of the old one (1.2e-10), but in the twice simplified
+  solver it moved u and z in the checkpoints by 2.2e-6 relative after 4 steps from rest, while v and p
+  stayed at 1e-12; the cause was not found. The NonlinearProblem version reproduces the old u
+  bit for bit, and the 5-step `mesh_sec` start from t = 16 on 4 ranks gives byte-identical QoIs at the
+  same 0.186 s per step.
+- dolfinx's tidy-up of `petsc_options` (`opts.prefixPush(prefix)`, then `del opts[k]`) has no effect
+  with petsc4py 3.25: deleting under a pushed prefix does nothing, while setting under one works. So
+  the options stay in the database. `MeshMotion` sets its KSP options again after the problem is
+  built anyway, and first removes the options left by an earlier problem with the same prefix.
+- The twice simplified solver takes `mesh_motion_options` (default None, the MUMPS default above) and
+  names the mesh motion setup in its end-of-run summary.

@@ -14,11 +14,11 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
-from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
@@ -129,6 +129,7 @@ def solve(
     initial_state_dir=None,
     gamma_reassemble=0.2,
     max_quadrature_degree=None,
+    mesh_motion_options=None,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -139,11 +140,13 @@ def solve(
     Jacobian. The displacements are not unknowns of the Newton system:
     after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
     displacement u_s on the solid mesh from the kinematic relation, node by node, and extends it into
-    the fluid as u_f on the fluid mesh with the mixed biharmonic mesh motion, before SNES evaluates the
-    residual there. The mesh motion does not couple the x and y components, which have the same
-    matrix, so only the x component is factorized, by MUMPS once for the whole run, and both
-    components are solved with that factorization at once, by one MatMatSolve. With exact solves, this
-    gives the same iterates as fsi2_biharmonic_mixed.
+    the fluid as u_f on the fluid mesh with the mixed biharmonic mesh motion of
+    ``xfsi_solver.mesh_motion``, before SNES evaluates the residual there. By default, the mesh motion
+    is solved as there: it does not couple the x and y components, which have the same matrix, so only
+    the x component is factorized, by MUMPS once for the whole run, and both components are solved
+    with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
+    its KSP, replace that default. With exact solves, this gives the same iterates as
+    fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v, p and z, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states.
@@ -271,8 +274,6 @@ def solve(
     v_old, u_s_old, u_f_old = dolfinx.fem.Function(V), dolfinx.fem.Function(U_s), dolfinx.fem.Function(U_f)
 
     dv, dp = ufl.TestFunctions(W)
-
-    dz, du_f = ufl.TestFunctions(ufl.MixedFunctionSpace(Z, U_f))
 
     # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
     # the checkpoints and the VTX output hold in place of u_s and u_f.
@@ -526,7 +527,9 @@ def solve(
         problem.solver.getKSP().getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
 
         # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
-        # dolfinx has deleted the options in petsc_options, so set those of the sub-KSPs again.
+        # dolfinx means to have deleted the options in petsc_options. Its deletion, under a pushed
+        # prefix, has no effect with petsc4py 3.25, so they stay; set those of the sub-KSPs again, so
+        # that this does not depend on it.
         opts = PETSc.Options()
         opts.prefixPush(problem.solver.getOptionsPrefix())
         for key, value in solver_options.items():
@@ -603,70 +606,17 @@ def solve(
     block_size_u = U_s.dofmap.index_map_bs
     v_dof_of_u_s = (block_size_u * v_dof_of_u_s[:, None] + np.arange(block_size_u)).ravel()  # unrolled
 
-    # The mesh motion is linear, with a matrix that is the same for the whole run: one SNES iteration
-    # (ksponly) solves it exactly, and the lagged Jacobian is assembled and factorized only in the
-    # first solve. The zero term gives the (u_f, u_f) block, where dolfinx puts the unit diagonal of
-    # the Dirichlet rows; without it, those rows are zero and the factorization fails. The unknowns
-    # are in the order of the test functions, (Z, U_f), which ufl.extract_blocks orders the residual
-    # blocks by.
-    mesh_motion_problem = dolfinx.fem.petsc.NonlinearProblem(
-        ufl.extract_blocks(
-            (ufl.inner(z, dz) - ufl.inner(ufl.grad(u_f), ufl.grad(dz)) - ufl.inner(ufl.grad(z), ufl.grad(du_f)))
-            * dx_fluid
-            + dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u_f, du_f) * dx_fluid
-        ),
-        [z, u_f],
-        petsc_options_prefix="mesh_motion_",
-        bcs=[u_f_bc],
-        petsc_options={
-            # SNES options
-            "snes_type": "ksponly",
-            "snes_lag_jacobian": -2,
-            "snes_lag_jacobian_persists": True,
-            # KSP options
-            "ksp_type": "preonly",
-            "pc_type": "python",  # IdenticalBlocksPC
-            # Turn off errors, catch manually instead.
-            "snes_error_if_not_converged": False,
-            "ksp_error_if_not_converged": False,
-            # Print to console.
-            # "snes_converged_reason": None,
-        },
-        entity_maps=entity_maps,
-    )
-
-    # The mesh motion does not couple the x and y components, and the components have the same
-    # matrix, also in their Dirichlet rows, so IdenticalBlocksPC factorizes the x component only and
-    # solves both components with that factorization at once. Each rank stores its owned dofs as
-    # [z | u_f], with the components interleaved per node, (x, y), so the k-th row of each component
-    # is the same node.
-    mesh_motion_offsets, _ = mesh_motion_problem.b.getAttr("_blocks")
-    mesh_motion_first_row = mesh_motion_problem.A.getOwnershipRange()[0]
-    block_size_z = Z.dofmap.index_map_bs
-    if block_size_z != U_f.dofmap.index_map_bs:
-        raise ValueError(f"The mesh motion needs the same element for Z and U, not {elements['Z']} and {elements['U']}")
-    mesh_motion_components = [
-        PETSc.IS().createGeneral(
-            mesh_motion_first_row
-            + np.concatenate(
-                [np.arange(mesh_motion_offsets[k] + c, mesh_motion_offsets[k + 1], block_size_z) for k in range(2)]
-            ).astype(PETSc.IntType),
-            comm=comm,
+    # The mesh motion is linear, with a matrix that is the same for the whole run, so it is assembled
+    # once, and by default factorized once, in the first solve. z holds the Laplacian of u_f, which
+    # the checkpoints store.
+    mesh_motion = biharmonic_mixed_mesh_motion(u_f, [u_f_bc], z=z, solver_options=mesh_motion_options)
+    if mesh_motion_options is None:
+        mesh_motion_description = (
+            "mixed biharmonic, MUMPS LU on the x component, once for the whole run, for both components\n"
+            "    at once by MatMatSolve"
         )
-        for c in range(block_size_z)
-    ]
-    mesh_motion_pc = IdenticalBlocksPC(mesh_motion_components)
-    mesh_motion_pc_outer = mesh_motion_problem.solver.getKSP().getPC()
-    mesh_motion_pc_outer.setPythonContext(mesh_motion_pc)
-
-    # Set through the options database, since IdenticalBlocksPC reads them when it is set up in the
-    # first solve, and dolfinx deletes the options in petsc_options once the solver is set up.
-    opts = PETSc.Options()
-    opts.prefixPush(mesh_motion_pc_outer.getOptionsPrefix() + "block_")  # mesh_motion_block_
-    opts["pc_type"] = "lu"
-    opts["pc_factor_mat_solver_type"] = "mumps"
-    opts["mat_mumps_cntl_1"] = 1e-4
-    opts.prefixPop()
+    else:
+        mesh_motion_description = f"mixed biharmonic, with the KSP options {mesh_motion_options}"
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
@@ -685,18 +635,6 @@ def solve(
     )
     interface_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_interface_dofs).any(axis=1)]
     interface_data = dolfinx.fem.create_interpolation_data(U_f, U_s, interface_cells, padding=1e-8)
-
-    def check_mesh_motion_solve():
-        """Raise if the mesh motion solve failed, which its error options leave silent. A failed
-        factorization of the component block shows only in the PC of IdenticalBlocksPC."""
-        mesh_motion_solver = mesh_motion_problem.solver
-        block_reason = mesh_motion_pc.block_pc.getFailedReason()
-        if mesh_motion_solver.getConvergedReason() < 0 or block_reason != 0:
-            raise RuntimeError(
-                f"The mesh motion solve failed: SNES reason {mesh_motion_solver.getConvergedReason()}, "
-                f"KSP reason {mesh_motion_solver.getKSP().getConvergedReason()}, "
-                f"PC failed reason of the component block {block_reason}"
-            )
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
@@ -717,8 +655,7 @@ def solve(
         u_f_bc_func.interpolate_nonmatching(u_s, interface_cells, interface_data)
         u_f_bc_func.x.scatter_forward()
 
-        mesh_motion_problem.solve()
-        check_mesh_motion_solve()
+        mesh_motion.solve()
 
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # The K_c solve is a direct one, and check_converged reports a failure of it through the SNES.
@@ -770,8 +707,7 @@ def solve(
             "  Newton system: (v, p) only; u_s set node by node and u_f by the mesh motion after each\n"
             "    linear solve\n"
             f"  Linear solve: {linear_solve_description}"
-            "  Mesh motion: MUMPS LU on the x component, once for the whole run, for both components at\n"
-            "    once by MatMatSolve\n"
+            f"  Mesh motion: {mesh_motion_description}\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
@@ -785,8 +721,7 @@ def solve(
     # all ranks here instead of leaving it to garbage collection, which can run at different points
     # on different ranks.
     solver.destroy()
-    mesh_motion_problem.solver.destroy()
-    mesh_motion_pc.destroy_solvers()
+    mesh_motion.destroy()
 
     return
 
