@@ -274,7 +274,7 @@ def solve(
     dz, du_f = ufl.TestFunctions(ufl.MixedFunctionSpace(Z, U_f))
 
     # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
-    # the checkpoints hold in place of u_s and u_f.
+    # the checkpoints and the VTX output hold in place of u_s and u_f.
     u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, elements["U"]), name="u")
     checkpoint_fields = (u, v, p, z)
 
@@ -339,7 +339,7 @@ def solve(
 
     writers = []
     if vtx_save_every is not None:
-        writers = [dolfinx.io.VTXWriter(comm, output_path, [v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
+        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
 
     # Quantities of interest: the displacement at the tip of the structure, and the drag and
     # lift on the obstacle and on the fluid side of the solid-fluid interface.
@@ -359,6 +359,7 @@ def solve(
     def write_output(t, step):
         """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
         if vtx_save_every is not None and step % vtx_save_every == 0:
+            gather_displacement()  # u is written with v
             for writer in writers:
                 writer.write(t)
 

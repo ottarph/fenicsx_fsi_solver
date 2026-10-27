@@ -376,3 +376,5 @@ Other decisions:
   the FGMRES/Schur/GAMG/BoomerAMG setup in the style of `fsi2_biharmonic_mixed`), plus the solid
   stress, the (v, p)-only Newton system and the mesh motion solve. The description is built before
   the time loop, so options without the keys it reads fail at the start of a run.
+- The VTX output of the twice simplified solver holds u, the displacement on the parent mesh, with v,
+  as `fsi2_biharmonic_mixed` writes `[u, v]`; u is gathered from u_s and u_f before each snapshot.
