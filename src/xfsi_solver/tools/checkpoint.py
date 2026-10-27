@@ -265,7 +265,7 @@ def load_start_state(
                 f"up to {T = } ({num_steps = })"
             )
         output_paths = [restart_output_path(path, t) for path in output_paths]
-        vtx_message = f", writing VTX output to {' and '.join(output_paths)}" if write_vtx else ""
+        vtx_message = f", writing VTX output to {_join_and(output_paths)}" if write_vtx else ""
         if mesh.comm.rank == 0:
             print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
     elif checkpoint_every is not None:
@@ -285,6 +285,11 @@ def load_start_state(
         if mesh.comm.rank == 0:
             print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
     return StartState(t, step, checkpointer, output_paths)
+
+
+def _join_and(items: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``, ..."""
+    return items[-1] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def restart_output_path(path: str | Path, t: float) -> str:
