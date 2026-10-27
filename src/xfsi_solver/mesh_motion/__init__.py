@@ -11,12 +11,12 @@ MUMPS LU on one displacement component, applied to all of them."""
 from xfsi_solver.mesh_motion.biharmonic_c0ip import biharmonic_c0ip_mesh_motion
 from xfsi_solver.mesh_motion.biharmonic_mixed import biharmonic_mixed_mesh_motion
 from xfsi_solver.mesh_motion.harmonic import harmonic_mesh_motion
-from xfsi_solver.mesh_motion.problem import MeshMotion, default_solver_options
+from xfsi_solver.mesh_motion.problem import MeshMotion, default_mesh_motion_solver_options
 
 __all__ = [
     "MeshMotion",
     "biharmonic_c0ip_mesh_motion",
     "biharmonic_mixed_mesh_motion",
-    "default_solver_options",
+    "default_mesh_motion_solver_options",
     "harmonic_mesh_motion",
 ]

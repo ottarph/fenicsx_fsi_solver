@@ -933,8 +933,10 @@ which was only checked from rest.
   V-cycle), applied to the nest (v, p) Jacobian. They are the default here, unlike in
   `fsi2_simplified`, which defaults to MUMPS LU; `DEFAULT_DIRECT_SOLVER_OPTIONS` selects LU.
 - The default mesh motion is `biharmonic_c0ip_mesh_motion`, as in `threeDfsi_c0ip`, factorized by
-  MUMPS Cholesky on the x component (`default_solver_options(3)` with `block_pc_type cholesky`); the
-  other mesh motions keep the package default, LU.
+  MUMPS Cholesky on the x component (`default_mesh_motion_solver_options(3)` with `block_pc_type
+  cholesky`); the other mesh motions keep the package default, LU.
+- `mesh_motion.default_solver_options` is renamed `default_mesh_motion_solver_options`, since the
+  solvers that import it have a `DEFAULT_SOLVER_OPTIONS` of their own.
 - The mesh motion functions take `max_quadrature_degree` (default None, no cap), applied with
   `cap_quadrature_degree` to the residual before `MeshMotion` differentiates it, so the matrix keeps
   it. UFL estimates degree 3 on the cells and 12 on the facets for the C0IP forms of P2 on P2

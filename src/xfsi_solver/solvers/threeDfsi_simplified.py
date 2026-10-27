@@ -15,7 +15,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_solver_options
+from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_motion_solver_options
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
@@ -659,7 +659,8 @@ def solve(
     if mesh_motion_options is None:
         factorization = "LU"
         if mesh_motion_type is biharmonic_c0ip_mesh_motion:
-            mesh_motion_options = default_solver_options(U_f.dofmap.index_map_bs) | {"block_pc_type": "cholesky"}
+            mesh_motion_options = default_mesh_motion_solver_options(U_f.dofmap.index_map_bs)
+            mesh_motion_options["block_pc_type"] = "cholesky"
             factorization = "Cholesky"
         mesh_motion_description = (
             f"{mesh_motion_name}, MUMPS {factorization} on the x component, once for the whole run, for all\n"

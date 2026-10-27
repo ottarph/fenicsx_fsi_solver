@@ -10,7 +10,7 @@ from restart_helpers import run_mpi_python
 from xfsi_solver.mesh_motion import (
     biharmonic_c0ip_mesh_motion,
     biharmonic_mixed_mesh_motion,
-    default_solver_options,
+    default_mesh_motion_solver_options,
     harmonic_mesh_motion,
 )
 
@@ -168,7 +168,7 @@ def test_solver_options_replace_those_of_an_earlier_problem():
     harmonic_mesh_motion(u, [bc], solver_options=WHOLE_SYSTEM_LU).destroy()
     harmonic_mesh_motion(u, [bc]).destroy()
     kept = {key for key in PETSc.Options().getAll() if key.startswith("mesh_motion_")}
-    default = {f"mesh_motion_{key}" for key in default_solver_options(2)}
+    default = {f"mesh_motion_{key}" for key in default_mesh_motion_solver_options(2)}
     earlier_only = {f"mesh_motion_{key}" for key in WHOLE_SYSTEM_LU} - default
     assert default <= kept
     assert not kept & earlier_only

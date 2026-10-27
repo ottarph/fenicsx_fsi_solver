@@ -20,7 +20,7 @@ SNES_OPTIONS = {
 }
 
 
-def default_solver_options(num_components: int) -> dict:
+def default_mesh_motion_solver_options(num_components: int) -> dict:
     """MUMPS LU on the first displacement component, applied to all components at once.
 
     The mesh motion does not couple the displacement components, and the components have the same
@@ -50,10 +50,10 @@ class MeshMotion:
     reused in all later ones.
 
     ``solver_options`` are the PETSc options of the KSP, under ``petsc_options_prefix``, which should
-    differ from those of other live problems; None gives :func:`default_solver_options`. Options
-    passed replace the defaults rather than add to them, so start from
-    ``default_solver_options(num_components) | {...}`` to change only some of them. The SNES options
-    are those of ``SNES_OPTIONS``, which ``solver_options`` can override.
+    differ from those of other live problems; None gives :func:`default_mesh_motion_solver_options`.
+    Options passed replace the defaults rather than add to them, so start from
+    ``default_mesh_motion_solver_options(num_components) | {...}`` to change only some of them. The
+    SNES options are those of ``SNES_OPTIONS``, which ``solver_options`` can override.
     """
 
     def __init__(
@@ -69,7 +69,7 @@ class MeshMotion:
         self.unknowns = unknowns
         self.displacement = unknowns[-1]
         if solver_options is None:
-            solver_options = default_solver_options(self.displacement.function_space.dofmap.index_map_bs)
+            solver_options = default_mesh_motion_solver_options(self.displacement.function_space.dofmap.index_map_bs)
         self.solver_options = solver_options
 
         # Remove the options of an earlier problem with this prefix, which the persistent options
