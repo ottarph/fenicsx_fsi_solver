@@ -9,6 +9,7 @@ VECTOR = ("Lagrange", 2, (3,))
 ELEMENTS = {"u": VECTOR, "v": VECTOR, "p": ("Lagrange", 1), "z": VECTOR}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("direct", [True, False], ids=["direct", "iterative"])
 def test_threeDfsi_mixed_solve(output_dirs, direct):
     dt_val = 0.004
@@ -30,6 +31,7 @@ def test_threeDfsi_mixed_solve(output_dirs, direct):
     assert 0.0 < rows[1, 1] < rows[2, 1]
 
 
+@pytest.mark.slow
 def test_threeDfsi_mixed_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(
         solve,

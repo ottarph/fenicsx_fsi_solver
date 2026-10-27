@@ -26,3 +26,6 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The slow tests are left out by default; run them with `pytest -m slow`, or all tests with `pytest -m ""`.
+addopts = "-m 'not slow'"
+markers = ["slow: takes minutes, such as the 3d solver runs"]

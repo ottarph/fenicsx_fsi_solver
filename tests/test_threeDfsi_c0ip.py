@@ -9,6 +9,7 @@ VECTOR = ("Lagrange", 2, (3,))
 ELEMENTS = {"u": VECTOR, "v": VECTOR, "p": ("Lagrange", 1)}
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("direct", [True, False], ids=["direct", "iterative"])
 def test_threeDfsi_c0ip_solve(output_dirs, direct):
     dt_val = 0.004
@@ -30,6 +31,7 @@ def test_threeDfsi_c0ip_solve(output_dirs, direct):
     assert 0.0 < rows[1, 1] < rows[2, 1]
 
 
+@pytest.mark.slow
 def test_threeDfsi_c0ip_k_c_options_replace_the_defaults(output_dirs):
     # One FGMRES iteration is not enough for K_c, so the run fails on the K_c solve, which shows
     # that the option reached it.
@@ -46,6 +48,7 @@ def test_threeDfsi_c0ip_k_c_options_replace_the_defaults(output_dirs):
         )
 
 
+@pytest.mark.slow
 def test_threeDfsi_c0ip_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(
         solve,

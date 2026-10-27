@@ -70,6 +70,13 @@ Then run the tests:
 conda run --no-capture-output -n xfsi_solver pytest
 ```
 
+The tests marked ``slow``, which run the 3d solvers, are left out by default. Run them with ``-m slow``,
+or the whole suite with ``-m ""``:
+
+```bash
+conda run --no-capture-output -n xfsi_solver pytest -m slow
+```
+
 Note the ``--no-capture-output`` flag: without it, ``conda run`` buffers the whole test run's output and
 only prints it once every test has finished, instead of showing progress (including which test is
 currently running) as it happens.
