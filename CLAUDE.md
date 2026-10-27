@@ -11,6 +11,14 @@ Without `--no-capture-output`, `conda run` buffers the whole child process's
 stdout/stderr and only prints it once the process exits, which hides
 progress on long-running commands (e.g. the test suite) until they finish.
 
+# Tests
+
+- Run the tests marked `slow` only with the user's explicit permission. These are the 3D solver runs, which take
+  minutes each. This covers `pytest -m slow`, `pytest -m ""`, and selecting a slow test by name with `-k`. A plain
+  `pytest` leaves them out (`addopts = "-m 'not slow'"` in `pyproject.toml`). When a change needs them, for example
+  for the restart and initial-state paths of the 3D solvers, ask first.
+- Pass this rule on in the brief of any session or subagent that may run tests.
+
 # Code
 Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. 
 
