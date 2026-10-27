@@ -7,6 +7,13 @@ Then run commands using the selected environment, for example:
 conda run -n xfsi_solver pytest
 ```
 
+# Tests
+
+- Run the tests marked `slow` only with the user's explicit permission. These are the 3D solver runs, which take
+  minutes each. This covers `pytest -m slow`, `pytest -m ""`, and selecting a slow test by name with `-k`. A plain
+  `pytest` leaves them out (`addopts = "-m 'not slow'"` in `pyproject.toml`). When a change needs them, for example
+  for the restart and initial-state paths of the 3D solvers, ask first.
+
 # Code
 Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. Use the class ``dolfinx.fem.petsc.NonlinearProblem`` to solve the nonlinear problems with Newton's method. For any linear problems, use the class ``dolfinx.fem.petsc.LinearProblem``. Do NOT use ``dolfinx.fem.petsc.NewtonSolverNonlinearProblem``, as this is for the old API.
 
