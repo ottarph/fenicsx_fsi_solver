@@ -109,6 +109,30 @@ def test_default_solve_matches_whole_system_lu(kind):
     np.testing.assert_allclose(u.x.array, u_lu.x.array, rtol=0, atol=RTOL_TO_MAX * np.abs(u_lu.x.array).max())
 
 
+@pytest.mark.parametrize("kind", ["harmonic", "biharmonic_mixed", "biharmonic_c0ip"])
+def test_quadrature_cap_changes_the_solution_slightly(kind):
+    """A cap of 2 is below the degree UFL estimates for every mesh motion on the curved P2 mesh, so it
+    changes the solution, but only by integrating the forms inexactly: on this mesh by 7e-6
+    (harmonic), 2.8e-3 (mixed) and 2.9e-5 (C0IP) of the largest displacement, so 1e-2 leaves a margin
+    of more than 3. A translation is still reproduced exactly, with the residual and the Jacobian
+    both capped."""
+    u_exact = _solve_bend(kind, None)
+
+    u, g, bc = _setup()
+    g.interpolate(_bend)
+    mesh_motion = MESH_MOTIONS[kind](u, [bc], max_quadrature_degree=2)
+    mesh_motion.solve()
+    difference = np.abs(u.x.array - u_exact.x.array).max()
+    assert 0.0 < difference < 1e-2 * np.abs(u_exact.x.array).max()
+
+    g.interpolate(lambda x: np.vstack([np.full_like(x[0], 0.1), np.full_like(x[0], -0.2)]))
+    mesh_motion.solve()
+    np.testing.assert_allclose(
+        u.x.array.reshape(-1, 2), np.broadcast_to([0.1, -0.2], (u.x.array.size // 2, 2)), atol=1e-10
+    )
+    mesh_motion.destroy()
+
+
 _MPI_SCRIPT = """
 import sys
 sys.path.insert(0, {tests!r})

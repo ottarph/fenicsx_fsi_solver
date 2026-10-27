@@ -16,6 +16,7 @@ from xfsi_solver.tools.dg_optpar import (
     get_dg_penalty_parameters_tetrahedron,
     get_dg_penalty_parameters_triangle,
 )
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 
 def c0ip_penalty_parameters(mesh: dolfinx.mesh.Mesh, a_val: float, degree: int):
@@ -46,6 +47,7 @@ def biharmonic_c0ip_mesh_motion(
     a_val: float = 2.0,
     solver_options: dict | None = None,
     petsc_options_prefix: str = "mesh_motion_",
+    max_quadrature_degree: int | None = None,
 ) -> MeshMotion:
     """The displacement ``u`` of the mesh it lives on, solving the biharmonic equation in C0IP form,
     as in fsi2_biharmonic_c0ip.py, with the Dirichlet conditions ``bcs`` on u, which should hold on
@@ -55,7 +57,9 @@ def biharmonic_c0ip_mesh_motion(
     u needs continuous Lagrange elements of degree 2 or more. The penalty parameters are those of
     tools/dg_optpar.py with ``a_val``, for triangles, quadrilaterals and tetrahedra. The matrix is
     symmetric positive definite. ``solver_options`` and ``petsc_options_prefix`` are those of
-    :class:`MeshMotion`.
+    :class:`MeshMotion`. ``max_quadrature_degree`` caps the quadrature degree of the forms, as
+    ``tools.quadrature.cap_quadrature_degree`` does; with None, every integral keeps the degree UFL
+    estimates: for P2 on a P2 tetrahedral mesh, 12 on the facets.
     """
     U = u.function_space
     mesh = U.mesh
@@ -83,6 +87,7 @@ def biharmonic_c0ip_mesh_motion(
     F -= ufl.inner(lap(u), ufl.grad(du) * n) * ds
     F -= ufl.inner(lap(du), ufl.grad(u) * n) * ds
     F += beta_boundary / h_facet * ufl.inner(ufl.grad(u) * n, ufl.grad(du) * n) * ds
+    F = cap_quadrature_degree(F, max_quadrature_degree)
 
     return MeshMotion(
         F,

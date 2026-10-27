@@ -8,6 +8,7 @@ import dolfinx
 import ufl
 
 from xfsi_solver.mesh_motion.problem import MeshMotion
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 
 def harmonic_mesh_motion(
@@ -16,15 +17,20 @@ def harmonic_mesh_motion(
     *,
     solver_options: dict | None = None,
     petsc_options_prefix: str = "mesh_motion_",
+    max_quadrature_degree: int | None = None,
 ) -> MeshMotion:
     """The displacement ``u`` of the mesh it lives on, solving -div(grad(u)) = 0 with the Dirichlet
     conditions ``bcs``, which should hold on the whole boundary.
 
     The Laplacian has no scaling, such as a stiffness growing towards small or distorted cells.
     ``solver_options`` and ``petsc_options_prefix`` are those of :class:`MeshMotion`.
+    ``max_quadrature_degree`` caps the quadrature degree of the form, as
+    ``tools.quadrature.cap_quadrature_degree`` does; with None, the integral keeps the degree UFL
+    estimates.
     """
     U = u.function_space
     mesh = U.mesh
     du = ufl.TestFunction(U)
     F = ufl.inner(ufl.grad(u), ufl.grad(du)) * ufl.Measure("dx", domain=mesh)
+    F = cap_quadrature_degree(F, max_quadrature_degree)
     return MeshMotion(F, [u], bcs, solver_options=solver_options, petsc_options_prefix=petsc_options_prefix)

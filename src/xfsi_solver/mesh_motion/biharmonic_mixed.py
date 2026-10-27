@@ -8,6 +8,7 @@ import dolfinx
 import ufl
 
 from xfsi_solver.mesh_motion.problem import MeshMotion
+from xfsi_solver.tools.quadrature import cap_quadrature_degree
 
 
 def biharmonic_mixed_mesh_motion(
@@ -17,6 +18,7 @@ def biharmonic_mixed_mesh_motion(
     z: dolfinx.fem.Function | None = None,
     solver_options: dict | None = None,
     petsc_options_prefix: str = "mesh_motion_",
+    max_quadrature_degree: int | None = None,
 ) -> MeshMotion:
     """The displacement ``u`` of the mesh it lives on, solving the biharmonic equation in mixed form,
 
@@ -28,6 +30,9 @@ def biharmonic_mixed_mesh_motion(
     boundary weakly. ``z`` is a function to hold z, on the mesh of u (a new one, with the element of
     u, if None), for example to checkpoint it. The unknowns of the solve are (z, u), in this order.
     ``solver_options`` and ``petsc_options_prefix`` are those of :class:`MeshMotion`.
+    ``max_quadrature_degree`` caps the quadrature degree of the forms, as
+    ``tools.quadrature.cap_quadrature_degree`` does; with None, every integral keeps the degree UFL
+    estimates.
     """
     U = u.function_space
     mesh = U.mesh
@@ -50,4 +55,5 @@ def biharmonic_mixed_mesh_motion(
         )
         * dx
     )
+    F = [cap_quadrature_degree(form, max_quadrature_degree) for form in F]
     return MeshMotion(F, [z, u], bcs, solver_options=solver_options, petsc_options_prefix=petsc_options_prefix)
