@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from restart_helpers import (
     check_restart_rejects_different_dt,
@@ -31,6 +32,36 @@ def test_fsi2_harmonic_lagrange_solve(output_dirs):
 
     assert (output_dirs["qoi"] / "fsi2_harmonic_lagrange.txt").exists()
     assert (output_dirs["pv"] / "fsi2_harmonic_lagrange.bp").exists()
+
+
+def test_fsi2_harmonic_lagrange_quadrature_cap_changes_the_qois_slightly(output_dirs):
+    dt_val = 0.0025
+
+    def run(name, max_quadrature_degree):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path="data/meshes/fsi2/mesh_sec_coarse.xdmf",
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            max_quadrature_degree=max_quadrature_degree,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    exact = run("no_cap", None)
+    capped = run("cap_4", 4)
+    assert exact.shape == capped.shape == (3, 7)
+    # The cap makes the integration of the nonlinear terms inexact, so the QoIs are not identical, but
+    # they stay close. On this mesh the time, drag, lift and tip displacement columns differ by up to
+    # 5e-5 relative to the uncapped values, so rtol = 1e-3 leaves a margin of 20 while still failing for a
+    # wrong residual. The interface gaps are zero up to the accuracy of the solve: u_gap is at the level
+    # 1e-10 and changes by 3e-13 (relative 3e-3, which is noise), v_gap is 6e-6 and changes by up to 2e-11,
+    # so they are compared with atol = 1e-9. The initial row of zeros is the same in both.
+    np.testing.assert_allclose(capped[:, :5], exact[:, :5], rtol=1e-3, atol=0)
+    np.testing.assert_allclose(capped[:, 5:], exact[:, 5:], rtol=0, atol=1e-9)
+    assert not np.array_equal(capped, exact)
 
 
 def test_fsi2_harmonic_lagrange_restart_reproduces_continuous_run(output_dirs, tmp_path):
