@@ -946,5 +946,9 @@ which was only checked from rest.
 - Each step prints its time and the linear iterations per Newton step (`getLinearSolveIterations`),
   since `KSPConvCheck` cannot share the KSP's post-solve hook; a failed linear solve stops the SNES
   with DIVERGED_LINEAR_SOLVE.
-- Only the option checks (fast tests) have run. The slow tests (iterative against direct over two
-  steps, start from an initial state) are not yet run.
+- The slow tests pass, serially on `mesh_sec_coarse` with dt = 0.004 (7 min): two steps from rest
+  with the iterative and the direct (v, p) solve agree in t, drag and lift to rtol 1e-4, and a start
+  from another run's checkpoint, with a restart, reproduces its run to 1e-6. Each step from rest takes
+  2 Newton iterations. Iterative: 31.0 and 27.5 FGMRES iterations per solve, 42.8 s and 24.9 s per
+  step; direct (MUMPS LU): 39.6 s and 19.7 s. The first step includes the K_m Cholesky and the
+  preconditioner setup.
