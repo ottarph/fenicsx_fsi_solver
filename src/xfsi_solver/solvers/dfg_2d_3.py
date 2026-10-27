@@ -18,6 +18,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import theta_value
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -53,6 +54,7 @@ def solve(
     absolute_theta_shift=None,
     relative_theta_shift=None,
     vtx_save_every=None,
+    max_quadrature_degree=None,
 ):
     """Solve the DFG 2D-3 benchmark up to time ``T``, writing drag and lift every time step
     and, with ``vtx_save_every``, a VTX snapshot every ``vtx_save_every`` steps. With
@@ -64,6 +66,12 @@ def solve(
     channel height ``H`` (default 0.41). The time stepping parameter is theta = 0.5 + ``absolute_theta_shift``, or
     theta = 0.5 + ``relative_theta_shift`` * ``dt_val``; giving both raises ``ValueError``. With neither given,
     the relative shift is 0.0, i.e. theta = 0.5.
+
+    With ``max_quadrature_degree``, the quadrature degree of the integrals in the residual, for which UFL
+    estimates a higher degree, is capped at it, which lowers the cost of assembling the nonlinear convection
+    term. The residual is capped before it is differentiated, so that the Jacobian keeps the cap, and the
+    drag and lift forms are capped too. Integrals with a lower estimate keep it. With ``None``, the default,
+    there is no cap, and the degrees are those estimated by UFL.
     """
 
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 0.0)
@@ -188,7 +196,8 @@ def solve(
     # do-nothing condition where the term is dropped.
     residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
-    residual_blocked = ufl.extract_blocks(residual)
+    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
+    residual_blocked = [cap_quadrature_degree(form, max_quadrature_degree) for form in ufl.extract_blocks(residual)]
 
     max_iter = 20
     atol = 1.0e-8
@@ -230,6 +239,7 @@ def solve(
             n = -ufl.FacetNormal(mesh)
 
             form = ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f) * n, ufl.as_vector([-1.0, 0.0])) * self.ds
+            form = cap_quadrature_degree(form, max_quadrature_degree)
             self.form = dolfinx.fem.form(form)
 
             if not isinstance(self.save_to, list):
@@ -261,6 +271,7 @@ def solve(
             n = -ufl.FacetNormal(mesh)
 
             form = ufl.inner(Fluid.NS_eulerian(v, p, nu_f, rho_f) * n, ufl.as_vector([0.0, 1.0])) * self.ds
+            form = cap_quadrature_degree(form, max_quadrature_degree)
             self.form = dolfinx.fem.form(form)
 
             if comm.rank == 0 and not isinstance(self.save_to, list):
@@ -330,6 +341,7 @@ def solve(
         print(f"\n# processes: {comm.size}")
         print(f"Elapsed time: {end - start:.2f} s")
         print(f"Time per step: {(end - start) / i:.3e} s")
+        print(f"\nSolver setup:\n  Quadrature degree: {quadrature_description(max_quadrature_degree)}")
 
     for writer in writers:
         writer.close()
@@ -385,6 +397,8 @@ def solve(
 
 
 def main():
+    max_quadrature_degree = None  # Default None, no cap.
+
     solve(
         mesh_path="data/meshes/dfg2d_alt/mesh_quad.xdmf",
         T=8.0,
@@ -398,6 +412,7 @@ def main():
         drag_coeff_plot_path="output/figures/qoi/dfg_2d_3/drag_coeff.png",
         lift_coeff_plot_path="output/figures/qoi/dfg_2d_3/lift_coeff.png",
         vtx_save_every=10,
+        max_quadrature_degree=max_quadrature_degree,
     )
 
 
