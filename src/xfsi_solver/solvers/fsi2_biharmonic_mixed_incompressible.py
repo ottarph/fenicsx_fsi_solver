@@ -14,6 +14,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.scripts.plot_qois import INCOMPRESSIBLE_QOI_LABELS, plot_run_qois
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.parameters import theta_value
@@ -28,6 +29,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -76,6 +78,7 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     full_direct_solve=False,
+    max_quadrature_degree=None,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, up to time ``T``, in
     ``round((T - t0) / dt_val)`` time steps, writing the initial state at ``t0`` as the
@@ -149,6 +152,12 @@ def solve(
     storage blocks [u, v, p, p_S, z] and by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md. The matrices are gathered on rank 0. With
     ``full_direct_solve=True``, only the full Jacobian is plotted.
+
+    If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
+    Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
+    degree are integrated inexactly at that degree, and the others keep their estimate. With the
+    default None, every integral keeps the degree UFL estimates. The measures of the violation of
+    det(F) = 1 in the QoI file are not capped.
 
     ``elements`` gives the finite element, as the tuple passed to ``dolfinx.fem.functionspace``, of each
     function space ``U``, ``V``, ``P``, ``P_S`` and ``Z``; the defaults are P2 for ``U``, ``V`` and ``Z``,
@@ -467,7 +476,8 @@ def solve(
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
-    residual_base_ufl = ufl.extract_blocks(residual)
+    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
+    residual_base_ufl = [cap_quadrature_degree(form, max_quadrature_degree) for form in ufl.extract_blocks(residual)]
     jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, fields)
 
     # One block per unknown in [u, v, p, p_S, z], since blocked assembly places forms by
@@ -476,6 +486,7 @@ def solve(
     # ufl.ZeroBaseForm, with only their diagonal blocks as zero forms, since a zero
     # form cannot couple the parent mesh and the fluid submesh.
     residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
+    residual_post_u = cap_quadrature_degree(residual_post_u, max_quadrature_degree)
 
     residual_post_ufl = [
         residual_post_u,
@@ -583,6 +594,7 @@ def solve(
         rho_f,
         [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
         entity_maps,
+        max_quadrature_degree=max_quadrature_degree,
     )
     measure_incompressibility = incompressibility_violation(u, dx_solid, cell_tags.find(PHYSICAL_MARKERS["solid"]))
 
@@ -967,6 +979,7 @@ def solve(
         if full_direct_solve:
             print(
                 "\nSolver setup:\n"
+                f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
                 f"{solid_description}"
                 "  Jacobian: full, including the fluid ALE derivatives\n"
                 "  Linear solve: MUMPS LU on the whole system\n"
@@ -991,6 +1004,7 @@ def solve(
                 )
             print(
                 "\nSolver setup:\n"
+                f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
                 f"{solid_description}"
                 "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
                 "    docs/restricted-iterative-solver.md)\n"
@@ -1055,26 +1069,55 @@ def main():
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
     args = parser.parse_args()
 
+    # mesh_sec with the element size halved in the solid, from create_mesh_FSI2.py with solid_refinement=2
+    mesh_path = "data/meshes/fsi2/mesh_sec_solid2x.xdmf"
+    T = 15.0
+    dt_val = 0.0025
+    output_path = "output/pv/fsi2_biharmonic_mixed_incompressible.bp"
+    output_path_p = "output/pv/fsi2_biharmonic_mixed_incompressible_p.bp"
+    output_path_p_S = "output/pv/fsi2_biharmonic_mixed_incompressible_p_S.bp"
+    qoi_path = "output/qoi/fsi2_biharmonic_mixed_incompressible.txt"
+    checkpoint_dir = "output/checkpoints/fsi2_biharmonic_mixed_incompressible"
+    checkpoint_every = 100
+    vtx_save_every = None
+    plot_matrices = False
+    gamma_reassemble = 0.2  # Default 0.2.
+    direct_k_c_solve = True
+    full_direct_solve = False
+    relative_theta_shift = 2.0
+    max_quadrature_degree = None  # Default None, no cap.
+    restart = args.restart
+    initial_state_dir = args.initial_state_dir
     solve(
-        # mesh_sec with the element size halved in the solid, from create_mesh_FSI2.py with solid_refinement=2
-        mesh_path="data/meshes/fsi2/mesh_sec_solid2x.xdmf",
-        T=15.0,
-        dt_val=0.0025,
-        output_path="output/pv/fsi2_biharmonic_mixed_incompressible.bp",
-        output_path_p="output/pv/fsi2_biharmonic_mixed_incompressible_p.bp",
-        output_path_p_S="output/pv/fsi2_biharmonic_mixed_incompressible_p_S.bp",
-        qoi_path="output/qoi/fsi2_biharmonic_mixed_incompressible.txt",
-        checkpoint_dir="output/checkpoints/fsi2_biharmonic_mixed_incompressible",
-        checkpoint_every=100,
-        vtx_save_every=None,
-        plot_matrices=False,
-        gamma_reassemble=0.2,  # Default 0.2.
-        direct_k_c_solve=True,
-        full_direct_solve=False,
-        relative_theta_shift=2.0,
-        restart=args.restart,
-        initial_state_dir=args.initial_state_dir,
+        mesh_path=mesh_path,
+        T=T,
+        dt_val=dt_val,
+        output_path=output_path,
+        output_path_p=output_path_p,
+        output_path_p_S=output_path_p_S,
+        qoi_path=qoi_path,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        vtx_save_every=vtx_save_every,
+        plot_matrices=plot_matrices,
+        gamma_reassemble=gamma_reassemble,  # Default 0.2.
+        direct_k_c_solve=direct_k_c_solve,
+        full_direct_solve=full_direct_solve,
+        relative_theta_shift=relative_theta_shift,
+        max_quadrature_degree=max_quadrature_degree,  # Default None, no cap.
+        restart=restart,
+        initial_state_dir=initial_state_dir,
     )
+
+    if MPI.COMM_WORLD.rank == 0:
+        # FSI2i has no FeatFlow reference, and the last 2 s is the window of the Wichrowski et al. reference.
+        plot_run_qois(
+            qoi_path,
+            T,
+            qoi_labels=INCOMPRESSIBLE_QOI_LABELS,
+            reference_file=None,
+            closeup_interval=(max(T - 2.0, 0.0), T),
+        )
 
 
 if __name__ == "__main__":
