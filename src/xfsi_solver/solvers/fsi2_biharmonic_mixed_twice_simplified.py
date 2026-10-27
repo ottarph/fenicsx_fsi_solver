@@ -569,6 +569,30 @@ def solve(
                 opts[key] = value
         opts.prefixPop()
 
+    # The linear solve for the end-of-run summary, built here so that options without the keys it
+    # reads fail before the time loop, not after it.
+    options = solver_options
+    if use_fieldsplit:
+        gamg_description = (
+            "GAMG built from A (rigid body modes as near-nullspace),\n"
+            f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
+            f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+        )
+        if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
+            gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
+        p_pc_description = options["fieldsplit_p_pc_type"]
+        if p_pc_description == "hypre":
+            p_pc_description += f" {options.get('fieldsplit_p_pc_hypre_type', 'boomeramg')}"  # the default type
+        linear_solve_description = (
+            f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}) on the nest Jacobian, "
+            f"preconditioned by the {options['pc_fieldsplit_schur_fact_type']} Schur\n"
+            f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
+            f"    one V-cycle of {p_pc_description} on -B diag(A)^{{-1}} G "
+            f"({options['pc_fieldsplit_schur_precondition']}), for S^{{-1}}\n"
+        )
+    else:
+        linear_solve_description = f"{options['pc_factor_mat_solver_type'].upper()} {options['pc_type'].upper()}\n"
+
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
 
@@ -779,6 +803,12 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
+            "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
+            "  Newton system: (v, p) only; u_s set node by node and u_f by the mesh motion after each\n"
+            "    linear solve\n"
+            f"  Linear solve: {linear_solve_description}"
+            "  Mesh motion: MUMPS LU on the x component, once for the whole run, for both components at\n"
+            "    once by MatMatSolve\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "

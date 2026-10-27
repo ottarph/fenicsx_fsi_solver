@@ -372,3 +372,7 @@ Other decisions:
   per Newton step, the Newton counts (6 per step) and the QoIs match the MUMPS run at the `%.6e`
   precision of the QoI file, at 0.26 s per step against 0.19 s for MUMPS. `ksp_view` shows GAMG with 3
   near-nullspace vectors (coarse `bs=3`) on `fieldsplit_v` and BoomerAMG on `fieldsplit_p`.
+- The end-of-run `Solver setup` summary names the linear solve, from `solver_options` (`MUMPS LU`, or
+  the FGMRES/Schur/GAMG/BoomerAMG setup in the style of `fsi2_biharmonic_mixed`), plus the solid
+  stress, the (v, p)-only Newton system and the mesh motion solve. The description is built before
+  the time loop, so options without the keys it reads fail at the start of a run.
