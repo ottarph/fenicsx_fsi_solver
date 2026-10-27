@@ -241,6 +241,31 @@ def test_load_start_state_restart_rejects_no_step_left(tmp_path):
         _load_start_state(tmp_path, restart=True, num_steps=1)
 
 
+def test_load_start_state_restart_message_lists_output_paths(tmp_path, capsys):
+    _write_steps("unit_square", tmp_path, [0, 1])
+    mesh, submeshes, functions = _setup("unit_square")
+    t, *_ = load_start_state(
+        mesh,
+        functions,
+        t0=0.0,
+        T=5 * DT,
+        dt=DT,
+        num_steps=5,
+        restart=True,
+        checkpoint_dir=tmp_path,
+        checkpoint_every=1,
+        initial_state_dir=None,
+        submeshes=submeshes,
+        output_paths=["out/a.bp", "out/b.bp", "out/c.bp"],
+        write_vtx=True,
+    )
+    a, b, c = (restart_output_path(f"out/{name}.bp", t) for name in "abc")
+    if mesh.comm.rank == 0:
+        assert capsys.readouterr().out == (
+            f"Restarting from {tmp_path} at t = {t:.4f} (step = 1), writing VTX output to {a}, {b} and {c}\n"
+        )
+
+
 def test_load_start_state_from_initial_state(tmp_path):
     _write_steps("unit_square", tmp_path / "other", [0, 1])
     (t, step, checkpointer, output_paths), functions = _load_start_state(
