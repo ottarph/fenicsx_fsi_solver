@@ -66,6 +66,30 @@ _REFERENCE_INCOMPRESSIBLE = {
 _REFERENCE_INCOMPRESSIBLE_DURATION = 2.0
 _REFERENCE_INCOMPRESSIBLE_LABEL = r"Wichrowski et al. (2023), $\tau = 0.0025$, min and max"
 
+# The y-axis labels of the QoIs of the solver scripts, by their column name in the header of the QoI
+# files (see xfsi_solver.tools.qoi), in the order that plot_run_qois plots them.
+FSI2_QOI_LABELS = {
+    "drag": "Drag",
+    "lift": "Lift",
+    "A_x": "$x$-displacement of A [m]",
+    "A_y": "$y$-displacement of A [m]",
+}
+LAGRANGE_QOI_LABELS = FSI2_QOI_LABELS | {
+    "interface_u_gap": r"$L^2$ norm of the interface displacement gap",
+    "interface_v_gap": r"$L^2$ norm of the interface velocity gap",
+}
+INCOMPRESSIBLE_QOI_LABELS = FSI2_QOI_LABELS | {
+    "solid_area_change": "Relative solid area change",
+    "det_F_rms": r"RMS of $\det F - 1$ in the solid",
+    "det_F_max": r"Maximum of $|\det F - 1|$ in the solid",
+}
+QOI_LABELS_3D = {
+    "drag": "Drag",
+    "lift": "Lift",
+    "B_x": "$x$-displacement of B [m]",
+    "B_y": "$y$-displacement of B [m]",
+    "B_z": "$z$-displacement of B [m]",
+}
 
 QOI_DIR = Path("output/qoi")
 FIGURE_DIR = Path("output/figures/qoi")
@@ -213,6 +237,52 @@ def plot_qoi(
         plt.savefig(save_path)
     plt.close()
     print(f"Saved {save_path}")
+
+
+def plot_run_qois(
+    qoi_path: str | os.PathLike,
+    T: float,
+    qoi_labels: dict[str, str] = FSI2_QOI_LABELS,
+    reference_file: str | os.PathLike | None = FSI2_REFERENCE,
+    reference_label: str = "FeatFlow-reference",
+    closeup_interval: tuple[float, float] | None = (10.0, 15.0),
+    figure_dir: str | os.PathLike | None = None,
+):
+    """Plot every QoI in ``qoi_labels``, which maps the column names in the header of ``qoi_path``
+    to y-axis labels, over time for the run that wrote ``qoi_path``, for the end of a run to
+    ``T``. Each QoI is saved as ``full_<qoi>.pdf`` over ``[0, T]``, extended to the end of
+    ``closeup_interval`` if that is later, and, with a ``closeup_interval``, as
+    ``closeup_<qoi>.pdf`` over it, in ``figure_dir``, by default ``FIGURE_DIR`` followed by the
+    file stem of ``qoi_path``. The column of the same name in ``reference_file`` is drawn as
+    ``reference_label`` for the QoIs that have one, and the others are plotted without it.
+
+    There is no MPI communication, so call it on one rank only.
+    """
+    figure_dir = Path(figure_dir) if figure_dir is not None else FIGURE_DIR / Path(qoi_path).stem
+    reference_columns = []
+    if reference_file is not None and Path(reference_file).is_file():
+        with open(reference_file) as f:
+            reference_columns = f.readline().lstrip("#").split()
+
+    intervals = {"full": (0.0, max(T, closeup_interval[1]) if closeup_interval is not None else T)}
+    if closeup_interval is not None:
+        intervals["closeup"] = closeup_interval
+    for qoi, qoi_label in qoi_labels.items():
+        # A reference file that is missing is passed on, for plot_qoi to report it.
+        has_reference = reference_file is not None and (qoi in reference_columns or not reference_columns)
+        for name, time_interval in intervals.items():
+            plot_qoi(
+                qoi,
+                qoi_file=qoi_path,
+                save_path=figure_dir / f"{name}_{qoi}.pdf",
+                label=None,
+                title=None,
+                xlabel="Time [s]",
+                ylabel=qoi_label,
+                time_interval=time_interval,
+                reference_file=reference_file if has_reference else None,
+                reference_label=reference_label,
+            )
 
 
 def _column(path: str | os.PathLike, qoi: str) -> list[int]:
