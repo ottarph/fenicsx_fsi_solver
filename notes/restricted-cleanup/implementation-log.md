@@ -378,3 +378,19 @@ Other decisions:
   the time loop, so options without the keys it reads fail at the start of a run.
 - The VTX output of the twice simplified solver holds u, the displacement on the parent mesh, with v,
   as `fsi2_biharmonic_mixed` writes `[u, v]`; u is gathered from u_s and u_f before each snapshot.
+
+## Checkpoint start-up helpers in tools (2026-10-27)
+
+- `tools/checkpoint.load_start_state` holds the restart / initial-state block that every solver
+  repeated: it sets up the run's `Checkpointer` (clearing an earlier run's checkpoints on a new run
+  with `checkpoint_every`), reads the start state into the checkpoint functions, raises when no step
+  is left to solve or the initial state changed while it was read, renames the VTX output paths on a
+  restart, and returns `StartState(t, step, checkpointer, output_paths)`.
+- `tools/submesh.SubmeshComposite(parent, [(f, entity_map), ...])` replaces `gather_displacement` and
+  `scatter_displacement` of the twice simplified solver: `gather()` pieces the parent-mesh function
+  together from the submesh functions cell by cell, `scatter()` copies it back. Where the parts share
+  dofs, the one listed last wins (the fluid, for u on the interface). `tools/submesh.all_cells` is also
+  used by `Checkpointer`. The copies are exact up to round-off from the interpolation (about 1e-16).
+- The twice simplified solver uses both, and scatters u unconditionally after loading the start state
+  (u is 0 on a new run from rest). A 5-step start from the t = 16 `mesh_sec` checkpoint on 4 ranks gives
+  byte-identical QoIs to before. The other 15 solvers with the same block still have their own copy.

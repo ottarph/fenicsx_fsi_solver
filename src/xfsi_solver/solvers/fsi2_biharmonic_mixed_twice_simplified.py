@@ -15,7 +15,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.scripts.plot_qois import plot_run_qois
-from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
+from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
@@ -29,6 +29,7 @@ from xfsi_solver.tools.qoi import (
 )
 from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
+from xfsi_solver.tools.submesh import SubmeshComposite, all_cells
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -278,64 +279,27 @@ def solve(
     u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, elements["U"]), name="u")
     checkpoint_fields = (u, v, p, z)
 
-    def all_cells(submesh):
-        index_map = submesh.topology.index_map(submesh.topology.dim)
-        return np.arange(index_map.size_local + index_map.num_ghosts, dtype=np.int32)
-
-    solid_cells, fluid_cells = all_cells(solid_mesh), all_cells(fluid_mesh)
-    solid_parent_cells = solid_cell_map.sub_topology_to_topology(solid_cells, inverse=False)
-    fluid_parent_cells = fluid_cell_map.sub_topology_to_topology(fluid_cells, inverse=False)
-
-    def gather_displacement():
-        """u <- u_s and u_f, cell by cell, which is exact since the elements match."""
-        u.interpolate(u_s, cells0=solid_cells, cells1=solid_parent_cells)
-        u.interpolate(u_f, cells0=fluid_cells, cells1=fluid_parent_cells)
-        u.x.scatter_forward()
-
-    def scatter_displacement():
-        """u_s, u_f <- u."""
-        u_s.interpolate(u, cells0=solid_parent_cells, cells1=solid_cells)
-        u_f.interpolate(u, cells0=fluid_parent_cells, cells1=fluid_cells)
+    displacement = SubmeshComposite(u, [(u_s, solid_cell_map), (u_f, fluid_cell_map)])
 
     # Set up output, checkpointing, and qoi tracking.
 
     # (t, step) are the time and number of completed steps of the current state
-    t = t0
-    step = 0
-    checkpointer = None
-    if checkpoint_dir is not None:
-        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)])
-    if restart:
-        t, step = checkpointer.read(checkpoint_fields, dt_val)
-        scatter_displacement()
-        if step >= num_steps:
-            raise ValueError(
-                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
-                f"up to {T = } ({num_steps = })"
-            )
-        output_path = restart_output_path(output_path, t)
-        output_path_p = restart_output_path(output_path_p, t)
-        vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
-        PETSc.Sys.Print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
-    elif checkpoint_every is not None:
-        checkpointer.clear()
-    if initial_state_dir is not None:
-        t, _ = Checkpointer(initial_state_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)]).read(
-            checkpoint_fields, None
-        )
-        scatter_displacement()
-        if t != t0:
-            raise RuntimeError(
-                f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
-                "start from a copy of a run that is still writing checkpoints"
-            )
-        if num_steps <= 0:
-            raise ValueError(
-                f"Cannot start from the state at {t = :.4f} in {initial_state_dir}: "
-                f"no time step is left to solve up to {T = }"
-            )
-        if mesh.comm.rank == 0:
-            print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
+    t, step, checkpointer, (output_path, output_path_p) = load_start_state(
+        mesh,
+        checkpoint_fields,
+        t0=t0,
+        T=T,
+        dt=dt_val,
+        num_steps=num_steps,
+        restart=restart,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        initial_state_dir=initial_state_dir,
+        submeshes=[(fluid_mesh, fluid_cell_map)],
+        output_paths=[output_path, output_path_p],
+        write_vtx=vtx_save_every is not None,
+    )
+    displacement.scatter()  # u_s, u_f <- u, which is 0 on a new run from rest
 
     writers = []
     if vtx_save_every is not None:
@@ -359,7 +323,7 @@ def solve(
     def write_output(t, step):
         """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
         if vtx_save_every is not None and step % vtx_save_every == 0:
-            gather_displacement()  # u is written with v
+            displacement.gather()  # u is written with v
             for writer in writers:
                 writer.write(t)
 
@@ -635,6 +599,8 @@ def solve(
         raise ValueError(
             f"The nodal update needs the same element for U and V, not {elements['U']} and {elements['V']}"
         )
+    solid_cells, fluid_cells = all_cells(solid_mesh), all_cells(fluid_mesh)
+    solid_parent_cells = solid_cell_map.sub_topology_to_topology(solid_cells, inverse=False)
     num_u_s_dofs = U_s.dofmap.index_map.size_local + U_s.dofmap.index_map.num_ghosts
     v_dof_of_u_s = np.empty(num_u_s_dofs, dtype=np.int32)
     v_dof_of_u_s[U_s.dofmap.list[solid_cells]] = V.dofmap.list[solid_parent_cells]
@@ -793,7 +759,7 @@ def solve(
         write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
-            gather_displacement()
+            displacement.gather()
             checkpointer.write(checkpoint_fields, t, step, dt_val, t0)
 
     end = timer()
