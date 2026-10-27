@@ -15,7 +15,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.scripts.plot_qois import plot_run_qois
-from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
+from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
@@ -417,39 +417,21 @@ def solve(
     )
 
     # (t, step) are the time and number of completed steps of the current state
-    t = t0
-    step = 0
-    checkpointer = None
-    if checkpoint_dir is not None:
-        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)])
-    if restart:
-        t, step = checkpointer.read([u, v, p, z], dt_val)
-        if step >= num_steps:
-            raise ValueError(
-                f"Cannot restart from the checkpoint at {t = :.4f} ({step = }): no time step is left to solve "
-                f"up to {T = } ({num_steps = })"
-            )
-        output_path = restart_output_path(output_path, t)
-        output_path_p = restart_output_path(output_path_p, t)
-        if comm.rank == 0:
-            vtx_message = "" if vtx_save_every is None else f", writing VTX output to {output_path} and {output_path_p}"
-            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
-    elif checkpoint_every is not None:
-        checkpointer.clear()
-    if initial_state_dir is not None:
-        t, _ = Checkpointer(initial_state_dir, mesh, submeshes=[(fluid_mesh, fluid_cell_map)]).read([u, v, p, z], None)
-        if t != t0:
-            raise RuntimeError(
-                f"The latest checkpoint in {initial_state_dir} changed from t = {t0} to {t} while it was read; "
-                "start from a copy of a run that is still writing checkpoints"
-            )
-        if num_steps <= 0:
-            raise ValueError(
-                f"Cannot start from the state at {t = :.4f} in {initial_state_dir}: "
-                f"no time step is left to solve up to {T = }"
-            )
-        if mesh.comm.rank == 0:
-            print(f"Starting from the state in {initial_state_dir} at {t = :.4f}")
+    t, step, checkpointer, (output_path, output_path_p) = load_start_state(
+        mesh,
+        [u, v, p, z],
+        t0=t0,
+        T=T,
+        dt=dt_val,
+        num_steps=num_steps,
+        restart=restart,
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_every=checkpoint_every,
+        initial_state_dir=initial_state_dir,
+        submeshes=[(fluid_mesh, fluid_cell_map)],
+        output_paths=[output_path, output_path_p],
+        write_vtx=vtx_save_every is not None,
+    )
 
     writers = []
     if vtx_save_every is not None:
