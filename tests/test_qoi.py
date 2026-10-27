@@ -36,7 +36,7 @@ def test_point_value_is_the_value_at_the_point(displacement):
 
 
 def test_find_point_dof_rejects_a_point_outside_the_mesh(displacement):
-    with pytest.raises(AssertionError, match="None or multiple dofs"):
+    with pytest.raises(RuntimeError, match="No dofs found"):
         find_point_dof(displacement.function_space, np.array([2.0, 2.0, 0.0]))
 
 
