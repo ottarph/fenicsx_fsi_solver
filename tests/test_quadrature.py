@@ -4,7 +4,7 @@ import pytest
 import ufl
 from mpi4py import MPI
 
-from xfsi_solver.tools.quadrature import cap_quadrature_degree, estimated_degree
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, estimated_degree, quadrature_description
 
 COMM = MPI.COMM_WORLD
 
@@ -36,6 +36,11 @@ def test_low_degree_integrals_are_unchanged(space):
     assert "quadrature_degree" not in capped.integrals()[0].metadata()
 
 
+def test_no_cap_returns_the_form_itself(space):
+    form, _ = nonlinear_form(space)
+    assert cap_quadrature_degree(form, None) is form
+
+
 def test_derivative_keeps_the_cap(space):
     form, u = nonlinear_form(space)
     jacobian = ufl.derivative(cap_quadrature_degree(form, 8), u)
@@ -48,3 +53,8 @@ def test_capped_form_assembles_close_to_the_exact_one(space):
     exact = dolfinx.fem.assemble_vector(dolfinx.fem.form(form)).array
     capped = dolfinx.fem.assemble_vector(dolfinx.fem.form(cap_quadrature_degree(form, 8))).array
     np.testing.assert_allclose(capped, exact, atol=1e-6 * np.abs(exact).max())
+
+
+def test_quadrature_description():
+    assert quadrature_description(None) == "as estimated by UFL"
+    assert quadrature_description(5) == "at most 5"

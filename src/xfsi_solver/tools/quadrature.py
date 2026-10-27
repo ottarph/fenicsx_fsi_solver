@@ -39,12 +39,15 @@ def estimated_degree(form: ufl.Form) -> int:
     )
 
 
-def cap_quadrature_degree(form: ufl.Form, max_degree: int) -> ufl.Form:
+def cap_quadrature_degree(form: ufl.Form, max_degree: int | None) -> ufl.Form:
     """``form``, with the quadrature degree set to ``max_degree`` in the integrals for which
     UFL estimates a higher degree. The other integrals, and those with a quadrature degree
     already set, are unchanged. Forms derived from the result, such as its derivative, keep the
-    quadrature degree of each integral.
+    quadrature degree of each integral. With ``max_degree=None`` there is no cap, and ``form``
+    itself is returned.
     """
+    if max_degree is None:
+        return form
     integrals = []
     for integral in form.integrals():
         metadata = integral.metadata()
@@ -52,3 +55,8 @@ def cap_quadrature_degree(form: ufl.Form, max_degree: int) -> ufl.Form:
             integral = integral.reconstruct(metadata=metadata | {"quadrature_degree": max_degree})
         integrals.append(integral)
     return ufl.Form(integrals)
+
+
+def quadrature_description(max_degree: int | None) -> str:
+    """The quadrature degree for a cap of ``max_degree``, for the summary at the end of a run."""
+    return "as estimated by UFL" if max_degree is None else f"at most {max_degree}"
