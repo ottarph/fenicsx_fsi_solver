@@ -14,6 +14,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, restart_output_path, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -26,7 +27,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
-from xfsi_solver.tools.quadrature import cap_quadrature_degree
+from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -471,9 +472,8 @@ def solve(
     # residual_post_u = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
 
     residual_blocks = ufl.extract_blocks(residual)
-    if max_quadrature_degree is not None:
-        # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
-        residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
+    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
+    residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
     jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
 
@@ -715,13 +715,9 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
-        if max_quadrature_degree is None:
-            quadrature_description = "as estimated by UFL"
-        else:
-            quadrature_description = f"at most {max_quadrature_degree}"
         print(
             "\nSolver setup:\n"
-            f"  Quadrature degree: {quadrature_description}\n"
+            f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
@@ -778,38 +774,8 @@ def main():
         initial_state_dir=initial_state_dir,
     )
 
-    from xfsi_solver.scripts.plot_qois import plot_qoi
-
     if MPI.COMM_WORLD.rank == 0:
-        for qoi, qoi_label in zip(
-            ["drag", "lift", "A_x", "A_y"],
-            ["Drag", "Lift", "$x$-displacement of A [m]", "$y$-displacement of A [m]"],
-            strict=True,
-        ):
-            plot_qoi(
-                qoi,
-                qoi_file=qoi_path,
-                save_path="output/figures/qoi/fsi2_biharmonic_mixed_twice_simplified_fine/full_" + qoi + ".pdf",
-                label=None,
-                title=None,
-                xlabel="Time [s]",
-                ylabel=qoi_label,
-                time_interval=[0, max(T, 15.0)],
-                reference_file="data/fsi2_reference.txt",
-                reference_label="FeatFlow-reference",
-            )
-            plot_qoi(
-                qoi,
-                qoi_file=qoi_path,
-                save_path="output/figures/qoi/fsi2_biharmonic_mixed_twice_simplified_fine/closeup_" + qoi + ".pdf",
-                label=None,
-                title=None,
-                xlabel="Time [s]",
-                ylabel=qoi_label,
-                time_interval=[10.0, 15.0],
-                reference_file="data/fsi2_reference.txt",
-                reference_label="FeatFlow-reference",
-            )
+        plot_run_qois(qoi_path, T)
 
 
 if __name__ == "__main__":
