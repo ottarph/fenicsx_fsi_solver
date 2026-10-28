@@ -20,11 +20,13 @@ not in 0.11.
   `NotImplementedError` on 0.11.
 - `create_mesh` needs a UFL mesh, not `coordinate_element`, or the mesh has no UFL domain and
   `ufl.Measure` fails; the MWEs never build forms, so they did not notice.
-- `threeDfsi_c0ip.solve(partition_solid_edge_weight=...)`, and every run prints its partition at the
-  start and in the summary.
-- `jobs/threeDfsi_c0ip_partition_experiments.sh`: runs every combination of ranks, weights and SOR omega
-  (`fieldsplit_v_mg_levels_pc_sor_omega` through `k_c_options`) one after the other on the workstation,
-  from rest or from a checkpoint, and ends with a table of the partitions and the K_c iterations.
+- `threeDfsi_c0ip.solve` and `threeDfsi_simplified.solve` take `partition_solid_edge_weight`, and every
+  run prints its partition at the start and in the summary.
+- `jobs/threeDfsi_simplified_partition_experiments.sh`: runs every combination of ranks, weights and SOR
+  omega one after the other on the workstation, from rest or from a checkpoint, and ends with a table of
+  the partitions and the FGMRES iterations. It started out on `threeDfsi_c0ip` and was switched to
+  `threeDfsi_simplified`, Newton on (v, p) only, whose (v, p) solve has the K_c options of
+  `threeDfsi_c0ip`; omega is set as `fieldsplit_v_0_mg_levels_pc_sor_omega` in `solver_options`.
 - `tests/test_partitioning.py`: on 3 ranks, the tags matched to the input cells agree with
   `read_meshtags`, weight 1 gives the default partition, and a weighted partition keeps all cells and
   tags (tet and hex meshes).
@@ -63,12 +65,17 @@ gains little over 10 there.
 
 ### Smoke tests
 
-`threeDfsi_c0ip` on 6 ranks, coarse tet mesh, omega 0.4:
+On 6 ranks, coarse tet mesh, one step, FGMRES iterations per K_c (or (v, p)) solve:
 
-| start | weight | K_c iterations per solve |
-|---|---|---|
-| rest, 1 step | None | 32.0 (2 Newton iterations) |
-| rest, 1 step | 10 | 30.0 |
-| t = 10 (`threeDfsi_mixed_coarse` checkpoint), 1 step | 10 | 22.2 (5 Newton iterations) |
+| solver | start | weight | omega | iterations per solve |
+|---|---|---|---|---|
+| `threeDfsi_c0ip` | rest | None | 0.4 | 32.0 (2 Newton iterations) |
+| `threeDfsi_c0ip` | rest | 10 | 0.4 | 30.0 |
+| `threeDfsi_c0ip` | t = 10 | 10 | 0.4 | 22.2 (5 Newton iterations) |
+| `threeDfsi_simplified` | rest | None | 0.4 | 32.0 (2 Newton iterations) |
+| `threeDfsi_simplified` | rest | None | 1.0 | 33.5 |
+| `threeDfsi_simplified` | rest | 10 | 0.4 | 30.0 |
+| `threeDfsi_simplified` | t = 10 | 10 | 0.4 | 23.5 (4 Newton iterations) |
 
-About 10 s per run, most of it set-up.
+t = 10 is the checkpoint of `threeDfsi_mixed_coarse` (dt = 0.004), which both solvers read (u, v, p; z
+is ignored). About 10 s per run, most of it set-up.

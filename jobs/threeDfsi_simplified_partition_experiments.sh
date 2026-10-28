@@ -1,21 +1,22 @@
 #!/bin/bash
-# K_c iterations of xfsi_solver.solvers.threeDfsi_c0ip.solve() against the partition of the mesh and the
-# SOR omega of the GAMG smoother on the velocity block, on the workstation (not a Slurm job): do weighted
-# dual-graph edges at the solid (partition_solid_edge_weight, tools/partitioning.py), which keep the beam
-# on fewer ranks, flatten the K_c iterations against the rank count, and do they let SOR be damped less?
+# FGMRES iterations of the (v, p) solve of xfsi_solver.solvers.threeDfsi_simplified.solve() against the
+# partition of the mesh and the SOR omega of the GAMG smoother on the velocity block, on the workstation
+# (not a Slurm job): do weighted dual-graph edges at the solid (partition_solid_edge_weight,
+# tools/partitioning.py), which keep the beam on fewer ranks, flatten the FGMRES iterations against the
+# rank count, and do they let SOR be damped less?
 # (notes/partitioning/implementation-log.md)
 #
 # The edge weights need DOLFINx main, so this runs with the Python of the repository's .venv and the mpirun
 # of the fenicsx-dev env (CLAUDE.md). Run it detached, as a long MPI run:
 #
-#   EXP_NAME=rest setsid nohup jobs/threeDfsi_c0ip_partition_experiments.sh \
+#   EXP_NAME=rest setsid nohup jobs/threeDfsi_simplified_partition_experiments.sh \
 #       > output/logs/partition_kc_rest.txt 2>&1 < /dev/null &
 #
 # Every combination of RANKS, WEIGHTS and OMEGAS runs, one after the other, from rest (START=rest) or from
 # the latest checkpoint in the directory START, up to T with time step DT. A weight of None is the default
 # partition of XDMFFile.read_mesh, 1 the same partition through the weighted path (ParMETIS). Each
 # variant writes its log and QoIs to EXP_DIR/<name>/, and the log ends with a table of the partitions and
-# the K_c iterations.
+# the FGMRES iterations.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -71,7 +72,7 @@ for ranks in $RANKS; do
             mkdir -p "$dir"
             # Every rank runs the call from -c; a script on stdin would only reach rank 0
             PY=$(cat <<EOF
-from xfsi_solver.solvers.threeDfsi_c0ip import solve
+from xfsi_solver.solvers.threeDfsi_simplified import DEFAULT_ITERATIVE_SOLVER_OPTIONS, solve
 
 solve(
     mesh_path="$MESH",
@@ -81,7 +82,7 @@ solve(
     output_path_p="$dir/run_p.bp",
     qoi_path="$dir/qoi.txt",
     initial_state_dir=$initial_state,
-    k_c_options={"fieldsplit_v_mg_levels_pc_sor_omega": $omega},
+    solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS | {"fieldsplit_v_0_mg_levels_pc_sor_omega": $omega},
     partition_solid_edge_weight=$weight,
 )
 EOF
@@ -97,7 +98,7 @@ done
 # One row per variant from the lines that solve() prints
 {
     printf '\n%-22s %-7s %-9s %-11s %-8s %-8s %-10s %-10s %s\n' variant result "solid on" "cut s-s" "cut s-f" \
-        "cut all" "K_c/solve" "s/step>1" "K_c iterations per step"
+        "cut all" "its/solve" "s/step>1" "FGMRES its/Newton its per step"
     for name in "${names[@]}"; do
         log=$EXP_DIR/$name/log.txt
         result=ok
@@ -108,9 +109,9 @@ done
         cut_all=$(grep -oP 'boundaries: \K\d+' <<< "$partition")
         cut_ss=$(grep -oP '\d+(?= solid-solid)' <<< "$partition")
         cut_sf=$(grep -oP '\d+(?= solid-fluid)' <<< "$partition")
-        its=$(grep -oP 'K_c iterations per solve: \K\S+' "$log" || echo -)
+        its=$(grep -oP 'Linear iterations per solve: \K\S+' "$log" || echo -)
         step_time=$(grep -oP 'Time per step after the first: \K\S+' "$log" || echo -)
-        per_step=$(grep -oP 'K_c iterations \K\d+ in \d+' "$log" | sed 's/ in /\//' | tr '\n' ' ')
+        per_step=$(grep -oP 'linear iterations \K\d+ in \d+' "$log" | sed 's/ in /\//' | tr '\n' ' ')
         printf '%-22s %-7s %-9s %-11s %-8s %-8s %-10s %-10s %s\n' "$name" "$result" "${solid_on:--}" "${cut_ss:--}" \
             "${cut_sf:--}" "${cut_all:--}" "$its" "$step_time" "$per_step"
     done
