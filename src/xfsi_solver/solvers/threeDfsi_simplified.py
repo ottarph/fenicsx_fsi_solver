@@ -85,27 +85,27 @@ DEFAULT_ITERATIVE_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
     "pc_fieldsplit_schur_precondition": "selfp",
     #
     # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "fieldsplit_v_ksp_type": "preonly",
-    "fieldsplit_v_pc_type": "gamg",
-    "fieldsplit_v_pc_gamg_threshold": 0.01,
-    "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+    "fieldsplit_v_0_ksp_type": "preonly",
+    "fieldsplit_v_0_pc_type": "gamg",
+    "fieldsplit_v_0_pc_gamg_threshold": 0.01,
+    "fieldsplit_v_0_pc_gamg_reuse_interpolation": True,
     # GAMG smoothing with three steps of under-relaxed SOR per level. In parallel, PETSc's SOR is
     # Gauss-Seidel within each rank and Jacobi between ranks, which can diverge where the coupling
     # across a rank boundary is strong, such as in the thin, stiff beam: with omega = 1, GAMG
     # diverged for some partitions of the 3d mesh in threeDfsi_c0ip. There, on the fine mesh with
     # 64 ranks, three steps took a third fewer FGMRES iterations than PETSc's two, and omega = 0.4
     # fewer than 0.3, 0.5 and 0.6 (notes/fsi3d/implementation-log.md).
-    "fieldsplit_v_mg_levels_ksp_type": "richardson",
-    "fieldsplit_v_mg_levels_ksp_max_it": 3,
-    "fieldsplit_v_mg_levels_pc_type": "sor",
-    "fieldsplit_v_mg_levels_pc_sor_omega": 0.4,
-    # "fieldsplit_v_ksp_converged_reason": None,
+    "fieldsplit_v_0_mg_levels_ksp_type": "richardson",
+    "fieldsplit_v_0_mg_levels_ksp_max_it": 3,
+    "fieldsplit_v_0_mg_levels_pc_type": "sor",
+    "fieldsplit_v_0_mg_levels_pc_sor_omega": 0.4,
+    # "fieldsplit_v_0_ksp_converged_reason": None,
     #
     # One BoomerAMG V-cycle on \hat S.
-    "fieldsplit_p_ksp_type": "preonly",
-    "fieldsplit_p_pc_type": "hypre",
-    "fieldsplit_p_pc_hypre_type": "boomeramg",
-    # "fieldsplit_p_ksp_converged_reason": None,
+    "fieldsplit_p_1_ksp_type": "preonly",
+    "fieldsplit_p_1_pc_type": "hypre",
+    "fieldsplit_p_1_pc_hypre_type": "boomeramg",
+    # "fieldsplit_p_1_ksp_converged_reason": None,
 }
 
 
@@ -546,7 +546,7 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     # The fieldsplit preconditioner takes the (v, v) and (p, p) blocks of the Jacobian, which a nest
-    # matrix holds as separate matrices; LU needs the Jacobian as one matrix.
+    # matrix holds as separate matrices. MUMPS also works on nest matrices.
     use_fieldsplit = solver_options.get("pc_type") == "fieldsplit"
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocks,
@@ -560,43 +560,26 @@ def solve(
     )
 
     if use_fieldsplit:
-        # NonlinearProblem gives the PC the nest index sets only if it has a preconditioner form, and
-        # then names the splits v_0 and p_1, so set them here with the names of the fieldsplit_v_ and
-        # fieldsplit_p_ options.
         is_v, is_p = problem.A.getNestISs()[0]
-        # The owned v dofs are stored interleaved per node, (x, y, z), so A has block size 3, which GAMG
-        # uses for its aggregates. PCFIELDSPLIT attaches the near-nullspace to A when it extracts it.
         is_v.setBlockSize(V.dofmap.index_map_bs)
         is_v.compose("nearnullspace", rigid_body_modes(V))
-        problem.solver.getKSP().getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
-
-        # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
-        # dolfinx means to have deleted the options in petsc_options. Its deletion, under a pushed
-        # prefix, has no effect with petsc4py 3.25, so they stay; set those of the sub-KSPs again, so
-        # that this does not depend on it.
-        opts = PETSc.Options()
-        opts.prefixPush(problem.solver.getOptionsPrefix())
-        for key, value in solver_options.items():
-            if key.startswith("fieldsplit_"):
-                opts[key] = value
-        opts.prefixPop()
+        # in 0.11.0, fieldsplit IS is only attached if a preconditioner form is supplied.
+        problem.solver.getKSP().getPC().setFieldSplitIS(("v_0", is_v), ("p_1", is_p))
 
     # The linear solve for the end-of-run summary, built here so that options without the keys it
-    # reads fail before the time loop, not after it.
+    # reads fail before the time loop, not after it
     options = solver_options
-    if use_fieldsplit:
+    if options == DEFAULT_ITERATIVE_SOLVER_OPTIONS:
         gamg_description = (
             "GAMG built from A (rigid body modes as near-nullspace),\n"
-            f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
-            f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+            f"      {options['fieldsplit_v_0_mg_levels_ksp_type']} with "
+            f"{options['fieldsplit_v_0_mg_levels_pc_type']} smoothing"
         )
-        if "fieldsplit_v_mg_levels_ksp_max_it" in options:
-            gamg_description += f", {options['fieldsplit_v_mg_levels_ksp_max_it']} steps per level"
-        if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
-            gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
-        p_pc_description = options["fieldsplit_p_pc_type"]
+        if "fieldsplit_v_0_mg_levels_pc_sor_omega" in options:
+            gamg_description += f", omega = {options['fieldsplit_v_0_mg_levels_pc_sor_omega']}"
+        p_pc_description = options["fieldsplit_p_1_pc_type"]
         if p_pc_description == "hypre":
-            p_pc_description += f" {options.get('fieldsplit_p_pc_hypre_type', 'boomeramg')}"  # the default type
+            p_pc_description += f" {options.get('fieldsplit_p_1_pc_hypre_type', 'boomeramg')}"  # the default type
         linear_solve_description = (
             f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}) on the nest Jacobian, "
             f"preconditioned by the {options['pc_fieldsplit_schur_fact_type']} Schur\n"
@@ -604,8 +587,10 @@ def solve(
             f"    one V-cycle of {p_pc_description} on -B diag(A)^{{-1}} G "
             f"({options['pc_fieldsplit_schur_precondition']}), for S^{{-1}}\n"
         )
-    else:
+    elif options == DEFAULT_DIRECT_SOLVER_OPTIONS:
         linear_solve_description = f"{options['pc_factor_mat_solver_type'].upper()} {options['pc_type'].upper()}\n"
+    else:
+        linear_solve_description = f"{options}"
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
@@ -673,13 +658,25 @@ def solve(
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
-    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary.
-    # interpolate_nonmatching locates the points across the ranks, so it does not depend on which
-    # solid cells a rank holds, and gives 0 at the points outside the solid. The meshes do not move,
-    # so the search is done once. It writes only the dofs of the cells it is given, so these are all
-    # local fluid cells with an interface dof, including cells that touch the interface only at a
-    # vertex or an edge: locate_dofs_topological finds the interface dofs also on ranks that hold them
-    # only through such cells (remote=True), which no interface facet of the rank would reach.
+    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary. They
+    # pass through u_s_parent on the parent mesh, which is u_s on the solid cells and 0 on the rest. The
+    # cells and dofs of the meshes match, so interpolating u_s_parent into U_f on fluid cells is exact,
+    # and gives u_s at the interface dofs and 0 at the others. The owner of an interface dof need not
+    # hold a solid cell with it, as its cells with that dof may be fluid cells that touch the interface
+    # only at a vertex or an edge, so the ranks that do hold one add their values into the owner by a
+    # reverse scatter, and the owner divides the sum by the number of such ranks, solid_rank_count.
+    U_parent = u.function_space
+    num_u_parent = U_parent.dofmap.index_map.size_local * block_size_u
+    u_s_parent = dolfinx.fem.Function(U_parent)
+    u_s_parent.x.array.reshape(-1, block_size_u)[U_parent.dofmap.list[solid_parent_cells], :] = 1.0
+    u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
+    solid_rank_count = np.maximum(u_s_parent.x.array[:num_u_parent], 1.0)  # 1 where no rank adds a value
+
+    # Interpolation writes only the dofs of the cells it is given, and the other dofs of u_f_bc_func stay
+    # 0, so it is done on the local fluid cells with an interface dof, including cells that touch the
+    # interface only at a vertex or an edge: locate_dofs_topological finds the interface dofs also on
+    # ranks that hold them only through such cells (remote=True), which no interface facet of the rank
+    # would reach.
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
         facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
     )
@@ -691,9 +688,7 @@ def solve(
         remote=True,
     )
     movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
-    movable_data = dolfinx.fem.create_interpolation_data(U_f, U_s, movable_cells, padding=1e-8)
-    # Owned nodes off the FSI interface; ghosts get their owners' values from scatter_forward
-    fluid_reset_nodes = np.setdiff1d(np.arange(U_f.dofmap.index_map.size_local, dtype=np.int32), fluid_movable_dofs)
+    movable_parent_cells = fluid_cell_map.sub_topology_to_topology(movable_cells, inverse=False)
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
@@ -711,9 +706,12 @@ def solve(
         )
         u_s_bc.set(u_s.x.array)
 
-        u_f_bc_func.interpolate_nonmatching(u_s, movable_cells, movable_data)
-        # Clear the values extrapolated off the FSI interface. The reshape is a view of x.array.
-        u_f_bc_func.x.array.reshape(-1, U_f.dofmap.index_map_bs)[fluid_reset_nodes, :] = 0.0
+        u_s_parent.x.array[:] = 0.0
+        u_s_parent.interpolate(u_s, cells0=solid_cells, cells1=solid_parent_cells)
+        u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
+        u_s_parent.x.array[:num_u_parent] /= solid_rank_count
+        u_s_parent.x.scatter_forward()
+        u_f_bc_func.interpolate(u_s_parent, cells0=movable_parent_cells, cells1=movable_cells)
         u_f_bc_func.x.scatter_forward()
 
         mesh_motion.solve()
