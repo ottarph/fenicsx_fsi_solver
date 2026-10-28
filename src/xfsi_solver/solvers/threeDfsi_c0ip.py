@@ -21,6 +21,7 @@ from xfsi_solver.tools.blocked_bcs import owned_dirichlet_rows
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
+from xfsi_solver.tools.partitioning import partition_description, partition_quality, read_mesh
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
@@ -78,6 +79,7 @@ def solve(
     max_quadrature_degree=8,
     c0ip_a_val=2.0,
     mesh_motion_telescope_reduction_factor=None,
+    partition_solid_edge_weight=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020,
     Sect. 5.1.2), an elastic beam attached to a cylinder in a channel of square cross
@@ -148,6 +150,13 @@ def solve(
     unused by the replacement, such as the SOR omega with another smoother, are listed when
     PETSc finalizes. The time and the K_c iterations of every time step are printed.
 
+    With ``partition_solid_edge_weight``, the mesh is partitioned by ParMETIS with that weight on the
+    edges of the dual graph at the solid cells, and 1 on the others (tools/partitioning.py), so that the
+    partition avoids cutting through the beam, where the Jacobi coupling of the parallel SOR between
+    ranks is weakest. A weight of 1 gives the partition of the default. The weights need a DOLFINx newer
+    than 0.11. With None, the default, the mesh is partitioned as ``XDMFFile.read_mesh`` does. The
+    partition is printed in either case.
+
     The quadrature degree is capped at ``max_quadrature_degree``, by default 8: UFL estimates
     degrees up to 19 for the nonlinear ALE and St. Venant-Kirchhoff terms in the residual (25 in
     the Jacobian), with 1000 quadrature points per tetrahedron, against 45 points at degree 8.
@@ -190,11 +199,11 @@ def solve(
 
     # load mesh and meshtags
 
-    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
-        mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
-        mesh.topology.create_connectivity(mesh.topology.dim - 1, mesh.topology.dim)
-        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
+    mesh, cell_tags, facet_tags = read_mesh(
+        comm, mesh_path, solid_edge_weight=partition_solid_edge_weight, solid_tags=(PHYSICAL_MARKERS["solid"],)
+    )
+    partition = partition_description(partition_quality(mesh, cell_tags, (PHYSICAL_MARKERS["solid"],)), comm.size)
+    PETSc.Sys.Print(f"Partition (solid edge weight {partition_solid_edge_weight}): {partition}")
 
     assert (
         len(
@@ -1118,6 +1127,7 @@ def solve(
             "    components at once by MatMatSolve, CG with Jacobi on A_S\n"
             f"  C0IP penalty: a_val = {c0ip_a_val}\n"
             f"  K_m telescope reduction factor: {mesh_motion_telescope_reduction_factor}\n"
+            f"  Partition: solid edge weight {partition_solid_edge_weight}, {partition}\n"
             "  C0IP mesh motion: B_m assembled once, added to the residual and the Jacobian reassemblies\n"
             f"  K_c solve: {k_c_solve_description}"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
