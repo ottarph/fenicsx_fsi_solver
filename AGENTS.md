@@ -7,6 +7,55 @@ Then run commands using the selected environment, for example:
 conda run -n xfsi_solver pytest
 ```
 
+## DOLFINx main: the `fenicsx-dev` env and `.venv`
+
+The `xfsi_solver` env has the DOLFINx release from conda-forge (0.11). Use the DOLFINx main branch only when
+a task needs a feature that is not in the release yet, such as the edge weights of the graph partitioners in
+the `mwe_partition_*.py` scripts. For that, the repository's `.venv` (git-ignored) is a virtualenv on the
+conda env `fenicsx-dev`, which has FEniCSx built from source with
+https://github.com/ottarph/conda-dolfinx-dev-env. The commits that were built are listed in
+`$CONDA_PREFIX/share/fenicsx-build-info.txt` of `fenicsx-dev`.
+
+Run the tests and scripts with the Python of `.venv`, and MPI runs with the `mpirun` of `fenicsx-dev`.
+Activating `.venv` alone puts the system's `/usr/bin/mpirun` (another MPICH) on the path, not the env's:
+
+```bash
+.venv/bin/python -m pytest
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 conda run -n fenicsx-dev mpirun -n 4 .venv/bin/python -u <script>
+```
+
+To build `fenicsx-dev` from scratch, in a checkout of conda-dolfinx-dev-env (takes about 15 minutes; run it
+detached, and leave cores free with `--jobs`):
+
+```bash
+conda env remove -n fenicsx-dev -y
+conda env create -f environment.yml
+conda activate fenicsx-dev
+# Before the build, so that DOLFINx is built against the final libadios2:
+conda install -c conda-forge "h5py=*=mpi_mpich*" "adios2=*=mpi_mpich*" tqdm ruff
+./build-fenicsx.sh --clean --jobs 24 main
+# scifem compiles against the DOLFINx just built
+python -m pip install --no-deps --no-build-isolation scifem io4dolfinx fenicsx-compat
+python -m pip check
+```
+
+Then recreate `.venv` (a rebuilt env invalidates the old one), with xfsi_solver installed editable and
+without dependencies, which all come from `fenicsx-dev`:
+
+```bash
+rm -rf .venv
+~/miniforge3/envs/fenicsx-dev/bin/python -m venv --system-site-packages .venv
+.venv/bin/python -m pip install --no-deps -e .
+```
+
+- Never `conda install` FEniCSx packages, or packages that depend on them (`fenics-*`, `scifem`,
+  `io4dolfinx`, `fenicsx-compat`), into `fenicsx-dev`: conda would replace the source build with the
+  conda-forge release. Install these with pip and `--no-deps`.
+- Do not install packages into `.venv`; add them to `fenicsx-dev`.
+- Keep the code in `src/` working on both the release and main. When the API differs, prefer a form that
+  works on both, for example keyword arguments, as for `dolfinx.mesh.transfer_meshtags_to_submesh`, whose
+  `vertex_to_parent` and `cell_to_parent` are in a different order on main.
+
 # Tests
 
 - Run the tests marked `slow` only with the user's explicit permission. These are the 3D solver runs, which take
