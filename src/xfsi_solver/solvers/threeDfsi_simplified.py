@@ -85,27 +85,27 @@ DEFAULT_ITERATIVE_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
     "pc_fieldsplit_schur_precondition": "selfp",
     #
     # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "fieldsplit_v_ksp_type": "preonly",
-    "fieldsplit_v_pc_type": "gamg",
-    "fieldsplit_v_pc_gamg_threshold": 0.01,
-    "fieldsplit_v_pc_gamg_reuse_interpolation": True,
+    "fieldsplit_v_0_ksp_type": "preonly",
+    "fieldsplit_v_0_pc_type": "gamg",
+    "fieldsplit_v_0_pc_gamg_threshold": 0.01,
+    "fieldsplit_v_0_pc_gamg_reuse_interpolation": True,
     # GAMG smoothing with three steps of under-relaxed SOR per level. In parallel, PETSc's SOR is
     # Gauss-Seidel within each rank and Jacobi between ranks, which can diverge where the coupling
     # across a rank boundary is strong, such as in the thin, stiff beam: with omega = 1, GAMG
     # diverged for some partitions of the 3d mesh in threeDfsi_c0ip. There, on the fine mesh with
     # 64 ranks, three steps took a third fewer FGMRES iterations than PETSc's two, and omega = 0.4
     # fewer than 0.3, 0.5 and 0.6 (notes/fsi3d/implementation-log.md).
-    "fieldsplit_v_mg_levels_ksp_type": "richardson",
-    "fieldsplit_v_mg_levels_ksp_max_it": 3,
-    "fieldsplit_v_mg_levels_pc_type": "sor",
-    "fieldsplit_v_mg_levels_pc_sor_omega": 0.4,
-    # "fieldsplit_v_ksp_converged_reason": None,
+    "fieldsplit_v_0_mg_levels_ksp_type": "richardson",
+    "fieldsplit_v_0_mg_levels_ksp_max_it": 3,
+    "fieldsplit_v_0_mg_levels_pc_type": "sor",
+    "fieldsplit_v_0_mg_levels_pc_sor_omega": 0.4,
+    # "fieldsplit_v_0_ksp_converged_reason": None,
     #
     # One BoomerAMG V-cycle on \hat S.
-    "fieldsplit_p_ksp_type": "preonly",
-    "fieldsplit_p_pc_type": "hypre",
-    "fieldsplit_p_pc_hypre_type": "boomeramg",
-    # "fieldsplit_p_ksp_converged_reason": None,
+    "fieldsplit_p_1_ksp_type": "preonly",
+    "fieldsplit_p_1_pc_type": "hypre",
+    "fieldsplit_p_1_pc_hypre_type": "boomeramg",
+    # "fieldsplit_p_1_ksp_converged_reason": None,
 }
 
 
@@ -546,7 +546,7 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     # The fieldsplit preconditioner takes the (v, v) and (p, p) blocks of the Jacobian, which a nest
-    # matrix holds as separate matrices; LU needs the Jacobian as one matrix.
+    # matrix holds as separate matrices. MUMPS also works on nest matrices.
     use_fieldsplit = solver_options.get("pc_type") == "fieldsplit"
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocks,
@@ -560,43 +560,26 @@ def solve(
     )
 
     if use_fieldsplit:
-        # NonlinearProblem gives the PC the nest index sets only if it has a preconditioner form, and
-        # then names the splits v_0 and p_1, so set them here with the names of the fieldsplit_v_ and
-        # fieldsplit_p_ options.
         is_v, is_p = problem.A.getNestISs()[0]
-        # The owned v dofs are stored interleaved per node, (x, y, z), so A has block size 3, which GAMG
-        # uses for its aggregates. PCFIELDSPLIT attaches the near-nullspace to A when it extracts it.
         is_v.setBlockSize(V.dofmap.index_map_bs)
         is_v.compose("nearnullspace", rigid_body_modes(V))
-        problem.solver.getKSP().getPC().setFieldSplitIS(("v", is_v), ("p", is_p))
-
-        # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
-        # dolfinx means to have deleted the options in petsc_options. Its deletion, under a pushed
-        # prefix, has no effect with petsc4py 3.25, so they stay; set those of the sub-KSPs again, so
-        # that this does not depend on it.
-        opts = PETSc.Options()
-        opts.prefixPush(problem.solver.getOptionsPrefix())
-        for key, value in solver_options.items():
-            if key.startswith("fieldsplit_"):
-                opts[key] = value
-        opts.prefixPop()
+        # in 0.11.0, fieldsplit IS is only attached if a preconditioner form is supplied.
+        problem.solver.getKSP().getPC().setFieldSplitIS(("v_0", is_v), ("p_1", is_p))
 
     # The linear solve for the end-of-run summary, built here so that options without the keys it
-    # reads fail before the time loop, not after it.
+    # reads fail before the time loop, not after it
     options = solver_options
-    if use_fieldsplit:
+    if options == DEFAULT_ITERATIVE_SOLVER_OPTIONS:
         gamg_description = (
             "GAMG built from A (rigid body modes as near-nullspace),\n"
-            f"      {options['fieldsplit_v_mg_levels_ksp_type']} with "
-            f"{options['fieldsplit_v_mg_levels_pc_type']} smoothing"
+            f"      {options['fieldsplit_v_0_mg_levels_ksp_type']} with "
+            f"{options['fieldsplit_v_0_mg_levels_pc_type']} smoothing"
         )
-        if "fieldsplit_v_mg_levels_ksp_max_it" in options:
-            gamg_description += f", {options['fieldsplit_v_mg_levels_ksp_max_it']} steps per level"
-        if "fieldsplit_v_mg_levels_pc_sor_omega" in options:
-            gamg_description += f", omega = {options['fieldsplit_v_mg_levels_pc_sor_omega']}"
-        p_pc_description = options["fieldsplit_p_pc_type"]
+        if "fieldsplit_v_0_mg_levels_pc_sor_omega" in options:
+            gamg_description += f", omega = {options['fieldsplit_v_0_mg_levels_pc_sor_omega']}"
+        p_pc_description = options["fieldsplit_p_1_pc_type"]
         if p_pc_description == "hypre":
-            p_pc_description += f" {options.get('fieldsplit_p_pc_hypre_type', 'boomeramg')}"  # the default type
+            p_pc_description += f" {options.get('fieldsplit_p_1_pc_hypre_type', 'boomeramg')}"  # the default type
         linear_solve_description = (
             f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}) on the nest Jacobian, "
             f"preconditioned by the {options['pc_fieldsplit_schur_fact_type']} Schur\n"
@@ -604,8 +587,10 @@ def solve(
             f"    one V-cycle of {p_pc_description} on -B diag(A)^{{-1}} G "
             f"({options['pc_fieldsplit_schur_precondition']}), for S^{{-1}}\n"
         )
-    else:
+    elif options == DEFAULT_DIRECT_SOLVER_OPTIONS:
         linear_solve_description = f"{options['pc_factor_mat_solver_type'].upper()} {options['pc_type'].upper()}\n"
+    else:
+        linear_solve_description = f"{options}"
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
