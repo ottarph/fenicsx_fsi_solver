@@ -67,46 +67,85 @@ DEFAULT_DIRECT_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
     "pc_factor_mat_solver_type": "mumps",
     "mat_mumps_cntl_1": 1e-4,
 }
-# The K_c options of threeDfsi_c0ip.
-DEFAULT_ITERATIVE_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
-    "ksp_converged_reason": None,
-    "ksp_type": "fgmres",
-    "ksp_rtol": 1e-5,
-    "ksp_max_it": 200,
-    #
-    "pc_type": "fieldsplit",
-    "pc_fieldsplit_type": "schur",
-    "pc_fieldsplit_schur_fact_type": "upper",
-    # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
-    # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
-    # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
-    # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
-    # inertia term rho_f / dt dominates diag(A) at small time steps.
-    "pc_fieldsplit_schur_precondition": "selfp",
-    #
+DEFAULT_V_OPTIONS = {
     # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "fieldsplit_v_0_ksp_type": "preonly",
-    "fieldsplit_v_0_pc_type": "gamg",
-    "fieldsplit_v_0_pc_gamg_threshold": 0.01,
-    "fieldsplit_v_0_pc_gamg_reuse_interpolation": True,
+    "ksp_type": "preonly",
+    "pc_type": "gamg",
+    "pc_gamg_threshold": 0.01,
+    "pc_gamg_reuse_interpolation": True,
     # GAMG smoothing with three steps of under-relaxed SOR per level. In parallel, PETSc's SOR is
     # Gauss-Seidel within each rank and Jacobi between ranks, which can diverge where the coupling
     # across a rank boundary is strong, such as in the thin, stiff beam: with omega = 1, GAMG
     # diverged for some partitions of the 3d mesh in threeDfsi_c0ip. There, on the fine mesh with
     # 64 ranks, three steps took a third fewer FGMRES iterations than PETSc's two, and omega = 0.4
     # fewer than 0.3, 0.5 and 0.6 (notes/fsi3d/implementation-log.md).
-    "fieldsplit_v_0_mg_levels_ksp_type": "richardson",
-    "fieldsplit_v_0_mg_levels_ksp_max_it": 3,
-    "fieldsplit_v_0_mg_levels_pc_type": "sor",
-    "fieldsplit_v_0_mg_levels_pc_sor_omega": 0.4,
-    # "fieldsplit_v_0_ksp_converged_reason": None,
-    #
-    # One BoomerAMG V-cycle on \hat S.
-    "fieldsplit_p_1_ksp_type": "preonly",
-    "fieldsplit_p_1_pc_type": "hypre",
-    "fieldsplit_p_1_pc_hypre_type": "boomeramg",
-    # "fieldsplit_p_1_ksp_converged_reason": None,
+    "mg_levels_ksp_type": "richardson",
+    "mg_levels_ksp_max_it": 3,
+    "mg_levels_pc_type": "sor",
+    "mg_levels_pc_sor_omega": 0.4,
+    # "ksp_converged_reason": None,
 }
+DEFAULT_P_OPTIONS = {
+    # One BoomerAMG V-cycle on \hat S.
+    "ksp_type": "preonly",
+    "pc_type": "hypre",
+    "pc_hypre_type": "boomeramg",
+    # "ksp_converged_reason": None,
+}
+# The K_c options of threeDfsi_c0ip.
+DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
+    DEFAULT_SOLVER_OPTIONS
+    | {
+        "ksp_converged_reason": None,
+        "ksp_type": "fgmres",
+        "ksp_rtol": 1e-5,
+        "ksp_atol": 1e-8,
+        "ksp_max_it": 200,
+        #
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "schur",
+        "pc_fieldsplit_schur_fact_type": "upper",
+        # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
+        # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
+        # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
+        # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
+        # inertia term rho_f / dt dominates diag(A) at small time steps.
+        "pc_fieldsplit_schur_precondition": "selfp",
+    }
+    | {f"fieldsplit_v_0_{k}": v for k, v in DEFAULT_V_OPTIONS.items()}
+    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
+)
+DEFAULT_V_S_OPTIONS = {
+    "ksp_type": "preonly",
+    "pc_type": "lu",
+    "pc_factor_mat_solver_type": "mumps",
+}
+# One GAMG V-cycle on v_f, with the block size attached to is_v_f, smoothed as in DEFAULT_V_OPTIONS.
+DEFAULT_V_F_OPTIONS = DEFAULT_V_OPTIONS
+MUMPS_ON_SOLID = (
+    DEFAULT_SOLVER_OPTIONS
+    | {
+        "ksp_converged_reason": None,
+        "ksp_type": "fgmres",
+        "ksp_rtol": 1e-5,
+        "ksp_atol": 1e-8,
+        "ksp_max_it": 200,
+        #
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "schur",
+        "pc_fieldsplit_schur_fact_type": "upper",
+        # The selfp approximation of the Schur complement, as in DEFAULT_ITERATIVE_SOLVER_OPTIONS.
+        "pc_fieldsplit_schur_precondition": "selfp",
+        #
+        # v split again, multiplicatively, into its solid (with the interface) and fluid dofs.
+        "fieldsplit_v_0_ksp_type": "preonly",
+        "fieldsplit_v_0_pc_type": "fieldsplit",
+        "fieldsplit_v_0_pc_fieldsplit_type": "multiplicative",
+    }
+    | {f"fieldsplit_v_0_fieldsplit_s_{k}": v for k, v in DEFAULT_V_S_OPTIONS.items()}
+    | {f"fieldsplit_v_0_fieldsplit_f_{k}": v for k, v in DEFAULT_V_F_OPTIONS.items()}
+    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
+)
 
 
 def solve(
@@ -142,6 +181,7 @@ def solve(
     max_quadrature_degree=8,
     mesh_motion_options=None,
     mesh_motion_max_quadrature_degree=8,
+    requires_v_sub_IS=False,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -159,7 +199,10 @@ def solve(
     preconditioned by the block upper triangular Schur complement factor on a nest Jacobian, with one
     GAMG V-cycle (rigid body modes as near-nullspace, three under-relaxed SOR steps per level) for the
     velocity block and one BoomerAMG V-cycle on the selfp approximation of the Schur complement; or,
-    with ``DEFAULT_DIRECT_SOLVER_OPTIONS``, MUMPS LU. The displacements are not unknowns of the Newton
+    with ``DEFAULT_DIRECT_SOLVER_OPTIONS``, MUMPS LU; or, with ``MUMPS_ON_SOLID`` and
+    ``requires_v_sub_IS=True``, the Schur factor with the velocity block split again, multiplicatively,
+    into the dofs on solid cells (with the interface), solved by MUMPS LU, and the fluid dofs, with one
+    GAMG V-cycle (translations as near-nullspace). The displacements are not unknowns of the Newton
     system: after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets
     the solid displacement u_s on the solid mesh from the kinematic relation, node by node, and extends
     it into the fluid as u_f on the fluid mesh with the mesh motion ``mesh_motion_type``, one of the
@@ -559,12 +602,42 @@ def solve(
         petsc_options=solver_options,
     )
 
+    opts = PETSc.Options()
+    opts["options_left"] = None
+
     if use_fieldsplit:
         is_v, is_p = problem.A.getNestISs()[0]
-        is_v.setBlockSize(V.dofmap.index_map_bs)
-        is_v.compose("nearnullspace", rigid_body_modes(V))
-        # in 0.11.0, fieldsplit IS is only attached if a preconditioner form is supplied.
+
+        if not requires_v_sub_IS:
+            is_v.setBlockSize(V.dofmap.index_map_bs)
+            is_v.compose("nearnullspace", rigid_body_modes(V))
+
         problem.solver.getKSP().getPC().setFieldSplitIS(("v_0", is_v), ("p_1", is_p))
+
+        # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
+        # dolfinx means to have deleted the options in petsc_options. Its deletion, under a pushed
+        # prefix, has no effect with petsc4py 3.25, so they stay; set those of the sub-KSPs again, so
+        # that this does not depend on it.
+        opts.prefixPush(problem.solver.getOptionsPrefix())
+        for key, value in solver_options.items():
+            if key.startswith("fieldsplit_"):
+                opts[key] = value
+        opts.prefixPop()
+
+        # The solid (with the interface) and fluid dofs of v, in the numbering of the v block, which the
+        # outer fieldsplit takes from the nest as is: V's own global numbering, not the nest's.
+        bs = V.dofmap.index_map_bs
+        num_owned_nodes = V.dofmap.index_map.size_local
+        solid_nodes = dolfinx.fem.locate_dofs_topological(
+            V, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+        )
+        solid_nodes = solid_nodes[solid_nodes < num_owned_nodes]
+        in_solid = np.zeros(bs * num_owned_nodes, dtype=bool)
+        in_solid[(bs * solid_nodes[:, None] + np.arange(bs)).ravel()] = True
+        offset = bs * V.dofmap.index_map.local_range[0]
+        is_v_s = PETSc.IS().createGeneral((offset + np.flatnonzero(in_solid)).astype(PETSc.IntType), comm=comm)
+        is_v_f = PETSc.IS().createGeneral((offset + np.flatnonzero(~in_solid)).astype(PETSc.IntType), comm=comm)
+        is_v_f.setBlockSize(bs)  # GAMG aggregates per node, with the translations as near-nullspace
 
     # The linear solve for the end-of-run summary, built here so that options without the keys it
     # reads fail before the time loop, not after it
@@ -590,7 +663,7 @@ def solve(
     elif options == DEFAULT_DIRECT_SOLVER_OPTIONS:
         linear_solve_description = f"{options['pc_factor_mat_solver_type'].upper()} {options['pc_type'].upper()}\n"
     else:
-        linear_solve_description = f"{options}"
+        linear_solve_description = "custom PETSc options\n" + "".join(f"    {k}: {v}\n" for k, v in options.items())
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
@@ -604,6 +677,7 @@ def solve(
         "assembled": False,
         "previous_norm": None,
         "num_assemblies": 0,
+        "inner_split_set": False,
     }
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
@@ -618,6 +692,16 @@ def solve(
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
+
+        if use_fieldsplit and requires_v_sub_IS and not jacobian_state["inner_split_set"]:
+            # The sub-KSPs of the outer split exist only after its PCSetUp, which needs the assembled J.
+            # PCSetUp, not KSPSetUp, which here leaves FGMRES with nest work vectors that are not set up.
+            ksp = snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.getPC().setUp()
+            ksp_v, _ = ksp.getPC().getFieldSplitSubKSP()
+            ksp_v.getPC().setFieldSplitIS(("s", is_v_s), ("f", is_v_f))
+            jacobian_state["inner_split_set"] = True
 
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
 
@@ -830,6 +914,9 @@ def main():
     max_quadrature_degree = 8  # Default 8.
     mesh_motion_max_quadrature_degree = 8  # Default 8.
     solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
+    requires_v_sub_IS = False
+    # solver_options = MUMPS_ON_SOLID
+    # requires_v_sub_IS = True
     solve(
         mesh_path=mesh_path,
         T=T,
@@ -844,6 +931,7 @@ def main():
         max_quadrature_degree=max_quadrature_degree,
         mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,
         solver_options=solver_options,
+        requires_v_sub_IS=requires_v_sub_IS,
         restart=args.restart,
         initial_state_dir=args.initial_state_dir,
     )

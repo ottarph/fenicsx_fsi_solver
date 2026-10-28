@@ -954,3 +954,16 @@ which was only checked from rest.
   2 Newton iterations. Iterative: 31.0 and 27.5 FGMRES iterations per solve, 42.8 s and 24.9 s per
   step; direct (MUMPS LU): 39.6 s and 19.7 s. The first step includes the K_m Cholesky and the
   preconditioner setup.
+
+## threeDfsi_simplified: MUMPS on the solid velocity (2026-10-28)
+
+- Ports `MUMPS_ON_SOLID` and `requires_v_sub_IS` from `fsi2_simplified` (commit 1dea744): the v block
+  of the Schur fieldsplit is split again, multiplicatively, into the v dofs on solid cells (with the
+  interface), solved by MUMPS LU, and the fluid dofs, by one GAMG V-cycle with the translations as
+  near-nullspace (block size of `is_v_f`). The fluid GAMG keeps the 3d smoothing of
+  `DEFAULT_V_OPTIONS` (three SOR steps at omega = 0.4), not the two of the 2d solver. The inner ISes
+  are set in the Jacobian callback after the first assembly, as in 2d. `DEFAULT_ITERATIVE_SOLVER_OPTIONS`
+  now also has `ksp_atol = 1e-8`, as in 2d.
+- Two steps from rest on `mesh_sec_coarse` (dt = 0.004, 4 ranks): 7.2 FGMRES iterations per solve
+  against 18.5 with `DEFAULT_ITERATIVE_SOLVER_OPTIONS`, 6.6 s against 7.0 s for the second step; the
+  QoIs agree to the linear tolerance (drag to 5e-6 relative).
