@@ -36,9 +36,11 @@ WHOLE_SYSTEM_LU = {
 }
 
 # The solves agree to round-off amplified by the condition number: the mixed form differs most, by
-# 7e-11 of the largest displacement on this mesh. A wrong split of the components gives errors of the
-# order of the displacement itself.
-RTOL_TO_MAX = 1e-9
+# 7e-11 of the largest displacement on this mesh with DOLFINx 0.11 and PETSc 3.25, and by 1.1e-9 with
+# DOLFINx main and PETSc 3.26, where both solves are further from a solve with stronger pivoting and
+# iterative refinement. A wrong split of the components gives errors of the order of the displacement
+# itself.
+RTOL_TO_MAX = 1e-8
 
 
 def _setup(comm=MPI.COMM_WORLD):

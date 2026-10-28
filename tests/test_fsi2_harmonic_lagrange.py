@@ -11,10 +11,16 @@ from xfsi_solver.solvers.fsi2_harmonic_lagrange import solve
 
 # All fields live on the fluid or solid submesh but are checkpointed on the full mesh. The interface
 # Lagrange multipliers are not checkpointed (see the solver), and restarting them from zero changes u_f
-# by ~1e-6 (as much as tightening the Newton tolerance does) and the other fields by < 1e-9 relative
+# by ~1e-6 (as much as tightening the Newton tolerance does) and the other fields by < 1e-9 relative.
+# The interface gaps, measured on u_f, may then change in their last printed digit (1.4e-6 relative to
+# their largest value seen with DOLFINx main), so they get the tolerance of u_f
 VECTOR = ("Lagrange", 2, (2,))
 ELEMENTS = {"u_f": VECTOR, "v_f": VECTOR, "u_s": VECTOR, "v_s": VECTOR, "p": ("Lagrange", 1)}
-RESTART_TOLERANCES = dict(rtol=1e-8, field_rtol={"u_f": 1e-5})
+RESTART_TOLERANCES = dict(
+    rtol=1e-8,
+    field_rtol={"u_f": 1e-5},
+    qoi_column_rtol={"interface_u_gap": 1e-5, "interface_v_gap": 1e-5},
+)
 
 
 def test_fsi2_harmonic_lagrange_solve(output_dirs):
@@ -75,7 +81,10 @@ def test_fsi2_harmonic_lagrange_restart_on_different_number_of_ranks(output_dirs
     # Not bitwise identical across partitions; QoIs are printed to 6 digits, so the last one may flip.
     # A different partition perturbs the loosely resolved u_f more (up to ~3e-6 relative seen), and the
     # interface gap diagnostics are at the solver tolerance (~1e-8), so only their leading digits agree
-    # (up to ~5e-3 relative seen); the physical fields and QoIs keep their tolerances
+    # (up to ~5e-3 relative seen). With DOLFINx main, the u gap after the first step, 1.1e-10 on one rank,
+    # is 2.4e-10 on two, 3e-2 of its largest value: both zero up to the accuracy of the solve, so the gaps
+    # are compared to 1e-1 of their largest values (4e-10 for u). The physical fields and QoIs keep their
+    # tolerances
     check_restart_reproduces_continuous_run(
         solve,
         "data/meshes/fsi2/mesh_sec_coarse.xdmf",
@@ -85,7 +94,7 @@ def test_fsi2_harmonic_lagrange_restart_on_different_number_of_ranks(output_dirs
         rtol=RESTART_TOLERANCES["rtol"],
         field_rtol={"u_f": 1e-4},
         qoi_rtol=1e-5,
-        qoi_column_rtol={"interface_u_gap": 1e-2, "interface_v_gap": 1e-2},
+        qoi_column_rtol={"interface_u_gap": 1e-1, "interface_v_gap": 1e-1},
         first_ranks=first_ranks,
         restart_ranks=restart_ranks,
     )
@@ -100,8 +109,17 @@ def test_fsi2_harmonic_lagrange_restart_rejects_T_not_after_checkpoint(output_di
 
 
 def test_fsi2_harmonic_lagrange_starts_from_initial_state(output_dirs, tmp_path):
+    # Two runs from the same initial state, one restarted after a step, both with the multipliers from
+    # zero. u_f is still small here (largest value 8e-8), and resolved only to about the final Newton
+    # residual (5e-12): its runs differed by 1.9e-7 relative with DOLFINx 0.11, but by 2.8e-5 (2.3e-12) with
+    # DOLFINx main, at the same residuals, so u_f is compared to 1e-4, as across partitions
     check_start_from_initial_state(
-        solve, "data/meshes/fsi2/mesh_sec_coarse.xdmf", ELEMENTS, output_dirs, tmp_path, **RESTART_TOLERANCES
+        solve,
+        "data/meshes/fsi2/mesh_sec_coarse.xdmf",
+        ELEMENTS,
+        output_dirs,
+        tmp_path,
+        **RESTART_TOLERANCES | {"field_rtol": {"u_f": 1e-4}},
     )
 
 
