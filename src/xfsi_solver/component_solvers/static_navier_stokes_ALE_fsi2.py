@@ -57,7 +57,7 @@ def solve(mesh_path, t, bd_dset_path, output_path):
 
     # transfer meshtags to submeshes
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+        facet_tags, fluid_mesh, cell_to_parent=fluid_cell_map, vertex_to_parent=fluid_vertex_map
     )
 
     if comm.rank == 0:

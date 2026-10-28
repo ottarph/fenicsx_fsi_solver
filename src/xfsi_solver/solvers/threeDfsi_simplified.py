@@ -241,7 +241,7 @@ def solve(
 
     # Need facet tags on the solid mesh, for its Dirichlet condition
     solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+        facet_tags, solid_mesh, cell_to_parent=solid_cell_map, vertex_to_parent=solid_vertex_map
     )
 
     fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
@@ -678,7 +678,7 @@ def solve(
     # ranks that hold them only through such cells (remote=True), which no interface facet of the rank
     # would reach.
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+        facet_tags, fluid_mesh, cell_to_parent=fluid_cell_map, vertex_to_parent=fluid_vertex_map
     )
 
     fluid_movable_dofs = dolfinx.fem.locate_dofs_topological(

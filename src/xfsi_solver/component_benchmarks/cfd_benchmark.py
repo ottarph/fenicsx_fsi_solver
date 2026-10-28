@@ -91,7 +91,7 @@ def solve(
     # meshtags on fluid submesh
 
     facet_tags_fluid = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+        facet_tags, fluid_mesh, cell_to_parent=fluid_cell_map, vertex_to_parent=fluid_vertex_map
     )
 
     # Create measure with  meshtags

@@ -201,10 +201,10 @@ def solve(
     fluid_mesh.topology.create_connectivity(1, 2)
     solid_mesh.topology.create_connectivity(1, 2)
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+        facet_tags, fluid_mesh, cell_to_parent=fluid_cell_map, vertex_to_parent=fluid_vertex_map
     )
     solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+        facet_tags, solid_mesh, cell_to_parent=solid_cell_map, vertex_to_parent=solid_vertex_map
     )
 
     # create problem parameters

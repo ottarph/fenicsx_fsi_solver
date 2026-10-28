@@ -50,7 +50,7 @@ def solve(mesh_path, output_path):
 
     # transfer meshtags to submesh
     solid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-        facet_tags, solid_mesh, solid_vertex_map, solid_cell_map
+        facet_tags, solid_mesh, cell_to_parent=solid_cell_map, vertex_to_parent=solid_vertex_map
     )
 
     # Create measure with  meshtags
