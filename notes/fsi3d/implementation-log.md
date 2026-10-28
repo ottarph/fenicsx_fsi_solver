@@ -967,3 +967,9 @@ which was only checked from rest.
 - Two steps from rest on `mesh_sec_coarse` (dt = 0.004, 4 ranks): 7.2 FGMRES iterations per solve
   against 18.5 with `DEFAULT_ITERATIVE_SOLVER_OPTIONS`, 6.6 s against 7.0 s for the second step; the
   QoIs agree to the linear tolerance (drag to 5e-6 relative).
+- The BoomerAMG V-cycle on \hat S in `threeDfsi_simplified` (`DEFAULT_P_OPTIONS`, so in both
+  `DEFAULT_ITERATIVE_SOLVER_OPTIONS` and `MUMPS_ON_SOLID`) uses `pc_hypre_boomeramg_strong_threshold
+  = 0.5`, hypre's recommendation in 3d (its default 0.25 suits 2d). In the same two steps on
+  `mesh_sec_coarse` with 4 ranks: 7.8 FGMRES iterations per solve with `MUMPS_ON_SOLID` (7.2 before)
+  and 18.8 with the default iterative options (18.5 before), at the same step times; drag agrees to
+  5e-6 relative.

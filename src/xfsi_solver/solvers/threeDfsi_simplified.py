@@ -90,9 +90,11 @@ DEFAULT_P_OPTIONS = {
     "ksp_type": "preonly",
     "pc_type": "hypre",
     "pc_hypre_type": "boomeramg",
+    # hypre's recommendation for 3d problems; its default, 0.25, suits 2d.
+    "pc_hypre_boomeramg_strong_threshold": 0.5,
     # "ksp_converged_reason": None,
 }
-# The K_c options of threeDfsi_c0ip.
+# The K_c options of threeDfsi_c0ip, with a BoomerAMG strong threshold of 0.5.
 DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
     DEFAULT_SOLVER_OPTIONS
     | {
@@ -204,11 +206,12 @@ def solve(
     The solid stress is written in terms of v through the kinematic relation, and the Jacobian is that
     of the momentum and continuity equations with respect to (v, p), solved as ``solver_options`` sets:
     with ``DEFAULT_DIRECT_SOLVER_OPTIONS``, by MUMPS LU, or by FGMRES on a nest Jacobian, preconditioned
-    by the block upper triangular Schur complement factor, with one BoomerAMG V-cycle on the selfp
-    approximation of the Schur complement and, for the velocity block,
+    by the block upper triangular Schur complement factor, with one BoomerAMG V-cycle (strong threshold
+    0.5, as hypre recommends in 3d) on the selfp approximation of the Schur complement and, for the
+    velocity block,
 
-    - by default, with ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, the K_c options of threeDfsi_c0ip, one GAMG
-      V-cycle (rigid body modes as near-nullspace, three under-relaxed SOR steps per level);
+    - by default, with ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, as in the K_c options of threeDfsi_c0ip, one
+      GAMG V-cycle (rigid body modes as near-nullspace, three under-relaxed SOR steps per level);
     - with ``MUMPS_ON_SOLID`` and ``requires_v_sub_IS=True``, a multiplicative fieldsplit into the
       velocity dofs on solid cells (with the interface), solved by MUMPS LU, and the fluid dofs, by one
       GAMG V-cycle (translations as near-nullspace) with the same smoothing. The solid rows are
@@ -688,6 +691,10 @@ def solve(
         p_pc_description = options["fieldsplit_p_1_pc_type"]
         if p_pc_description == "hypre":
             p_pc_description += f" {options.get('fieldsplit_p_1_pc_hypre_type', 'boomeramg')}"  # the default type
+            if "fieldsplit_p_1_pc_hypre_boomeramg_strong_threshold" in options:
+                p_pc_description += (
+                    f" (strong threshold {options['fieldsplit_p_1_pc_hypre_boomeramg_strong_threshold']})"
+                )
         linear_solve_description = (
             f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}, atol {options['ksp_atol']:g}) on the nest "
             f"Jacobian, preconditioned by the\n    {options['pc_fieldsplit_schur_fact_type']} Schur factor, "
