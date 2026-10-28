@@ -20,6 +20,7 @@ from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
+from xfsi_solver.tools.partitioning import partition_description, partition_quality, read_mesh
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
     append_qoi_row,
@@ -142,6 +143,7 @@ def solve(
     max_quadrature_degree=8,
     mesh_motion_options=None,
     mesh_motion_max_quadrature_degree=8,
+    partition_solid_edge_weight=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -182,8 +184,16 @@ def solve(
     The quadrature degree of the residual, and so of its Jacobian, and of the drag and lift is capped
     at ``max_quadrature_degree``, by default 8, as in threeDfsi_c0ip: integrals for which UFL estimates
     a higher degree are integrated inexactly at that degree, and the others keep their estimate. The
-    cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The other arguments are
-    those of ``threeDfsi_c0ip.solve``.
+    cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``.
+
+    With ``partition_solid_edge_weight``, the mesh is partitioned by ParMETIS with that weight on the
+    edges of the dual graph at the solid cells, and 1 on the others (tools/partitioning.py), so that the
+    partition avoids cutting through the beam, where the Jacobi coupling of the parallel SOR between
+    ranks is weakest. A weight of 1 gives the partition of the default. The weights need a DOLFINx newer
+    than 0.11. With None, the default, the mesh is partitioned as ``XDMFFile.read_mesh`` does. The
+    partition is printed in either case.
+
+    The other arguments are those of ``threeDfsi_c0ip.solve``.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     if max_quadrature_degree is None:
@@ -208,11 +218,11 @@ def solve(
 
     # load mesh and meshtags
 
-    with dolfinx.io.XDMFFile(comm, mesh_path, "r") as infile:
-        mesh = infile.read_mesh()
-        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
-        mesh.topology.create_connectivity(mesh.topology.dim - 1, mesh.topology.dim)
-        facet_tags = infile.read_meshtags(mesh, name="Facet tags")
+    mesh, cell_tags, facet_tags = read_mesh(
+        comm, mesh_path, solid_edge_weight=partition_solid_edge_weight, solid_tags=(PHYSICAL_MARKERS["solid"],)
+    )
+    partition = partition_description(partition_quality(mesh, cell_tags, (PHYSICAL_MARKERS["solid"],)), comm.size)
+    PETSc.Sys.Print(f"Partition (solid edge weight {partition_solid_edge_weight}): {partition}")
 
     assert (
         len(
@@ -790,6 +800,7 @@ def solve(
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
             f"  Mesh motion quadrature degree: {quadrature_description(mesh_motion_max_quadrature_degree)}\n"
+            f"  Partition: solid edge weight {partition_solid_edge_weight}, {partition}\n"
             f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
             f"with {gamma_reassemble = }\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
