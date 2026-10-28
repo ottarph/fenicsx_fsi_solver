@@ -10,8 +10,10 @@
 # Values are inserted as Python expressions: True/False, None, numbers or arithmetic.
 #
 # SOLVER selects the (v, p) solve: "direct", DEFAULT_DIRECT_SOLVER_OPTIONS (MUMPS LU, the
-# solver's default), or "iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS (FGMRES with a Schur
-# complement fieldsplit).
+# solver's default), "iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS (FGMRES with a Schur
+# complement fieldsplit, GAMG on the velocity block), or "mumps_on_solid", MUMPS_ON_SOLID (the
+# same, with the velocity block split again into the solid dofs, by MUMPS LU, and the fluid dofs,
+# by GAMG; run with requires_v_sub_IS=True).
 #
 # MAX_QUADRATURE_DEGREE is 6 by default: down to that cap the QoIs did not change in the 7 printed
 # digits from the uncapped run, at 22% less time per step (notes/restricted-cleanup,
@@ -56,11 +58,16 @@ if [[ ! -f $MESH ]]; then
     exit 1
 fi
 
+REQUIRES_V_SUB_IS=False
 case $SOLVER in
     direct) SOLVER_OPTIONS=DEFAULT_DIRECT_SOLVER_OPTIONS ;;
     iterative) SOLVER_OPTIONS=DEFAULT_ITERATIVE_SOLVER_OPTIONS ;;
+    mumps_on_solid)
+        SOLVER_OPTIONS=MUMPS_ON_SOLID
+        REQUIRES_V_SUB_IS=True
+        ;;
     *)
-        echo "SOLVER must be direct or iterative, not $SOLVER" >&2
+        echo "SOLVER must be direct, iterative or mumps_on_solid, not $SOLVER" >&2
         exit 1
         ;;
 esac
@@ -107,6 +114,7 @@ solve(
     gamma_reassemble=$GAMMA_REASSEMBLE,
     max_quadrature_degree=$MAX_QUADRATURE_DEGREE,
     solver_options=$SOLVER_OPTIONS,
+    requires_v_sub_IS=$REQUIRES_V_SUB_IS,
 )
 EOF
 )
