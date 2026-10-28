@@ -17,6 +17,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
+from xfsi_solver.tools.blocked_bcs import owned_dirichlet_rows
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -707,6 +708,10 @@ def solve(
     bcs_post = [u_s_bc, *bcs]
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(residual_post), bcs_post)
     bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jacobian_post, 1), bcs_post)
+    # The second assembly of post_jacobian below sets the unit diagonal of the Dirichlet rows again. DOLFINx
+    # 0.11 inserts it, but DOLFINx main adds it to the 1 of the first assembly, which would make it 2 and
+    # halve the Newton steps of the Dirichlet dofs. Setting these rows after it gives 1 with either version.
+    rows_bc = owned_dirichlet_rows(bcs_rows, offsets_owned, first_row)
 
     # The residual and the Jacobian reassemblies get the u-u block as a zero form on the same
     # spaces instead of the mesh motion forms, and the callbacks add B_m. dolfinx also lifts the
@@ -728,6 +733,7 @@ def solve(
         J.zeroRows(rows_d, diag=0.0)
         dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
         J.assemble()
+        J.zeroRows(rows_bc, diag=1.0)
 
     # B_m x is the mesh motion residual, with the lifting by u_f_bc, which is homogeneous. Its rows
     # of the boundary conditions and the test function restriction are left out, as assembling

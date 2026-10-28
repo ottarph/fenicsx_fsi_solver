@@ -15,6 +15,7 @@ from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
 from xfsi_solver.scripts.plot_qois import plot_run_qois
+from xfsi_solver.tools.blocked_bcs import owned_dirichlet_rows
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -517,6 +518,10 @@ def solve(
     bcs_post = [u_s_bc, *bcs]
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(res_post), bcs_post)
     bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jac_post, 1), bcs_post)
+    # The second assembly of post_jacobian below sets the unit diagonal of the Dirichlet rows again. DOLFINx
+    # 0.11 inserts it, but DOLFINx main adds it to the 1 of the first assembly, which would make it 2 and
+    # halve the Newton steps of the Dirichlet dofs. Setting these rows after it gives 1 with either version.
+    rows_bc = owned_dirichlet_rows(bcs_rows, off_own, J_mat.getOwnershipRange()[0])
 
     def pre_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
         pass
@@ -526,6 +531,7 @@ def solve(
 
         dolfinx.fem.petsc.assemble_matrix(J, jac_post, bcs=[u_s_bc, *bcs])
         J.assemble()
+        J.zeroRows(rows_bc, diag=1.0)
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         pre_jacobian(x, J)
