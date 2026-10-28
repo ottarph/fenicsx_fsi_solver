@@ -658,13 +658,25 @@ def solve(
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
-    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary.
-    # interpolate_nonmatching locates the points across the ranks, so it does not depend on which
-    # solid cells a rank holds, and gives 0 at the points outside the solid. The meshes do not move,
-    # so the search is done once. It writes only the dofs of the cells it is given, so these are all
-    # local fluid cells with an interface dof, including cells that touch the interface only at a
-    # vertex or an edge: locate_dofs_topological finds the interface dofs also on ranks that hold them
-    # only through such cells (remote=True), which no interface facet of the rank would reach.
+    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary. They
+    # pass through u_s_parent on the parent mesh, which is u_s on the solid cells and 0 on the rest. The
+    # cells and dofs of the meshes match, so interpolating u_s_parent into U_f on fluid cells is exact,
+    # and gives u_s at the interface dofs and 0 at the others. The owner of an interface dof need not
+    # hold a solid cell with it, as its cells with that dof may be fluid cells that touch the interface
+    # only at a vertex or an edge, so the ranks that do hold one add their values into the owner by a
+    # reverse scatter, and the owner divides the sum by the number of such ranks, solid_rank_count.
+    U_parent = u.function_space
+    num_u_parent = U_parent.dofmap.index_map.size_local * block_size_u
+    u_s_parent = dolfinx.fem.Function(U_parent)
+    u_s_parent.x.array.reshape(-1, block_size_u)[U_parent.dofmap.list[solid_parent_cells], :] = 1.0
+    u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
+    solid_rank_count = np.maximum(u_s_parent.x.array[:num_u_parent], 1.0)  # 1 where no rank adds a value
+
+    # Interpolation writes only the dofs of the cells it is given, and the other dofs of u_f_bc_func stay
+    # 0, so it is done on the local fluid cells with an interface dof, including cells that touch the
+    # interface only at a vertex or an edge: locate_dofs_topological finds the interface dofs also on
+    # ranks that hold them only through such cells (remote=True), which no interface facet of the rank
+    # would reach.
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
         facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
     )
@@ -676,9 +688,7 @@ def solve(
         remote=True,
     )
     movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
-    movable_data = dolfinx.fem.create_interpolation_data(U_f, U_s, movable_cells, padding=1e-8)
-    # Owned nodes off the FSI interface; ghosts get their owners' values from scatter_forward
-    fluid_reset_nodes = np.setdiff1d(np.arange(U_f.dofmap.index_map.size_local, dtype=np.int32), fluid_movable_dofs)
+    movable_parent_cells = fluid_cell_map.sub_topology_to_topology(movable_cells, inverse=False)
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
@@ -696,9 +706,12 @@ def solve(
         )
         u_s_bc.set(u_s.x.array)
 
-        u_f_bc_func.interpolate_nonmatching(u_s, movable_cells, movable_data)
-        # Clear the values extrapolated off the FSI interface. The reshape is a view of x.array.
-        u_f_bc_func.x.array.reshape(-1, U_f.dofmap.index_map_bs)[fluid_reset_nodes, :] = 0.0
+        u_s_parent.x.array[:] = 0.0
+        u_s_parent.interpolate(u_s, cells0=solid_cells, cells1=solid_parent_cells)
+        u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
+        u_s_parent.x.array[:num_u_parent] /= solid_rank_count
+        u_s_parent.x.scatter_forward()
+        u_f_bc_func.interpolate(u_s_parent, cells0=movable_parent_cells, cells1=movable_cells)
         u_f_bc_func.x.scatter_forward()
 
         mesh_motion.solve()

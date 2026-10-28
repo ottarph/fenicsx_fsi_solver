@@ -468,3 +468,22 @@ Other decisions:
 - `fsi2_simplified.main()` names its outputs `fsi2_simplified` (`output/checkpoints/fsi2_simplified`
   and so on). The outputs of earlier runs keep the old name, `fsi2_biharmonic_mixed_twice_simplified`,
   and were not moved. The intermediate solver's `main()` keeps its outputs `fsi2_biharmonic_mixed_simple`.
+
+## Interface values through the parent mesh (2026-10-28)
+
+- `fsi2_simplified` and `threeDfsi_simplified` set the Dirichlet values of u_f from u_s through
+  `u_s_parent`, a function on the parent mesh that is u_s on the solid cells and 0 on the rest,
+  instead of `interpolate_nonmatching` from U_s. The cells and dofs match, so the transfer is exact,
+  needs no point search, and gives 0 at the fluid dofs off the interface by itself. The reset of those
+  dofs (`fluid_reset_nodes`), added because the padded bounding boxes of `interpolate_nonmatching`
+  let it extrapolate u_s into the fluid cells next to the interface, is gone.
+- Interpolating u_s into the parent space and calling `scatter_forward` is not enough in parallel: the
+  owner of an interface dof need not hold a solid cell with it. On `fsi3d/mesh_sec_coarse` with 2 and
+  30 ranks and `mesh_sec_medium` with 13 and 30, some interface dofs came out 0; `fsi2/mesh_sec` and
+  `fsi3d/mesh_hex_sec_coarse` were right at every rank count tried (1 to 30). The ranks with a solid
+  cell at the dof therefore add their values into the owner (`scatter_reverse` with
+  `InsertMode.add`), which divides by the number of such ranks, counted once at set-up. With that the
+  transfer matches the exact interface values to 5e-15 on all these meshes and rank counts.
+- The QoIs of 5 steps of `fsi2_simplified` on `mesh_sec` with 13 ranks (dt = 0.001), and of 3 steps
+  of `threeDfsi_simplified` on `fsi3d/mesh_sec_coarse` with 2 ranks (dt = 0.004), are the same as
+  before to all printed digits, with the same Newton iterations.
