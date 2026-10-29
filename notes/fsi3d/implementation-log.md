@@ -1046,3 +1046,24 @@ which was only checked from rest.
   With 1e-2 the first solve takes 2 FGMRES iterations instead of 5 or 6, and the following residuals
   are within a few percent of those with 1e-4; 3% less per step, about the scatter between runs.
   With 1e-1, 6 of the 8 steps took a Newton iteration more. Not added to the solver.
+- Cost of a Newton iteration of threeDfsi_simplified, from timers and PETSc log stages in a scratch
+  copy (medium mesh, 28 ranks, rtol 1e-4, steps 2 to 8 of the 8 from t = 10, 53 Newton iterations,
+  7 Jacobian assemblies; wall time per Newton iteration, 2026-10-29):
+
+  | | `MUMPS_ON_SOLID` | `DEFAULT_ITERATIVE_SOLVER_OPTIONS` |
+  |---|---|---|
+  | mesh motion (C0IP) | 1.49 s (65%) | 1.48 s (46%) |
+  | linear solve, with PC setup | 0.52 s (22%) | 1.45 s (45%) |
+  | residual assembly | 0.22 s (10%) | 0.22 s (7%) |
+  | Jacobian assembly | 0.05 s (2%) | 0.05 s (2%) |
+  | rest | 0.03 s | 0.02 s |
+  | total | 2.30 s | 3.23 s |
+
+  In the mesh motion, the MUMPS solve (MatMatSolve) takes 0.06 s per call on most ranks. The rest is
+  the assembly of its residual, the full C0IP form with its interior-facet integrals, in every call,
+  although the problem is linear and its matrix is assembled once: about 1.4 s on the slowest rank,
+  while the others wait for it, in the ghost exchange (VecScatterEnd, 0 to 40 s per rank over the 53
+  calls) or in the MUMPS solve (up to 21 s on some ranks against 3 s on most). In the linear solve
+  with `MUMPS_ON_SOLID`, the SOR smoothing of GAMG on the fluid velocity takes 0.29 s per Newton
+  iteration (MatSOR, median rank), the MUMPS triangular solves on the solid 0.05 s, and the PC setup
+  (MUMPS factorization and GAMG setup, at each Jacobian assembly) about 0.05 s.
