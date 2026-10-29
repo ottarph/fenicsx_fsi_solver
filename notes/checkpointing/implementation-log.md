@@ -375,3 +375,10 @@ with the same `dt`, and still rejects any other.
 - `test_submesh_dofs_owned_by_ranks_without_submesh_cells` writes p and v_s on `fsi3d/mesh_sec_coarse`
   twice and reads them back on 1, 2 and 3 ranks, with both ghost modes. It fails before the fix on 2
   and 3 ranks.
+- `SubmeshComposite.gather` (`tools/submesh.py`) copies the same way, without the reverse scatter.
+  That is safe where it is used, in the simplified solvers and their aneurism-fsi copies. The fluid and
+  solid parts cover every cell (checked on the fsi2 and fsi3d `mesh_sec*` meshes and the 100k and 200k
+  aneurysm meshes), so every owner holds a cell of some part with each of its dofs. u_f takes its
+  interface values from u_s, so it does not matter which part the owner of an interface dof copies
+  from: the two differ by round-off at most. Its docstring now says that the parts must cover the mesh
+  and agree on their shared dofs.
