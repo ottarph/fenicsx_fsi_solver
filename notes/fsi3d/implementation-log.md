@@ -1076,3 +1076,25 @@ which was only checked from rest.
   0.05 s, and the ranks no longer wait for each other (VecScatterEnd at most 0.16 s over the 53
   calls, from 40 s). A Newton iteration is now 59% linear solve, 25% residual assembly, 7% mesh
   motion and 6% Jacobian assembly.
+- Preconditioners for the fluid velocity block of `MUMPS_ON_SOLID` (the `fieldsplit_v_0_fieldsplit_f_`
+  options), medium mesh, 28 ranks, rtol 1e-4, mesh motion by the matrix-vector residual, 8 steps
+  from the `threeDfsi_mixed_medium` checkpoint at t = 10 (2026-10-29):
+
+  | fluid block | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | GAMG, 3 SOR steps, omega 0.4 (current) | 60 | 7.3 | 6.70 |
+  | GAMG, 2 SOR steps, omega 0.4 | 60 | 7.8 | 6.08 |
+  | GAMG, 3 SOR steps, omega 0.7 | 60 | 7.3 | 6.65 |
+  | GAMG, 3 SOR steps, omega 1.0 | 61 | 14.3 | 9.47 |
+  | GAMG, 3 steps of l1-Jacobi | 60 | 9.5 | 6.42 |
+  | SOR, omega 0.4, no multigrid | 60 | 14.3 | 5.75 |
+  | block Jacobi with ILU(0), no multigrid | 60 | 13.3 | 5.57 |
+
+  The QoIs agree with the current options to 7e-7 relative. Damped Jacobi on the element mass
+  matrix of P2 on a tetrahedron converges only for omega < 0.46 (eigenvalues of D^{-1} M in
+  [0.25, 4.35], best omega 0.44), and SOR is Jacobi between ranks, which fits omega 1.0 doubling
+  the FGMRES iterations with the solid split off. The fluid block is dominated by the mass at this
+  dt, so a preconditioner without a coarse grid takes twice the FGMRES iterations but saves the
+  GAMG V-cycle: 17% less per step with block Jacobi and ILU. It weakens as the viscous term grows
+  relative to the mass (finer meshes, larger dt), and block Jacobi with the number of ranks, so it is
+  not a default; untested above 28 ranks.
