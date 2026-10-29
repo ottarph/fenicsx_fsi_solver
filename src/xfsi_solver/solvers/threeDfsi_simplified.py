@@ -967,8 +967,8 @@ def main():
 
     mesh_path = "data/meshes/fsi3d/mesh_sec_medium.xdmf"
     run_name = "threeDfsi_simplified_medium"
-    T = 10.0
     dt_val = 0.004
+    T = 10.0 + 8 * dt_val
     output_path = f"output/pv/{run_name}.bp"
     output_path_p = f"output/pv/{run_name}_p.bp"
     qoi_path = f"output/qoi/{run_name}.txt"
@@ -976,12 +976,16 @@ def main():
     checkpoint_every = 250
     vtx_save_every = None
     gamma_reassemble = 0.2  # Default 0.2.
-    max_quadrature_degree = 8  # Default 8.
-    mesh_motion_max_quadrature_degree = 8  # Default 8.
-    solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
-    requires_v_sub_IS = False
-    # solver_options = MUMPS_ON_SOLID
-    # requires_v_sub_IS = True
+    max_quadrature_degree = 6  # Default 8.
+    mesh_motion_max_quadrature_degree = 6  # Default 8.
+    # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
+    # requires_v_sub_IS = False
+    solver_options = MUMPS_ON_SOLID
+    requires_v_sub_IS = True
+    restart = args.restart
+    initial_state_dir = args.initial_state_dir
+    if not initial_state_dir:
+        initial_state_dir = "output/checkpoints/threeDfsi_mixed_medium"
     solve(
         mesh_path=mesh_path,
         T=T,
@@ -997,8 +1001,8 @@ def main():
         mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
-        restart=args.restart,
-        initial_state_dir=args.initial_state_dir,
+        restart=restart,
+        initial_state_dir=initial_state_dir,
     )
 
     if MPI.COMM_WORLD.rank == 0:
