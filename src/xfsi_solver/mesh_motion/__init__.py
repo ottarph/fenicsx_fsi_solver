@@ -5,8 +5,9 @@
 """Mesh motion problems: the displacement of a mesh, such as the fluid mesh of an FSI problem, from
 its values on the boundary. Each function sets up a :class:`MeshMotion`, a NonlinearProblem solved by
 one Newton step with an explicitly lagged Jacobian, so that its matrix is assembled once and later
-solves only assemble the residual for the new boundary values. By default, the matrix is factorized by
-MUMPS LU on one displacement component, applied to all of them."""
+solves only compute the residual for the new boundary values, by a product with the matrix of the
+linear form. By default, the matrix is factorized by MUMPS LU on one displacement component, applied
+to all of them."""
 
 from xfsi_solver.mesh_motion.biharmonic_c0ip import biharmonic_c0ip_mesh_motion
 from xfsi_solver.mesh_motion.biharmonic_mixed import biharmonic_mixed_mesh_motion

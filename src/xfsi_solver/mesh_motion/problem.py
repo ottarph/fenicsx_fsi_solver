@@ -43,7 +43,9 @@ def default_mesh_motion_solver_options(num_components: int) -> dict:
 
 class MeshMotion:
     """A linear mesh motion problem, with residual ``F`` in the ``unknowns`` (the displacement last)
-    and a Jacobian that is the same for every solve.
+    and a Jacobian that is the same for every solve. F must be linear and homogeneous in the unknowns,
+    without a source term, since the residual is computed as the product of the unknowns with the
+    matrix of F.
 
     It is solved by one Newton step from the current values, which is exact since F is linear, with
     the Jacobian assembled, and by a direct solver factorized, only in the first :meth:`solve` and
@@ -97,6 +99,35 @@ class MeshMotion:
             opts[key] = value
         opts.prefixPop()
 
+        # F is linear and homogeneous in the unknowns, F(x) = A x, with A the matrix of the Jacobian
+        # form without the Dirichlet conditions, so the residual is a product with A, assembled once
+        # here, instead of an assembly of F in every solve. For the C0IP form, with its interior-facet
+        # integrals, that assembly took more than 20 times as long as the solve with the factorization on
+        # the 3d medium mesh (notes/fsi3d/implementation-log.md). A is kept alongside the Jacobian. The product
+        # integrates each block of A at its own quadrature degree; the assembly integrated the terms of
+        # a residual block of a mixed form together, at the highest degree of any of them, so the
+        # Jacobian is now the exact derivative of the residual, and one Newton step solves exactly.
+        problem = self._problem
+        self._bcs = bcs
+        if isinstance(problem.F, list):
+            self._bcs = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(problem.F), bcs)
+        self._A = dolfinx.fem.petsc.assemble_matrix(problem.J)
+        self._A.assemble()
+        self._x_g = problem.x.duplicate()
+        blocks = problem.b.getAttr("_blocks")
+        if blocks is not None:
+            self._x_g.setAttr("_blocks", blocks)  # where set_bc finds the blocks
+        problem.solver.setFunction(self._residual, problem.b)
+
+    def _residual(self, snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
+        """The residual at x, as dolfinx's assemble_residual gives it: A x with the Dirichlet values g
+        in place of x, which lifts them, and x - g in the Dirichlet rows. A Newton step from any x then
+        gives the solution."""
+        x.copy(self._x_g)
+        dolfinx.fem.petsc.set_bc(self._x_g, self._bcs)
+        self._A.mult(self._x_g, b)
+        dolfinx.fem.petsc.set_bc(b, self._bcs, x0=x, alpha=-1.0)
+
     @property
     def solver(self) -> PETSc.SNES:
         return self._problem.solver
@@ -125,5 +156,7 @@ class MeshMotion:
             )
 
     def destroy(self) -> None:
-        """Destroy the SNES, and with it the factorization, collectively: call on all ranks."""
+        """Destroy the SNES, and with it the factorization, and A, collectively: call on all ranks."""
         self._problem.solver.destroy()
+        self._A.destroy()
+        self._x_g.destroy()

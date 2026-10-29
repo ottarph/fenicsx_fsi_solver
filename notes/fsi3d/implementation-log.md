@@ -954,3 +954,173 @@ which was only checked from rest.
   2 Newton iterations. Iterative: 31.0 and 27.5 FGMRES iterations per solve, 42.8 s and 24.9 s per
   step; direct (MUMPS LU): 39.6 s and 19.7 s. The first step includes the K_m Cholesky and the
   preconditioner setup.
+
+## threeDfsi_simplified: MUMPS on the solid velocity (2026-10-28)
+
+- Ports `MUMPS_ON_SOLID` and `requires_v_sub_IS` from `fsi2_simplified` (commit 1dea744): the v block
+  of the Schur fieldsplit is split again, multiplicatively, into the v dofs on solid cells (with the
+  interface), solved by MUMPS LU, and the fluid dofs, by one GAMG V-cycle with the translations as
+  near-nullspace (block size of `is_v_f`). The fluid GAMG keeps the 3d smoothing of
+  `DEFAULT_V_OPTIONS` (three SOR steps at omega = 0.4), not the two of the 2d solver. The inner ISes
+  are set in the Jacobian callback after the first assembly, as in 2d. `DEFAULT_ITERATIVE_SOLVER_OPTIONS`
+  now also has `ksp_atol = 1e-8`, as in 2d.
+- Two steps from rest on `mesh_sec_coarse` (dt = 0.004, 4 ranks): 7.2 FGMRES iterations per solve
+  against 18.5 with `DEFAULT_ITERATIVE_SOLVER_OPTIONS`, 6.6 s against 7.0 s for the second step; the
+  QoIs agree to the linear tolerance (drag to 5e-6 relative).
+- The BoomerAMG V-cycle on \hat S in `threeDfsi_simplified` (`DEFAULT_P_OPTIONS`, so in both
+  `DEFAULT_ITERATIVE_SOLVER_OPTIONS` and `MUMPS_ON_SOLID`) uses `pc_hypre_boomeramg_strong_threshold
+  = 0.5`, hypre's recommendation in 3d (its default 0.25 suits 2d). In the same two steps on
+  `mesh_sec_coarse` with 4 ranks: 7.8 FGMRES iterations per solve with `MUMPS_ON_SOLID` (7.2 before)
+  and 18.8 with the default iterative options (18.5 before), at the same step times; drag agrees to
+  5e-6 relative.
+- Medium mesh, 28 ranks, 10 steps (dt = 0.004) from the `threeDfsi_mixed_medium` checkpoint at t = 10,
+  with the beam oscillating, quadrature caps of 6 on the residual and the mesh motion (2026-10-29):
+
+  | | `MUMPS_ON_SOLID` | `DEFAULT_ITERATIVE_SOLVER_OPTIONS` |
+  |---|---|---|
+  | s/step, after the first | 18.3 | 25.4 |
+  | first step (s) | 25.9 | 33.2 |
+  | FGMRES iterations per solve | 9.6 | 23.2 |
+  | s per Newton iteration, after the first step | 2.4 | 3.4 |
+
+  Both take 74 Newton iterations (7 or 8 per step) and 11 Jacobian assemblies, the same as
+  `threeDfsi_mixed` over these steps, and end with the same QoIs to 7 digits (lift to 4e-7
+  relative). `MUMPS_ON_SOLID` is 28% faster per step: 2.4 times fewer FGMRES iterations, each
+  about 1.8 times as expensive. It matches `threeDfsi_mixed` on 28 ranks over the same steps
+  (18.3 s/step with K_m by MatMatSolve, above), which had the quadrature cap of 8. On 24 ranks
+  (the user's runs) `MUMPS_ON_SOLID` took 19.5 s/step over 10 steps (9.5 FGMRES per solve) and the
+  default options 25.3 s over the second of 2 steps (24.2).
+- Eisenstat-Walker (`snes_ksp_ew`, version 2) on top of `MUMPS_ON_SOLID`, medium mesh, 28 ranks,
+  8 steps from the `threeDfsi_mixed_medium` checkpoint at t = 10, quadrature caps of 6 (2026-10-29):
+
+  | | fixed rtol 1e-5 | EW, rtol0 1e-4, rtolmax 1e-3 | EW, rtol0 1e-2, rtolmax 0.1 |
+  |---|---|---|---|
+  | Newton iterations | 60 | 62 | 19, 20, then `DIVERGED_MAX_IT` at t = 10.012 |
+  | FGMRES iterations per solve | 9.6 | 5.9 | 1.9 |
+  | s/step, after the first | 18.6 | 17.3 | 48.7 |
+  | s per Newton iteration, after the first step | 2.45 | 2.24 | 2.43 |
+
+  The preconditioner is strong enough that 1 or 2 FGMRES iterations reach rtol 1e-2, and the first
+  Newton iterations contract as with rtol 1e-5 (30 -> 4 -> 0.5). Below a residual of about 0.5, a
+  loose solve leaves Newton contracting by only about 0.5 per iteration, which EW reads as slow
+  convergence and answers with the loosest tolerance, rtolmax; the slow contraction also makes
+  wrapped_jacobian reassemble J at almost every iteration. PETSc's defaults (rtol0 0.3, rtolmax 0.9)
+  are looser still and were not run to the end. With rtol0 1e-4 and rtolmax 1e-3, EW saves 7% per
+  step at about the same Newton count, with the QoIs equal to 7e-7 relative. The gain is bounded:
+  an FGMRES iteration costs about 0.06 s, against about 1.9 s for the rest of a Newton iteration
+  (residual assembly, mesh motion, Jacobian), so even no FGMRES iterations at all would save only
+  about a quarter of a step. EW is not enabled in the solver options.
+- Fixed `ksp_rtol` on `MUMPS_ON_SOLID`, same set-up as the Eisenstat-Walker comparison above
+  (2026-10-29):
+
+  | `ksp_rtol` | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | 1e-5 | 60 | 9.6 | 18.6 |
+  | 1e-4 | 60 | 7.3 | 17.6 |
+  | 1e-3 | 66 | 5.2 | 18.2 |
+  | 1e-2 | 86 | 3.5 | 25.0 |
+
+  The QoIs agree with rtol 1e-5 to 3e-7 relative for 1e-4 and 2e-6 for 1e-2. rtol 1e-4 keeps the
+  Newton count and saves 5%, about as much as EW with rtolmax 1e-3 (17.3 s, within the scatter of
+  about 1 s/step that one Newton iteration more or less gives). EW cannot do better here: the
+  Jacobian is that of (v, p) only, without the mesh motion and the update of u_s, so the linear
+  residual does not predict the nonlinear one, and a loose solve costs Newton progress that EW reads
+  as slow convergence, to which it answers with a looser solve. A loose first solve of each time
+  step alone would cost no Newton progress (rtol 1e-2 there gave the same residual as 1e-5), but
+  EW cannot give it: PETSc caps rtol0 at rtolmax too, and EW with rtol0 1e-2 and rtolmax 1e-4 ran
+  identically to a fixed rtol of 1e-4. It would save about 4 FGMRES iterations, 0.25 s, per step.
+- `ksp_rtol` set to 1e-4 in `DEFAULT_ITERATIVE_SOLVER_OPTIONS` and `MUMPS_ON_SOLID`, after the same
+  8 steps with the default iterative options (2026-10-29): 60 Newton iterations with both 1e-5 and
+  1e-4, 25.5 and 20.8 FGMRES iterations per solve, 26.9 and 24.4 s/step after the first (9% less),
+  QoIs equal to the 7 digits written.
+- A loose first linear solve of each time step, by a hook in a scratch copy of
+  threeDfsi_simplified that sets the KSP rtol in wrapped_jacobian (first_solve_rtol at Newton
+  iteration 0, ksp_rtol after), on `MUMPS_ON_SOLID` with rtol 1e-4, same 8 steps (2026-10-29):
+
+  | first solve | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | rtol 1e-4 | 60 | 7.3 | 17.6 |
+  | rtol 1e-2 | 60 | 6.7 | 17.0 |
+  | rtol 1e-1 | 62 | 6.2 | 17.5 |
+
+  With 1e-2 the first solve takes 2 FGMRES iterations instead of 5 or 6, and the following residuals
+  are within a few percent of those with 1e-4; 3% less per step, about the scatter between runs.
+  With 1e-1, 6 of the 8 steps took a Newton iteration more. Not added to the solver.
+- Cost of a Newton iteration of threeDfsi_simplified, from timers and PETSc log stages in a scratch
+  copy (medium mesh, 28 ranks, rtol 1e-4, steps 2 to 8 of the 8 from t = 10, 53 Newton iterations,
+  7 Jacobian assemblies; wall time per Newton iteration, 2026-10-29):
+
+  | | `MUMPS_ON_SOLID` | `DEFAULT_ITERATIVE_SOLVER_OPTIONS` |
+  |---|---|---|
+  | mesh motion (C0IP) | 1.49 s (65%) | 1.48 s (46%) |
+  | linear solve, with PC setup | 0.52 s (22%) | 1.45 s (45%) |
+  | residual assembly | 0.22 s (10%) | 0.22 s (7%) |
+  | Jacobian assembly | 0.05 s (2%) | 0.05 s (2%) |
+  | rest | 0.03 s | 0.02 s |
+  | total | 2.30 s | 3.23 s |
+
+  In the mesh motion, the MUMPS solve (MatMatSolve) takes 0.06 s per call on most ranks. The rest is
+  the assembly of its residual, the full C0IP form with its interior-facet integrals, in every call,
+  although the problem is linear and its matrix is assembled once: about 1.4 s on the slowest rank,
+  while the others wait for it, in the ghost exchange (VecScatterEnd, 0 to 40 s per rank over the 53
+  calls) or in the MUMPS solve (up to 21 s on some ranks against 3 s on most). In the linear solve
+  with `MUMPS_ON_SOLID`, the SOR smoothing of GAMG on the fluid velocity takes 0.29 s per Newton
+  iteration (MatSOR, median rank), the MUMPS triangular solves on the solid 0.05 s, and the PC setup
+  (MUMPS factorization and GAMG setup, at each Jacobian assembly) about 0.05 s.
+- The mesh motion residual by a product with its matrix (`MeshMotion._residual`), instead of an
+  assembly of the form in every solve, on `MUMPS_ON_SOLID`, same 8 steps as the breakdown above
+  (2026-10-29): 0.065 s instead of 1.49 s per mesh motion solve, so 0.88 s instead of 2.30 s per
+  Newton iteration and 6.6 s instead of 17.4 s per step after the first (15.0 s instead of 24.5 s
+  for the first), 62 s instead of 146 s for the 8 steps. Newton and FGMRES iterations are the same,
+  and the QoIs equal to the 7 digits written. The product takes 0.01 s per call and the MUMPS solve
+  0.05 s, and the ranks no longer wait for each other (VecScatterEnd at most 0.16 s over the 53
+  calls, from 40 s). A Newton iteration is now 59% linear solve, 25% residual assembly, 7% mesh
+  motion and 6% Jacobian assembly.
+- Preconditioners for the fluid velocity block of `MUMPS_ON_SOLID` (the `fieldsplit_v_0_fieldsplit_f_`
+  options), medium mesh, 28 ranks, rtol 1e-4, mesh motion by the matrix-vector residual, 8 steps
+  from the `threeDfsi_mixed_medium` checkpoint at t = 10 (2026-10-29):
+
+  | fluid block | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | GAMG, 3 SOR steps, omega 0.4 (current) | 60 | 7.3 | 6.70 |
+  | GAMG, 2 SOR steps, omega 0.4 | 60 | 7.8 | 6.08 |
+  | GAMG, 3 SOR steps, omega 0.7 | 60 | 7.3 | 6.65 |
+  | GAMG, 3 SOR steps, omega 1.0 | 61 | 14.3 | 9.47 |
+  | GAMG, 3 steps of l1-Jacobi | 60 | 9.5 | 6.42 |
+  | SOR, omega 0.4, no multigrid | 60 | 14.3 | 5.75 |
+  | block Jacobi with ILU(0), no multigrid | 60 | 13.3 | 5.57 |
+
+  The QoIs agree with the current options to 7e-7 relative. Damped Jacobi on the element mass
+  matrix of P2 on a tetrahedron converges only for omega < 0.46 (eigenvalues of D^{-1} M in
+  [0.25, 4.35], best omega 0.44), and SOR is Jacobi between ranks, which fits omega 1.0 doubling
+  the FGMRES iterations with the solid split off. The fluid block is dominated by the mass at this
+  dt, so a preconditioner without a coarse grid takes twice the FGMRES iterations but saves the
+  GAMG V-cycle: 17% less per step with block Jacobi and ILU. It weakens as the viscous term grows
+  relative to the mass (finer meshes, larger dt), and block Jacobi with the number of ranks, so it is
+  not a default; untested above 28 ranks.
+- The same comparison on the fine mesh, 28 ranks, 8 steps from the `threeDfsi_c0ip_fine_t8`
+  checkpoint at t = 8 (dt = 0.004, 2026-10-29), against the medium mesh above:
+
+  | fluid block | Newton iterations | FGMRES per solve, medium -> fine | s/step, after the first | vs current |
+  |---|---|---|---|---|
+  | GAMG, 3 SOR steps, omega 0.4 (current) | 60 | 7.3 -> 7.1 | 17.17 | |
+  | GAMG, 2 SOR steps | 60 | 7.8 -> 7.8 | 15.69 | -9% (medium -9%) |
+  | SOR, omega 0.4, no multigrid | 59 | 14.3 -> 15.6 | 14.36 | -16% (medium -14%) |
+  | block Jacobi with ILU(0), no multigrid | 59 | 13.3 -> 14.3 | 13.37 | -22% (medium -17%) |
+
+  QoIs agree with the current options to 8e-7 relative. With 2.5 times the fluid cells, the
+  iterations without multigrid grow by 8 to 9%, and the GAMG V-cycle they save costs more, so their
+  gain grows. On the fine mesh, nu dt / h^2 (h the P2 node spacing) is 0.034 at the median cell
+  and 0.55 at most, and U dt / h, with U = 2, is 0.74 and 3.0, so the fluid block is still
+  dominated by the mass and by local couplings.
+- `MUMPS_ON_SOLID` now preconditions the fluid velocity block by block Jacobi with ILU(0)
+  (`DEFAULT_V_F_OPTIONS`), instead of one GAMG V-cycle, after the comparisons above (2026-10-29).
+  Suggestion for other regimes: switch the fluid block back to multigrid (`DEFAULT_V_OPTIONS`, with
+  2 SOR steps per level, which saved 9% on both meshes against 3) where the fluid block is no
+  longer dominated by the mass. Block Jacobi drops the couplings between ranks and ILU(0) has no
+  coarse grid, so neither removes smooth error that spreads over many cells; the mass, rho_f / dt M,
+  makes none, but the viscous term does once nu dt / h^2 approaches 1 over much of the mesh, and the
+  convection once U dt / h is well above 1. That happens at larger dt, on meshes finer than
+  `mesh_sec_fine` at the same dt, with stretched boundary-layer cells, or at higher viscosity. Signs
+  of it: the FGMRES iterations per solve growing well beyond the 14 seen here as the mesh is refined
+  or the rank count grows. Untested above 28 ranks; check at the production rank count.

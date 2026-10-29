@@ -65,37 +65,94 @@ DEFAULT_DIRECT_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
     "pc_factor_mat_solver_type": "mumps",
     "mat_mumps_cntl_1": 1e-4,
 }
-DEFAULT_ITERATIVE_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
-    "ksp_converged_reason": None,
-    "ksp_type": "fgmres",
-    "ksp_rtol": 1e-5,
-    "ksp_max_it": 200,
-    #
-    "pc_type": "fieldsplit",
-    "pc_fieldsplit_type": "schur",
-    "pc_fieldsplit_schur_fact_type": "upper",
-    # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
-    # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
-    # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
-    # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
-    # inertia term rho_f / dt dominates diag(A) at small time steps.
-    "pc_fieldsplit_schur_precondition": "selfp",
-    #
+DEFAULT_V_OPTIONS = {
     # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "fieldsplit_v_0_ksp_type": "preonly",
-    "fieldsplit_v_0_pc_type": "gamg",
-    "fieldsplit_v_0_pc_gamg_threshold": 0.01,
-    "fieldsplit_v_0_pc_gamg_reuse_interpolation": True,
-    "fieldsplit_v_0_mg_levels_ksp_type": "richardson",
-    "fieldsplit_v_0_mg_levels_pc_type": "sor",
-    # "fieldsplit_v_0_ksp_converged_reason": None,
-    #
-    # One BoomerAMG V-cycle on \hat S.
-    "fieldsplit_p_1_ksp_type": "preonly",
-    "fieldsplit_p_1_pc_type": "hypre",
-    "fieldsplit_p_1_pc_hypre_type": "boomeramg",
-    # "fieldsplit_p_1_ksp_converged_reason": None,
+    "ksp_type": "preonly",
+    "pc_type": "gamg",
+    "pc_gamg_threshold": 0.01,
+    "pc_gamg_reuse_interpolation": True,
+    "mg_levels_ksp_type": "richardson",
+    "mg_levels_pc_type": "sor",
+    # "ksp_converged_reason": None,
 }
+DEFAULT_P_OPTIONS = {
+    # One BoomerAMG V-cycle on \hat S.
+    "ksp_type": "preonly",
+    "pc_type": "hypre",
+    "pc_hypre_type": "boomeramg",
+    # "ksp_converged_reason": None,
+}
+DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
+    DEFAULT_SOLVER_OPTIONS
+    | {
+        "ksp_converged_reason": None,
+        "ksp_type": "fgmres",
+        "ksp_rtol": 1e-5,
+        "ksp_atol": 1e-8,
+        "ksp_max_it": 200,
+        #
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "schur",
+        "pc_fieldsplit_schur_fact_type": "upper",
+        # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
+        # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
+        # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
+        # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
+        # inertia term rho_f / dt dominates diag(A) at small time steps.
+        "pc_fieldsplit_schur_precondition": "selfp",
+    }
+    | {f"fieldsplit_v_0_{k}": v for k, v in DEFAULT_V_OPTIONS.items()}
+    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
+)
+# The velocity block of MUMPS_ON_SOLID, split into the dofs on solid cells (with the interface), s, and
+# the fluid dofs, f.
+DEFAULT_V_S_OPTIONS = {
+    # MUMPS LU on v_s.
+    "ksp_type": "preonly",
+    "pc_type": "lu",
+    "pc_factor_mat_solver_type": "mumps",
+}
+DEFAULT_V_F_OPTIONS = {
+    # One GAMG V-cycle on v_f, with the block size attached to is_v_f.
+    "ksp_type": "preonly",
+    "pc_type": "gamg",
+    "pc_gamg_threshold": 0.01,
+    "pc_gamg_reuse_interpolation": True,
+    "mg_levels_ksp_type": "richardson",
+    "mg_levels_ksp_max_it": 2,
+    "mg_levels_pc_type": "sor",
+    "mg_levels_pc_sor_omega": 0.4,
+    # "ksp_converged_reason": None,
+}
+# The Schur factor of DEFAULT_ITERATIVE_SOLVER_OPTIONS, with the velocity block split again,
+# multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by one GAMG V-cycle. The
+# solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is Jacobi
+# between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated by the
+# mass. Needs requires_v_sub_IS=True in solve, which sets the inner ISes.
+MUMPS_ON_SOLID = (
+    DEFAULT_SOLVER_OPTIONS
+    | {
+        "ksp_converged_reason": None,
+        "ksp_type": "fgmres",
+        "ksp_rtol": 1e-5,
+        "ksp_atol": 1e-8,
+        "ksp_max_it": 200,
+        #
+        "pc_type": "fieldsplit",
+        "pc_fieldsplit_type": "schur",
+        "pc_fieldsplit_schur_fact_type": "upper",
+        # The selfp approximation of the Schur complement, as in DEFAULT_ITERATIVE_SOLVER_OPTIONS.
+        "pc_fieldsplit_schur_precondition": "selfp",
+        #
+        # v split again, multiplicatively, into its solid (with the interface) and fluid dofs.
+        "fieldsplit_v_0_ksp_type": "preonly",
+        "fieldsplit_v_0_pc_type": "fieldsplit",
+        "fieldsplit_v_0_pc_fieldsplit_type": "multiplicative",
+    }
+    | {f"fieldsplit_v_0_fieldsplit_s_{k}": v for k, v in DEFAULT_V_S_OPTIONS.items()}
+    | {f"fieldsplit_v_0_fieldsplit_f_{k}": v for k, v in DEFAULT_V_F_OPTIONS.items()}
+    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
+)
 
 
 def solve(
@@ -130,24 +187,37 @@ def solve(
     gamma_reassemble=0.2,
     max_quadrature_degree=None,
     mesh_motion_options=None,
+    requires_v_sub_IS=False,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
     The solid stress is written in terms of v through the kinematic relation, as in
     fsi2_biharmonic_mixed, and the Jacobian is that of the momentum and continuity equations with
-    respect to (v, p), solved as ``solver_options`` sets: by MUMPS LU by default, or, with
-    ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, by FGMRES with a Schur complement fieldsplit on a nest
-    Jacobian. The displacements are not unknowns of the Newton system:
-    after each linear solve, a post-solve hook of the KSP updates v to the next iterate, sets the solid
-    displacement u_s on the solid mesh from the kinematic relation, node by node, and extends it into
-    the fluid as u_f on the fluid mesh with the mesh motion ``mesh_motion_type``, one of the functions
-    of ``xfsi_solver.mesh_motion``, by default ``biharmonic_mixed_mesh_motion``, before SNES evaluates
-    the residual there. By default, the mesh motion is solved as there: it does not couple the x and y
-    components, which have the same matrix, so only the x component is factorized, by MUMPS once for
-    the whole run, and both components are solved with that factorization at once, by one
-    MatMatSolve. ``mesh_motion_options``, the PETSc options of its KSP, replace that default. With the
-    mixed biharmonic mesh motion and exact solves, this gives the same iterates as
-    fsi2_biharmonic_mixed.
+    respect to (v, p), solved as ``solver_options`` sets: by default ``DEFAULT_DIRECT_SOLVER_OPTIONS``,
+    MUMPS LU, or by FGMRES on a nest Jacobian, preconditioned by the block upper triangular Schur
+    complement factor, with one BoomerAMG V-cycle on the selfp approximation of the Schur complement
+    and, for the velocity block,
+
+    - with ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, one GAMG V-cycle (rigid body modes as near-nullspace);
+    - with ``MUMPS_ON_SOLID`` and ``requires_v_sub_IS=True``, a multiplicative fieldsplit into the
+      velocity dofs on solid cells (with the interface), solved by MUMPS LU, and the fluid dofs, by one
+      GAMG V-cycle (translations as near-nullspace) with two under-relaxed SOR steps per level. The
+      solid rows are dominated by the solid stiffness, where GAMG's SOR smoothing, Jacobi between
+      ranks, depends on the partition; the exact solve does not.
+
+    ``requires_v_sub_IS=True`` builds the index sets of the inner split, and leaves the rigid body
+    modes off the velocity block; it is needed with, and only with, a fieldsplit of the velocity block.
+
+    The displacements are not unknowns of the Newton system: after each linear solve, a post-solve hook
+    of the KSP updates v to the next iterate, sets the solid displacement u_s on the solid mesh from the
+    kinematic relation, node by node, and extends it into the fluid as u_f on the fluid mesh with the
+    mesh motion ``mesh_motion_type``, one of the functions of ``xfsi_solver.mesh_motion``, by default
+    ``biharmonic_mixed_mesh_motion``, before SNES evaluates the residual there. By default, the mesh
+    motion is solved as there: it does not couple the x and y components, which have the same matrix, so
+    only the x component is factorized, by MUMPS once for the whole run, and both components are solved
+    with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
+    its KSP, replace that default. With the mixed biharmonic mesh motion and exact solves, this gives
+    the same iterates as fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states. They hold no
@@ -519,44 +589,92 @@ def solve(
         petsc_options=solver_options,
     )
 
+    opts = PETSc.Options()
+    opts["options_left"] = None
+
     if use_fieldsplit:
         is_v, is_p = problem.A.getNestISs()[0]
-        is_v.setBlockSize(V.dofmap.index_map_bs)
-        is_v.compose("nearnullspace", rigid_body_modes(V))
-        # in 0.11.0, fieldsplit IS is only attached if a preconditioner form is supplied.
+
+        if not requires_v_sub_IS:
+            is_v.setBlockSize(V.dofmap.index_map_bs)
+            is_v.compose("nearnullspace", rigid_body_modes(V))
+
         problem.solver.getKSP().getPC().setFieldSplitIS(("v_0", is_v), ("p_1", is_p))
+
+        # The fieldsplit calls setFromOptions on its sub-KSPs in PCSetUp, in the first solve, after
+        # dolfinx means to have deleted the options in petsc_options. Its deletion, under a pushed
+        # prefix, has no effect with petsc4py 3.25, so they stay; set those of the sub-KSPs again, so
+        # that this does not depend on it.
+        opts.prefixPush(problem.solver.getOptionsPrefix())
+        for key, value in solver_options.items():
+            if key.startswith("fieldsplit_"):
+                opts[key] = value
+        opts.prefixPop()
+
+        # The solid (with the interface) and fluid dofs of v, in the numbering of the v block, which the
+        # outer fieldsplit takes from the nest as is: V's own global numbering, not the nest's.
+        bs = V.dofmap.index_map_bs
+        num_owned_nodes = V.dofmap.index_map.size_local
+        solid_nodes = dolfinx.fem.locate_dofs_topological(
+            V, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+        )
+        solid_nodes = solid_nodes[solid_nodes < num_owned_nodes]
+        in_solid = np.zeros(bs * num_owned_nodes, dtype=bool)
+        in_solid[(bs * solid_nodes[:, None] + np.arange(bs)).ravel()] = True
+        offset = bs * V.dofmap.index_map.local_range[0]
+        is_v_s = PETSc.IS().createGeneral((offset + np.flatnonzero(in_solid)).astype(PETSc.IntType), comm=comm)
+        is_v_f = PETSc.IS().createGeneral((offset + np.flatnonzero(~in_solid)).astype(PETSc.IntType), comm=comm)
+        is_v_f.setBlockSize(bs)  # GAMG aggregates per node, with the translations as near-nullspace
 
     # The linear solve for the end-of-run summary, built here so that options without the keys it
     # reads fail before the time loop, not after it
     options = solver_options
-    if options == DEFAULT_ITERATIVE_SOLVER_OPTIONS:
-        gamg_description = (
-            "GAMG built from A (rigid body modes as near-nullspace),\n"
-            f"      {options['fieldsplit_v_0_mg_levels_ksp_type']} with "
-            f"{options['fieldsplit_v_0_mg_levels_pc_type']} smoothing"
-        )
-        if "fieldsplit_v_0_mg_levels_pc_sor_omega" in options:
-            gamg_description += f", omega = {options['fieldsplit_v_0_mg_levels_pc_sor_omega']}"
+    if options in (DEFAULT_ITERATIVE_SOLVER_OPTIONS, MUMPS_ON_SOLID):
+
+        def smoothing_description(prefix):
+            """The GAMG smoothing of the sub-KSP with the options prefix ``prefix``."""
+            description = (
+                f"{options[prefix + 'mg_levels_ksp_type']} with {options[prefix + 'mg_levels_pc_type']} smoothing"
+            )
+            details = []
+            if prefix + "mg_levels_ksp_max_it" in options:
+                details.append(f"{options[prefix + 'mg_levels_ksp_max_it']} steps")
+            if prefix + "mg_levels_pc_sor_omega" in options:
+                details.append(f"omega = {options[prefix + 'mg_levels_pc_sor_omega']}")
+            return description + (f" ({', '.join(details)})" if details else "")
+
+        if options == DEFAULT_ITERATIVE_SOLVER_OPTIONS:
+            v_pc_description = (
+                "one V-cycle of GAMG built from A (rigid body modes as near-nullspace),\n"
+                f"      {smoothing_description('fieldsplit_v_0_')}"
+            )
+        else:
+            s_prefix, f_prefix = "fieldsplit_v_0_fieldsplit_s_", "fieldsplit_v_0_fieldsplit_f_"
+            v_pc_description = (
+                f"a {options['fieldsplit_v_0_pc_fieldsplit_type']} fieldsplit of A into the velocity dofs on\n"
+                f"      solid cells (with the interface), by {options[s_prefix + 'pc_factor_mat_solver_type'].upper()} "
+                f"{options[s_prefix + 'pc_type'].upper()}, and the fluid dofs, by one V-cycle of GAMG\n"
+                f"      (translations as near-nullspace), {smoothing_description(f_prefix)}"
+            )
         p_pc_description = options["fieldsplit_p_1_pc_type"]
         if p_pc_description == "hypre":
             p_pc_description += f" {options.get('fieldsplit_p_1_pc_hypre_type', 'boomeramg')}"  # the default type
         linear_solve_description = (
-            f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}) on the nest Jacobian, "
-            f"preconditioned by the {options['pc_fieldsplit_schur_fact_type']} Schur\n"
-            f"    factor, one V-cycle of {gamg_description}, for A^{{-1}},\n"
+            f"{options['ksp_type'].upper()} (rtol {options['ksp_rtol']:g}, atol {options['ksp_atol']:g}) on the nest "
+            f"Jacobian, preconditioned by the\n    {options['pc_fieldsplit_schur_fact_type']} Schur factor, "
+            f"{v_pc_description}, for A^{{-1}},\n"
             f"    one V-cycle of {p_pc_description} on -B diag(A)^{{-1}} G "
             f"({options['pc_fieldsplit_schur_precondition']}), for S^{{-1}}\n"
         )
     elif options == DEFAULT_DIRECT_SOLVER_OPTIONS:
         linear_solve_description = f"{options['pc_factor_mat_solver_type'].upper()} {options['pc_type'].upper()}\n"
     else:
-        linear_solve_description = f"{options}"
+        linear_solve_description = "custom PETSc options\n" + "".join(f"    {k}: {v}\n" for k, v in options.items())
 
     # Add extra callbacks to change how residual and jacobian is assembled,
     # to account for test function restriction on the interface.
 
     solver = problem.solver
-    b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
 
     # State of the Jacobian reuse in wrapped_jacobian_approximate. previous_norm is the
@@ -565,6 +683,7 @@ def solve(
         "assembled": False,
         "previous_norm": None,
         "num_assemblies": 0,
+        "inner_split_set": False,
     }
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
@@ -579,6 +698,16 @@ def solve(
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
+
+        if use_fieldsplit and requires_v_sub_IS and not jacobian_state["inner_split_set"]:
+            # The sub-KSPs of the outer split exist only after its PCSetUp, which needs the assembled J.
+            # PCSetUp, not KSPSetUp, which here leaves FGMRES with nest work vectors that are not set up.
+            ksp = snes.getKSP()
+            ksp.setOperators(J, P)
+            ksp.getPC().setUp()
+            ksp_v, _ = ksp.getPC().getFieldSplitSubKSP()
+            ksp_v.getPC().setFieldSplitIS(("s", is_v_s), ("f", is_v_f))
+            jacobian_state["inner_split_set"] = True
 
     solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
 
@@ -759,6 +888,9 @@ def main():
     max_quadrature_degree = 5  # Default None, no cap. 6 gives the same QoIs, 20% faster.
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
+    requires_v_sub_IS = False
+    solver_options = MUMPS_ON_SOLID
+    requires_v_sub_IS = True
     initial_state_dir = args.initial_state_dir
     restart = args.restart
     restart = True
@@ -775,6 +907,7 @@ def main():
         gamma_reassemble=gamma_reassemble,  # Default 0.2.
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
         solver_options=solver_options,
+        requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,
         initial_state_dir=initial_state_dir,
     )
