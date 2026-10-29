@@ -973,3 +973,20 @@ which was only checked from rest.
   `mesh_sec_coarse` with 4 ranks: 7.8 FGMRES iterations per solve with `MUMPS_ON_SOLID` (7.2 before)
   and 18.8 with the default iterative options (18.5 before), at the same step times; drag agrees to
   5e-6 relative.
+- Medium mesh, 28 ranks, 10 steps (dt = 0.004) from the `threeDfsi_mixed_medium` checkpoint at t = 10,
+  with the beam oscillating, quadrature caps of 6 on the residual and the mesh motion (2026-10-29):
+
+  | | `MUMPS_ON_SOLID` | `DEFAULT_ITERATIVE_SOLVER_OPTIONS` |
+  |---|---|---|
+  | s/step, after the first | 18.3 | 25.4 |
+  | first step (s) | 25.9 | 33.2 |
+  | FGMRES iterations per solve | 9.6 | 23.2 |
+  | s per Newton iteration, after the first step | 2.4 | 3.4 |
+
+  Both take 74 Newton iterations (7 or 8 per step) and 11 Jacobian assemblies, the same as
+  `threeDfsi_mixed` over these steps, and end with the same QoIs to 7 digits (lift to 4e-7
+  relative). `MUMPS_ON_SOLID` is 28% faster per step: 2.4 times fewer FGMRES iterations, each
+  about 1.8 times as expensive. It matches `threeDfsi_mixed` on 28 ranks over the same steps
+  (18.3 s/step with K_m by MatMatSolve, above), which had the quadrature cap of 8. On 24 ranks
+  (the user's runs) `MUMPS_ON_SOLID` took 19.5 s/step over 10 steps (9.5 FGMRES per solve) and the
+  default options 25.3 s over the second of 2 steps (24.2).
