@@ -990,3 +990,23 @@ which was only checked from rest.
   (18.3 s/step with K_m by MatMatSolve, above), which had the quadrature cap of 8. On 24 ranks
   (the user's runs) `MUMPS_ON_SOLID` took 19.5 s/step over 10 steps (9.5 FGMRES per solve) and the
   default options 25.3 s over the second of 2 steps (24.2).
+- Eisenstat-Walker (`snes_ksp_ew`, version 2) on top of `MUMPS_ON_SOLID`, medium mesh, 28 ranks,
+  8 steps from the `threeDfsi_mixed_medium` checkpoint at t = 10, quadrature caps of 6 (2026-10-29):
+
+  | | fixed rtol 1e-5 | EW, rtol0 1e-4, rtolmax 1e-3 | EW, rtol0 1e-2, rtolmax 0.1 |
+  |---|---|---|---|
+  | Newton iterations | 60 | 62 | 19, 20, then `DIVERGED_MAX_IT` at t = 10.012 |
+  | FGMRES iterations per solve | 9.6 | 5.9 | 1.9 |
+  | s/step, after the first | 18.6 | 17.3 | 48.7 |
+  | s per Newton iteration, after the first step | 2.45 | 2.24 | 2.43 |
+
+  The preconditioner is strong enough that 1 or 2 FGMRES iterations reach rtol 1e-2, and the first
+  Newton iterations contract as with rtol 1e-5 (30 -> 4 -> 0.5). Below a residual of about 0.5, a
+  loose solve leaves Newton contracting by only about 0.5 per iteration, which EW reads as slow
+  convergence and answers with the loosest tolerance, rtolmax; the slow contraction also makes
+  wrapped_jacobian reassemble J at almost every iteration. PETSc's defaults (rtol0 0.3, rtolmax 0.9)
+  are looser still and were not run to the end. With rtol0 1e-4 and rtolmax 1e-3, EW saves 7% per
+  step at about the same Newton count, with the QoIs equal to 7e-7 relative. The gain is bounded:
+  an FGMRES iteration costs about 0.06 s, against about 1.9 s for the rest of a Newton iteration
+  (residual assembly, mesh motion, Jacobian), so even no FGMRES iterations at all would save only
+  about a quarter of a step. EW is not enabled in the solver options.
