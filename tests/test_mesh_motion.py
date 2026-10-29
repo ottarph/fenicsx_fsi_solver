@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import dolfinx
+import dolfinx.fem.petsc
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -133,21 +134,56 @@ def test_quadrature_cap_changes_the_solution_slightly(kind):
     mesh_motion.destroy()
 
 
+def _check_residual_matches_assembled(kind):
+    """The residual computed by the product with the matrix of F equals that of dolfinx's
+    assemble_residual, with the assembly of F, its lifting and the Dirichlet rows, at a random point.
+
+    The residual blocks of the mixed form integrate their terms together, at the highest degree UFL
+    estimates for any of them, and the Jacobian blocks each at its own, so on this curved mesh A x
+    differs from the assembled F(x) by 5e-6 of its largest entry. The cap of 2, below every estimate,
+    gives all integrals the same degree, as it does for the forms of the other mesh motions."""
+    u, g, bc = _setup()
+    g.interpolate(_bend)
+    max_quadrature_degree = 2 if kind == "biharmonic_mixed" else None
+    mesh_motion = MESH_MOTIONS[kind](u, [bc], max_quadrature_degree=max_quadrature_degree)
+    problem = mesh_motion._problem
+    x = problem.x.duplicate()
+    x.setRandom()
+    mesh_motion.solver.computeFunction(x, problem.b)
+    b = problem.b.getArray().copy()
+
+    b_assembled = problem.b.duplicate()
+    unknowns = mesh_motion.unknowns if len(mesh_motion.unknowns) > 1 else mesh_motion.unknowns[0]
+    blocks = problem.b.getAttr("_blocks")
+    dolfinx.fem.petsc.assemble_residual(None, x, b_assembled, unknowns, problem.F, problem.J, [bc], _blocks=blocks)
+    b_assembled = b_assembled.getArray()
+    assert np.abs(b_assembled).max() > 1.0
+    np.testing.assert_allclose(b, b_assembled, rtol=0, atol=1e-12 * np.abs(b_assembled).max())
+    mesh_motion.destroy()
+
+
+@pytest.mark.parametrize("kind", ["harmonic", "biharmonic_mixed", "biharmonic_c0ip"])
+def test_residual_matches_assembled_residual(kind):
+    _check_residual_matches_assembled(kind)
+
+
 _MPI_SCRIPT = """
 import sys
 sys.path.insert(0, {tests!r})
 import numpy as np
-from test_mesh_motion import RTOL_TO_MAX, WHOLE_SYSTEM_LU, _solve_bend
+from test_mesh_motion import RTOL_TO_MAX, WHOLE_SYSTEM_LU, _check_residual_matches_assembled, _solve_bend
 for kind in ["harmonic", "biharmonic_mixed", "biharmonic_c0ip"]:
     u = _solve_bend(kind, None)
     u_lu = _solve_bend(kind, WHOLE_SYSTEM_LU)
     np.testing.assert_allclose(u.x.array, u_lu.x.array, rtol=0, atol=RTOL_TO_MAX * np.abs(u_lu.x.array).max())
+    _check_residual_matches_assembled(kind)
 """
 
 
 def test_default_solve_matches_whole_system_lu_on_3_ranks():
     """IdenticalInterleavedBlocksPC splits the rows of each rank into the components, also for the
-    block matrix [z | u] of the mixed form."""
+    block matrix [z | u] of the mixed form, and the residual by the product with the matrix of F equals
+    the assembled one also across ranks."""
     run_mpi_python(_MPI_SCRIPT.format(tests=str(Path(__file__).parent)), 3, timeout=300)
 
 
