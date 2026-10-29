@@ -1098,3 +1098,18 @@ which was only checked from rest.
   GAMG V-cycle: 17% less per step with block Jacobi and ILU. It weakens as the viscous term grows
   relative to the mass (finer meshes, larger dt), and block Jacobi with the number of ranks, so it is
   not a default; untested above 28 ranks.
+- The same comparison on the fine mesh, 28 ranks, 8 steps from the `threeDfsi_c0ip_fine_t8`
+  checkpoint at t = 8 (dt = 0.004, 2026-10-29), against the medium mesh above:
+
+  | fluid block | Newton iterations | FGMRES per solve, medium -> fine | s/step, after the first | vs current |
+  |---|---|---|---|---|
+  | GAMG, 3 SOR steps, omega 0.4 (current) | 60 | 7.3 -> 7.1 | 17.17 | |
+  | GAMG, 2 SOR steps | 60 | 7.8 -> 7.8 | 15.69 | -9% (medium -9%) |
+  | SOR, omega 0.4, no multigrid | 59 | 14.3 -> 15.6 | 14.36 | -16% (medium -14%) |
+  | block Jacobi with ILU(0), no multigrid | 59 | 13.3 -> 14.3 | 13.37 | -22% (medium -17%) |
+
+  QoIs agree with the current options to 8e-7 relative. With 2.5 times the fluid cells, the
+  iterations without multigrid grow by 8 to 9%, and the GAMG V-cycle they save costs more, so their
+  gain grows. On the fine mesh, nu dt / h^2 (h the P2 node spacing) is 0.034 at the median cell
+  and 0.55 at most, and U dt / h, with U = 2, is 0.74 and 3.0, so the fluid block is still
+  dominated by the mass and by local couplings.
