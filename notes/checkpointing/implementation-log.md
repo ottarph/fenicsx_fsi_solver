@@ -342,3 +342,36 @@ with the same `dt`, and still rejects any other.
   solid area change is round-off, about 1e-17, there).
 - `jobs/threeDfsi_c0ip.sh`: `INITIAL_STATE_RUN` names the run whose
   checkpoints a new run starts from.
+
+## Submesh fields whose dofs are owned by ranks without a submesh cell (2026-10-29)
+
+- `Checkpointer.write` copied a submesh field `f` to its parent-mesh function `g` with
+  `g.interpolate(f, cells0=sub_cells, cells1=parent_cells)` and wrote `g`'s owned values. The owner of
+  a parent dof on the boundary of the submesh need not hold a submesh cell with it, as its cells with
+  that dof may touch the submesh only at a vertex or an edge. Its owned value was then never set:
+  0 on the first write and stale afterwards, since `g` is cached per name; the values of the ranks that
+  do hold such a cell sat in their ghosts and were dropped. The same problem as for `u_s_parent` in the
+  simplified solvers (`notes/restricted-cleanup`, 2026-10-28).
+- Found from restarts of the aneurysm solver in aneurism-fsi from 32-rank checkpoints: the QoI row
+  recomputed at the checkpoint time had `p_mean` 0.15% off and the forces a few % off, while u and v
+  matched. On its 100k mesh (`shared_facet`), a P1 pressure round-tripped through write/read had 1 of
+  11011 nodes wrong at 8 and 32 ranks, and none at 1, 2, 13 and 20. Trajectories are unaffected
+  there (p has no old value and only seeds Newton), but any field with an old value on a submesh is.
+- Here, writing p (P1, fluid), v (P2 vector, fluid) and v_s (P2 vector, solid) twice and reading them
+  back, with the code before the fix: `fsi3d/mesh_sec_coarse` lost 3 and 6 values of v_s on 2 and
+  3 ranks (`shared_facet`), and values of p, v and v_s on 2 to 4 ranks without ghost cells;
+  `mesh_hex_sec_coarse` without ghost cells on 4 ranks; `fsi2/mesh_quad_coarse` without ghost cells
+  on 2 ranks. `fsi2/mesh_sec_coarse` was right at 2 to 4 ranks.
+- Now `write` zeros `g`, interpolates, adds the values into the owners with `scatter_reverse`
+  (`InsertMode.add`), divides the owned values by the number of ranks holding a submesh cell with
+  each dof (counted once per function, `_submesh_rank_count`), and calls `scatter_forward`, as for
+  `u_s_parent`.
+- The read path needs no change: every dof of the submesh function, owned or ghost, is in a local
+  submesh cell, and `read_function` ends with `scatter_forward`, so `g`'s ghost values are there too.
+- After the fix, the round trip matches to 1e-14 (the same as on 1 rank, the rounding of the
+  interpolation) on the aneurysm mesh at 1, 2, 4, 8, 13, 20 and 32 ranks, and on
+  `fsi3d/mesh_sec_coarse`, `mesh_hex_sec_coarse`, `mesh_hex_sec_coarse_tetnodes` and
+  `mesh_sec_medium` with both ghost modes at 1, 2, 3, 4, 8, 13, 20 and 32 ranks.
+- `test_submesh_dofs_owned_by_ranks_without_submesh_cells` writes p and v_s on `fsi3d/mesh_sec_coarse`
+  twice and reads them back on 1, 2 and 3 ranks, with both ghost modes. It fails before the fix on 2
+  and 3 ranks.

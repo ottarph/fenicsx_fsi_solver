@@ -14,6 +14,7 @@ DT = 0.1
 # Meshes created by dolfinx and read from XDMF (as in the solvers) can be ordered and partitioned
 # differently, so every test runs on both, and on triangles and quadrilaterals
 FSI_MESHES = {"fsi_tri": "data/meshes/fsi2/mesh_sec_coarse.xdmf", "fsi_quad": "data/meshes/fsi2/mesh_quad_coarse.xdmf"}
+FSI3D_MESH = "data/meshes/fsi3d/mesh_sec_coarse.xdmf"
 FLUID, SOLID = 2, 1  # cell tags in the FSI meshes
 
 
@@ -363,3 +364,58 @@ def test_restart_on_different_number_of_ranks(mesh_kind, tmp_path):
     t, step, functions = _read(mesh_kind, tmp_path)
     assert step == last_step == 5
     _assert_state(functions, t)
+
+
+_MPI_SUBMESH_OWNERS_SCRIPT = """
+import sys
+sys.path.insert(0, {tests!r})
+from test_checkpoint import check_submesh_round_trip
+check_submesh_round_trip({directory!r})
+"""
+
+
+def check_submesh_round_trip(directory):
+    """Write p (P1, fluid) and v_s (P2 vector, solid) on the 3d FSI mesh twice and read them back exactly.
+
+    Runs with both the solvers' ghost mode and without ghost cells, where more owners of interface dofs hold
+    no cell of the submesh. The second write has other values, so a stale value of the first fails too.
+    """
+    for ghost_mode in [dolfinx.mesh.GhostMode.shared_facet, dolfinx.mesh.GhostMode.none]:
+        with dolfinx.io.XDMFFile(MPI.COMM_WORLD, FSI3D_MESH, "r") as infile:
+            mesh = infile.read_mesh(ghost_mode=ghost_mode)
+            cell_tags = infile.read_meshtags(mesh, name="Cell tags")
+        fluid_mesh, fluid_map, _, _ = dolfinx.mesh.create_submesh(mesh, 3, cell_tags.find(FLUID))
+        solid_mesh, solid_map, _, _ = dolfinx.mesh.create_submesh(mesh, 3, cell_tags.find(SOLID))
+        submeshes = [(fluid_mesh, fluid_map), (solid_mesh, solid_map)]
+
+        spaces = {
+            "p": dolfinx.fem.functionspace(fluid_mesh, ("Lagrange", 1)),
+            "v_s": dolfinx.fem.functionspace(solid_mesh, ("Lagrange", 2, (3,))),
+        }
+        written = [dolfinx.fem.Function(V, name=name) for name, V in spaces.items()]
+        checkpointer = Checkpointer(directory, mesh, submeshes)
+        checkpointer.clear()
+        for step, c in enumerate([1.0, 5.0]):
+            written[0].interpolate(lambda x, c=c: c + x[0] + 2 * x[1] + 3 * x[2])
+            written[1].interpolate(lambda x, c=c: np.vstack([c + x[0] * x[1], x[1] * x[2], c * x[2] ** 2]))
+            checkpointer.write(written, step * DT, step, DT)
+
+        read = [dolfinx.fem.Function(V, name=name) for name, V in spaces.items()]
+        Checkpointer(directory, mesh, submeshes).read(read, DT)
+        for f, f_written in zip(read, written, strict=True):
+            np.testing.assert_allclose(f.x.array, f_written.x.array, atol=1e-13, err_msg=f"{f.name}, {ghost_mode}")
+
+
+@pytest.mark.parametrize("ranks", [1, 2, 3])
+def test_submesh_dofs_owned_by_ranks_without_submesh_cells(ranks, tmp_path):
+    """Functions on submeshes round-trip exactly also where the owner of a dof on the boundary of the
+    submesh holds no submesh cell with that dof, so only other ranks can give its value.
+
+    Before this was handled, the 3d FSI mesh lost a few values of v_s on 2 and 3 ranks with the
+    shared_facet ghost mode, and of p and v_s on 2 ranks without ghost cells.
+    """
+    if ranks == 1:
+        check_submesh_round_trip(tmp_path)
+        return
+    script = _MPI_SUBMESH_OWNERS_SCRIPT.format(tests=str(Path(__file__).parent), directory=str(tmp_path))
+    run_mpi_python(script, ranks, timeout=300)
