@@ -1067,3 +1067,12 @@ which was only checked from rest.
   with `MUMPS_ON_SOLID`, the SOR smoothing of GAMG on the fluid velocity takes 0.29 s per Newton
   iteration (MatSOR, median rank), the MUMPS triangular solves on the solid 0.05 s, and the PC setup
   (MUMPS factorization and GAMG setup, at each Jacobian assembly) about 0.05 s.
+- The mesh motion residual by a product with its matrix (`MeshMotion._residual`), instead of an
+  assembly of the form in every solve, on `MUMPS_ON_SOLID`, same 8 steps as the breakdown above
+  (2026-10-29): 0.065 s instead of 1.49 s per mesh motion solve, so 0.88 s instead of 2.30 s per
+  Newton iteration and 6.6 s instead of 17.4 s per step after the first (15.0 s instead of 24.5 s
+  for the first), 62 s instead of 146 s for the 8 steps. Newton and FGMRES iterations are the same,
+  and the QoIs equal to the 7 digits written. The product takes 0.01 s per call and the MUMPS solve
+  0.05 s, and the ranks no longer wait for each other (VecScatterEnd at most 0.16 s over the 53
+  calls, from 40 s). A Newton iteration is now 59% linear solve, 25% residual assembly, 7% mesh
+  motion and 6% Jacobian assembly.
