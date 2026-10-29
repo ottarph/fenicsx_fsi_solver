@@ -127,13 +127,22 @@ DEFAULT_V_S_OPTIONS = {
     "pc_type": "lu",
     "pc_factor_mat_solver_type": "mumps",
 }
-# One GAMG V-cycle on v_f, with the block size attached to is_v_f, smoothed as in DEFAULT_V_OPTIONS.
-DEFAULT_V_F_OPTIONS = DEFAULT_V_OPTIONS
+# Block Jacobi on v_f, one block per rank, with ILU(0) on each block. The fluid rows are dominated by
+# the mass, rho_f / dt M, and couple only neighbouring dofs, so they need no coarse grid: on the medium
+# and the fine mesh with dt = 0.004, block Jacobi took twice the FGMRES iterations of one GAMG V-cycle
+# (DEFAULT_V_OPTIONS, with the block size attached to is_v_f), but 17% and 22% less time per step
+# (notes/fsi3d/implementation-log.md). Where the viscous term, nu dt / h^2, or the convection, U dt / h,
+# outgrows the mass, at larger dt or on finer meshes, use DEFAULT_V_OPTIONS here instead.
+DEFAULT_V_F_OPTIONS = {
+    "ksp_type": "preonly",
+    "pc_type": "bjacobi",
+    "sub_pc_type": "ilu",
+}
 # The Schur factor of DEFAULT_ITERATIVE_SOLVER_OPTIONS, with the velocity block split again,
-# multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by one GAMG V-cycle. The
-# solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is Jacobi
-# between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated by the
-# mass. Needs requires_v_sub_IS=True in solve, which sets the inner ISes.
+# multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by block Jacobi with
+# ILU(0). The solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is
+# Jacobi between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated
+# by the mass. Needs requires_v_sub_IS=True in solve, which sets the inner ISes.
 MUMPS_ON_SOLID = (
     DEFAULT_SOLVER_OPTIONS
     | {
@@ -217,10 +226,10 @@ def solve(
     - by default, with ``DEFAULT_ITERATIVE_SOLVER_OPTIONS``, as in the K_c options of threeDfsi_c0ip, one
       GAMG V-cycle (rigid body modes as near-nullspace, three under-relaxed SOR steps per level);
     - with ``MUMPS_ON_SOLID`` and ``requires_v_sub_IS=True``, a multiplicative fieldsplit into the
-      velocity dofs on solid cells (with the interface), solved by MUMPS LU, and the fluid dofs, by one
-      GAMG V-cycle (translations as near-nullspace) with the same smoothing. The solid rows are
-      dominated by the solid stiffness, where GAMG's SOR smoothing, Jacobi between ranks, depends on the
-      partition; the exact solve does not.
+      velocity dofs on solid cells (with the interface), solved by MUMPS LU, and the fluid dofs, by
+      block Jacobi with ILU(0) on each rank. The solid rows are dominated by the solid stiffness, where
+      GAMG's SOR smoothing, Jacobi between ranks, depends on the partition; the exact solve does not.
+      The fluid rows are dominated by the mass, which needs no coarse grid.
 
     ``requires_v_sub_IS=True`` builds the index sets of the inner split, and leaves the rigid body modes
     off the velocity block; it is needed with, and only with, a fieldsplit of the velocity block.
@@ -660,7 +669,9 @@ def solve(
         offset = bs * V.dofmap.index_map.local_range[0]
         is_v_s = PETSc.IS().createGeneral((offset + np.flatnonzero(in_solid)).astype(PETSc.IntType), comm=comm)
         is_v_f = PETSc.IS().createGeneral((offset + np.flatnonzero(~in_solid)).astype(PETSc.IntType), comm=comm)
-        is_v_f.setBlockSize(bs)  # GAMG aggregates per node, with the translations as near-nullspace
+        # With GAMG on v_f (DEFAULT_V_OPTIONS), GAMG aggregates per node, with the translations as
+        # near-nullspace.
+        is_v_f.setBlockSize(bs)
 
     # The linear solve for the end-of-run summary, built here so that options without the keys it
     # reads fail before the time loop, not after it
@@ -686,11 +697,19 @@ def solve(
             )
         else:
             s_prefix, f_prefix = "fieldsplit_v_0_fieldsplit_s_", "fieldsplit_v_0_fieldsplit_f_"
+            if options[f_prefix + "pc_type"] == "gamg":
+                f_description = (
+                    f"one V-cycle of GAMG\n      (translations as near-nullspace), {smoothing_description(f_prefix)}"
+                )
+            else:
+                f_pc_name = {"bjacobi": "block Jacobi"}.get(
+                    options[f_prefix + "pc_type"], options[f_prefix + "pc_type"]
+                )
+                f_description = f"{f_pc_name} with {options[f_prefix + 'sub_pc_type'].upper()} on each rank"
             v_pc_description = (
                 f"a {options['fieldsplit_v_0_pc_fieldsplit_type']} fieldsplit of A into the velocity dofs on\n"
                 f"      solid cells (with the interface), by {options[s_prefix + 'pc_factor_mat_solver_type'].upper()} "
-                f"{options[s_prefix + 'pc_type'].upper()}, and the fluid dofs, by one V-cycle of GAMG\n"
-                f"      (translations as near-nullspace), {smoothing_description(f_prefix)}"
+                f"{options[s_prefix + 'pc_type'].upper()}, and the fluid dofs, by {f_description}"
             )
         p_pc_description = options["fieldsplit_p_1_pc_type"]
         if p_pc_description == "hypre":

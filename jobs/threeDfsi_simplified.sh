@@ -13,8 +13,8 @@
 # SOLVER selects the (v, p) solve: "iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS (the solver's
 # default, the K_c options of threeDfsi_c0ip with a BoomerAMG strong threshold of 0.5),
 # "mumps_on_solid", MUMPS_ON_SOLID (the same, with the velocity block split again into the solid
-# dofs, by MUMPS LU, and the fluid dofs, by GAMG; run with requires_v_sub_IS=True), or "direct",
-# DEFAULT_DIRECT_SOLVER_OPTIONS (MUMPS LU).
+# dofs, by MUMPS LU, and the fluid dofs, by block Jacobi with ILU; run with requires_v_sub_IS=True),
+# or "direct", DEFAULT_DIRECT_SOLVER_OPTIONS (MUMPS LU).
 #
 # With INITIAL_STATE_RUN, a new run starts from the latest checkpoint of that earlier run, with
 # its own DT, and only reads from the earlier run's directory. Any 3d solver's checkpoints work,

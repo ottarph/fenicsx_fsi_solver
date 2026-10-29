@@ -1113,3 +1113,14 @@ which was only checked from rest.
   gain grows. On the fine mesh, nu dt / h^2 (h the P2 node spacing) is 0.034 at the median cell
   and 0.55 at most, and U dt / h, with U = 2, is 0.74 and 3.0, so the fluid block is still
   dominated by the mass and by local couplings.
+- `MUMPS_ON_SOLID` now preconditions the fluid velocity block by block Jacobi with ILU(0)
+  (`DEFAULT_V_F_OPTIONS`), instead of one GAMG V-cycle, after the comparisons above (2026-10-29).
+  Suggestion for other regimes: switch the fluid block back to multigrid (`DEFAULT_V_OPTIONS`, with
+  2 SOR steps per level, which saved 9% on both meshes against 3) where the fluid block is no
+  longer dominated by the mass. Block Jacobi drops the couplings between ranks and ILU(0) has no
+  coarse grid, so neither removes smooth error that spreads over many cells; the mass, rho_f / dt M,
+  makes none, but the viscous term does once nu dt / h^2 approaches 1 over much of the mesh, and the
+  convection once U dt / h is well above 1. That happens at larger dt, on meshes finer than
+  `mesh_sec_fine` at the same dt, with stretched boundary-layer cells, or at higher viscosity. Signs
+  of it: the FGMRES iterations per solve growing well beyond the 14 seen here as the mesh is refined
+  or the rank count grows. Untested above 28 ranks; check at the production rank count.
