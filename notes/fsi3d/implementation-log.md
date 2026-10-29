@@ -1010,3 +1010,22 @@ which was only checked from rest.
   an FGMRES iteration costs about 0.06 s, against about 1.9 s for the rest of a Newton iteration
   (residual assembly, mesh motion, Jacobian), so even no FGMRES iterations at all would save only
   about a quarter of a step. EW is not enabled in the solver options.
+- Fixed `ksp_rtol` on `MUMPS_ON_SOLID`, same set-up as the Eisenstat-Walker comparison above
+  (2026-10-29):
+
+  | `ksp_rtol` | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | 1e-5 | 60 | 9.6 | 18.6 |
+  | 1e-4 | 60 | 7.3 | 17.6 |
+  | 1e-3 | 66 | 5.2 | 18.2 |
+  | 1e-2 | 86 | 3.5 | 25.0 |
+
+  The QoIs agree with rtol 1e-5 to 3e-7 relative for 1e-4 and 2e-6 for 1e-2. rtol 1e-4 keeps the
+  Newton count and saves 5%, about as much as EW with rtolmax 1e-3 (17.3 s, within the scatter of
+  about 1 s/step that one Newton iteration more or less gives). EW cannot do better here: the
+  Jacobian is that of (v, p) only, without the mesh motion and the update of u_s, so the linear
+  residual does not predict the nonlinear one, and a loose solve costs Newton progress that EW reads
+  as slow convergence, to which it answers with a looser solve. A loose first solve of each time
+  step alone would cost no Newton progress (rtol 1e-2 there gave the same residual as 1e-5), but
+  EW cannot give it: PETSc caps rtol0 at rtolmax too, and EW with rtol0 1e-2 and rtolmax 1e-4 ran
+  identically to a fixed rtol of 1e-4. It would save about 4 FGMRES iterations, 0.25 s, per step.
