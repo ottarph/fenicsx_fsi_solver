@@ -13,7 +13,10 @@ have no ``original_cell_index``, so io4dolfinx cannot reorder their dofs.
 Functions on cell submeshes (from ``dolfinx.mesh.create_submesh``) are
 therefore stored as functions with the same element on the parent mesh,
 copied cell by cell through the submesh's entity map (exact, since the
-elements match), and copied back to the submesh after reading.
+elements match), and copied back to the submesh after reading. Only the
+owned values of a function are written, and the owner of a parent dof on the
+boundary of a submesh need not hold a submesh cell with it, so the ranks that
+do add their values into the owner, which divides by their number.
 
 Each checkpoint is a self-contained file, and the checkpoint directory
 alternates between two of them. io4dolfinx stores a function's dofmap (in the
@@ -54,6 +57,15 @@ def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
 
 
+def _submesh_rank_count(V: dolfinx.fem.FunctionSpace, parent_cells: np.ndarray) -> np.ndarray:
+    """The number of ranks that hold one of ``parent_cells`` with each owned dof of ``V``, or 1 if none does."""
+    bs = V.dofmap.index_map_bs
+    count = dolfinx.fem.Function(V)
+    count.x.array.reshape(-1, bs)[V.dofmap.list[parent_cells], :] = 1.0
+    count.x.scatter_reverse(dolfinx.la.InsertMode.add)
+    return np.maximum(count.x.array[: V.dofmap.index_map.size_local * bs], 1.0)
+
+
 class Checkpointer:
     """Write and read restart checkpoints of a list of functions in ``directory``.
 
@@ -79,6 +91,7 @@ class Checkpointer:
             parent_cells = entity_map.sub_topology_to_topology(sub_cells, inverse=False)
             self._submesh_cells.append((submesh, (sub_cells, parent_cells)))
         self._parent_functions = {}
+        self._rank_counts = {}
 
     def _on_parent(self, f: dolfinx.fem.Function):
         """The function stored for ``f``, and the submesh and parent cells to copy between (None on ``mesh``)."""
@@ -91,7 +104,24 @@ class Checkpointer:
         if f.name not in self._parent_functions:
             V = dolfinx.fem.functionspace(self.mesh, f.function_space.ufl_element())
             self._parent_functions[f.name] = dolfinx.fem.Function(V, name=f.name)
+            self._rank_counts[f.name] = _submesh_rank_count(V, cells[1])
         return self._parent_functions[f.name], cells
+
+    def _copy_to_parent(self, g: dolfinx.fem.Function, f: dolfinx.fem.Function, cells) -> None:
+        """``g`` <- ``f`` on a submesh, with ``(sub_cells, parent_cells)`` the cells to copy between.
+
+        The owner of a dof on the boundary of the submesh need not hold a submesh cell with it, as its
+        cells with that dof may touch the submesh only at a vertex or an edge, and then interpolation
+        leaves the owned value unset. So the ranks that do hold one add their values into the owner by
+        a reverse scatter, and the owner divides the sum by the number of such ranks.
+        """
+        sub_cells, parent_cells = cells
+        rank_count = self._rank_counts[g.name]
+        g.x.array[:] = 0.0
+        g.interpolate(f, cells0=sub_cells, cells1=parent_cells)
+        g.x.scatter_reverse(dolfinx.la.InsertMode.add)
+        g.x.array[: len(rank_count)] /= rank_count
+        g.x.scatter_forward()
 
     def _file(self, i: int) -> Path:
         return self.directory / f"checkpoint_{i}.bp"
@@ -114,8 +144,7 @@ class Checkpointer:
         for f in functions:
             g, cells = self._on_parent(f)
             if cells is not None:
-                sub_cells, parent_cells = cells
-                g.interpolate(f, cells0=sub_cells, cells1=parent_cells)
+                self._copy_to_parent(g, f, cells)
             io4dolfinx.write_function_on_input_mesh(path, g, time=t)
         attrs = {
             "t": np.array([t], dtype=np.float64),
@@ -181,6 +210,8 @@ class Checkpointer:
                 continue
             g, cells = self._on_parent(f)
             io4dolfinx.read_function(self._file(i), g, time=t, name=f.name)
+            # Every dof of f, owned or ghost, is in a local submesh cell, and g has its ghost values from
+            # read_function, so unlike in write, interpolating cell by cell sets all of f
             if cells is not None:
                 sub_cells, parent_cells = cells
                 f.interpolate(g, cells0=parent_cells, cells1=sub_cells)

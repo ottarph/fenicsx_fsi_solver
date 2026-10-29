@@ -22,6 +22,17 @@ class SubmeshComposite:
     ``dolfinx.mesh.create_submesh``. Values are copied between ``parent`` and the parts cell by cell,
     which is exact since the elements match. Where submeshes share dofs, on their common facets, the
     part listed last gives the value of ``parent``.
+
+    In parallel, :meth:`gather` sets each owned value of ``parent`` from the cells on the owning rank
+    only, and then sends it to the ghosts. Two things follow:
+
+    - The parts must cover the mesh. The owner of a dof always holds a cell with it, but if that cell
+      is in no part, the owned value is left as it was. (``Checkpointer`` handles a single submesh
+      that does not cover the mesh by summing over the ranks that hold one of its cells.)
+    - "Listed last" holds only for the cells on the owner. If the owner of a shared dof holds a cell
+      of an earlier part with it but none of the last part, ``parent`` gets the earlier part's value.
+      So the parts should agree on their shared dofs, as u_s and u_f of the simplified solvers do: u_f
+      takes its interface values from u_s, up to round-off.
     """
 
     def __init__(self, parent: dolfinx.fem.Function, parts: list[tuple[dolfinx.fem.Function, dolfinx.mesh.EntityMap]]):
