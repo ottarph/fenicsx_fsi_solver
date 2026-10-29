@@ -1029,3 +1029,20 @@ which was only checked from rest.
   step alone would cost no Newton progress (rtol 1e-2 there gave the same residual as 1e-5), but
   EW cannot give it: PETSc caps rtol0 at rtolmax too, and EW with rtol0 1e-2 and rtolmax 1e-4 ran
   identically to a fixed rtol of 1e-4. It would save about 4 FGMRES iterations, 0.25 s, per step.
+- `ksp_rtol` set to 1e-4 in `DEFAULT_ITERATIVE_SOLVER_OPTIONS` and `MUMPS_ON_SOLID`, after the same
+  8 steps with the default iterative options (2026-10-29): 60 Newton iterations with both 1e-5 and
+  1e-4, 25.5 and 20.8 FGMRES iterations per solve, 26.9 and 24.4 s/step after the first (9% less),
+  QoIs equal to the 7 digits written.
+- A loose first linear solve of each time step, by a hook in a scratch copy of
+  threeDfsi_simplified that sets the KSP rtol in wrapped_jacobian (first_solve_rtol at Newton
+  iteration 0, ksp_rtol after), on `MUMPS_ON_SOLID` with rtol 1e-4, same 8 steps (2026-10-29):
+
+  | first solve | Newton iterations | FGMRES iterations per solve | s/step, after the first |
+  |---|---|---|---|
+  | rtol 1e-4 | 60 | 7.3 | 17.6 |
+  | rtol 1e-2 | 60 | 6.7 | 17.0 |
+  | rtol 1e-1 | 62 | 6.2 | 17.5 |
+
+  With 1e-2 the first solve takes 2 FGMRES iterations instead of 5 or 6, and the following residuals
+  are within a few percent of those with 1e-4; 3% less per step, about the scatter between runs.
+  With 1e-1, 6 of the 8 steps took a Newton iteration more. Not added to the solver.

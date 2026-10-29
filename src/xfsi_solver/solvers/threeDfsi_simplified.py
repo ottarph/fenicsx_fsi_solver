@@ -100,7 +100,9 @@ DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
     | {
         "ksp_converged_reason": None,
         "ksp_type": "fgmres",
-        "ksp_rtol": 1e-5,
+        # On the medium mesh, rtol 1e-4 kept the Newton iterations of 1e-5 with a fifth fewer FGMRES
+        # iterations (notes/fsi3d/implementation-log.md).
+        "ksp_rtol": 1e-4,
         "ksp_atol": 1e-8,
         "ksp_max_it": 200,
         #
@@ -137,7 +139,9 @@ MUMPS_ON_SOLID = (
     | {
         "ksp_converged_reason": None,
         "ksp_type": "fgmres",
-        "ksp_rtol": 1e-5,
+        # As in DEFAULT_ITERATIVE_SOLVER_OPTIONS, here with a quarter fewer FGMRES iterations than 1e-5;
+        # 1e-3 and looser took more Newton iterations.
+        "ksp_rtol": 1e-4,
         "ksp_atol": 1e-8,
         "ksp_max_it": 200,
         #
