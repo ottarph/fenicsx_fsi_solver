@@ -695,7 +695,9 @@ def solve(
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
         # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+        # With gamma_reassemble=None, J is never reused.
+        reuse = gamma_reassemble is not None and jacobian_state["assembled"]
+        if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         jacobian_state["assembled"] = True
@@ -842,6 +844,10 @@ def solve(
             checkpointer.write(checkpoint_fields, t, step, dt_val, t0)
 
     end = timer()
+    if gamma_reassemble is None:
+        reuse_description = "none, reassembled in every Newton iteration"
+    else:
+        reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -854,8 +860,7 @@ def solve(
             "    linear solve\n"
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
-            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
-            f"with {gamma_reassemble = }\n"
+            f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
         )

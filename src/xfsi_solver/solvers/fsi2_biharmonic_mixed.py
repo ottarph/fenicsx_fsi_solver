@@ -107,7 +107,8 @@ def solve(
     ``gamma_reassemble`` in the last iteration (Failer & Richter, J. Sci. Comput. 82:28,
     2020, Sec. 5.3), and is otherwise reused, also across time steps. With
     ``gamma_reassemble=0``, it is reassembled in every Newton iteration except the
-    first of each time step.
+    first of each time step, and with ``gamma_reassemble=None`` in every Newton iteration,
+    as the full Jacobian of fsi2_biharmonic_fulljacobian is.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -638,7 +639,9 @@ def solve(
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
         # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+        # With gamma_reassemble=None, J is never reused.
+        reuse = gamma_reassemble is not None and jacobian_state["assembled"]
+        if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
@@ -855,6 +858,10 @@ def solve(
             checkpointer.write([u, v, p, z], t, step, dt_val, t0)
 
     end = timer()
+    if gamma_reassemble is None:
+        reuse_description = "none, reassembled in every Newton iteration"
+    else:
+        reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -886,8 +893,7 @@ def solve(
             "    by MatMatSolve,\n"
             "    CG with Jacobi on A_S\n"
             f"  K_c solve: {k_c_solve_description}"
-            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
-            f"with {gamma_reassemble = }\n"
+            f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
         )

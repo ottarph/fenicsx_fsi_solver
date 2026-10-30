@@ -9,6 +9,7 @@ from restart_helpers import (
 )
 
 from xfsi_solver.solvers.fsi2_biharmonic_mixed import solve
+from xfsi_solver.tools.newton_log import read_newton_log
 
 # p and z live on the fluid submesh but are checkpointed on the full mesh
 ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
@@ -120,3 +121,33 @@ def test_fsi2_biharmonic_mixed_quadrature_cap_changes_the_qois_slightly(output_d
     # row of zeros is the same in both.
     np.testing.assert_allclose(capped, exact, rtol=1e-3, atol=0)
     assert not np.array_equal(capped, exact)
+
+
+def test_fsi2_biharmonic_mixed_reassembles_the_jacobian_in_every_iteration_without_reuse(output_dirs):
+    # With gamma_reassemble=None, the Jacobian is assembled in every Newton iteration, also in the
+    # first of a time step, which the default reuses from the step before.
+    dt_val = 0.0025
+
+    def run(name, gamma_reassemble):
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            direct_k_c_solve=True,
+            gamma_reassemble=gamma_reassemble,
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+        )
+        return read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+
+    reused, fresh = run("reused", 0.2), run("fresh", None)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "fresh_newton.txt",
+        output_dirs["qoi"] / "fresh.txt",
+        ["u", "v", "p", "z"],
+        always_assembled=True,
+    )
+    assert np.any(reused["assembled"][reused["it"] > 0] == 0)
+    assert fresh["assembled"].sum() > reused["assembled"].sum()

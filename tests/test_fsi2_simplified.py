@@ -17,6 +17,7 @@ from xfsi_solver.solvers.fsi2_simplified import (
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     solve,
 )
+from xfsi_solver.tools.newton_log import read_newton_log
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
@@ -226,3 +227,29 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
             np.testing.assert_allclose(
                 rows[:, column], values, rtol=0, atol=1e-6 * np.max(np.abs(values)), err_msg=f"{name}, column {column}"
             )
+
+
+def test_fsi2_simplified_reassembles_the_jacobian_in_every_iteration_without_reuse(output_dirs):
+    # With gamma_reassemble=None, the Jacobian is assembled in every Newton iteration, also in the
+    # first of a time step, which the default reuses from the step before.
+    dt_val = 0.0025
+
+    def run(name, gamma_reassemble):
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            gamma_reassemble=gamma_reassemble,
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+        )
+        return read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+
+    reused, fresh = run("reused", 0.2), run("fresh", None)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "fresh_newton.txt", output_dirs["qoi"] / "fresh.txt", ["v", "p"], always_assembled=True
+    )
+    assert np.any(reused["assembled"][reused["it"] > 0] == 0)
+    assert fresh["assembled"].sum() > reused["assembled"].sum()
