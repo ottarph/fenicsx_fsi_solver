@@ -17,6 +17,7 @@ from petsc4py import PETSc
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
@@ -73,6 +74,7 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     max_quadrature_degree=None,
+    newton_log_path=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -147,6 +149,12 @@ def solve(
     The time stepping parameter is theta = 0.5 + ``absolute_theta_shift``, or theta = 0.5 +
     ``relative_theta_shift`` * ``dt_val``; giving both raises ``ValueError``, and with neither,
     ``relative_theta_shift = 1.0``.
+
+    With ``newton_log_path``, every Newton iterate is recorded in that file by
+    ``xfsi_solver.tools.newton_log.NewtonLog``: the norms of the residual and of the Newton update,
+    in total and on each block u, v, p and z, whether the Jacobian of the step was assembled anew,
+    and the wall time of each iteration. A restart drops the rows after the checkpoint time, as it
+    does from the QoI file.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -810,6 +818,9 @@ def solve(
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    if newton_log_path is not None:
+        blocks = field_blocks(problem, ["u", "v", "p", "z"])
+        newton_log = NewtonLog(solver, newton_log_path, blocks, comm, restart, t, dt_val)
 
     if not restart:
         write_output(t, step)
@@ -830,6 +841,8 @@ def solve(
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
+        if newton_log_path is not None:
+            newton_log.start_step(t)
         ksp_check.clear()
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()

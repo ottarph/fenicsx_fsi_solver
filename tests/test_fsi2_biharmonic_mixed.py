@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_restart_rejects_different_dt,
     check_restart_rejects_T_not_after_checkpoint,
@@ -29,6 +30,7 @@ def test_fsi2_biharmonic_mixed_solve(output_dirs, direct):
         qoi_path=str(qoi_path),
         vtx_save_every=4,
         direct_k_c_solve=direct,
+        newton_log_path=str(output_dirs["qoi"] / "fsi2_biharmonic_mixed_newton.txt"),
     )
 
     # The initial state and six time steps, with t, drag, lift and the tip displacement.
@@ -37,6 +39,7 @@ def test_fsi2_biharmonic_mixed_solve(output_dirs, direct):
     # The inflow drives the fluid in the x-direction, so the drag grows.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert (output_dirs["pv"] / "fsi2_biharmonic_mixed.bp").exists()
+    check_solver_newton_log(output_dirs["qoi"] / "fsi2_biharmonic_mixed_newton.txt", qoi_path, ["u", "v", "p", "z"])
 
 
 def test_fsi2_biharmonic_mixed_restart_reproduces_continuous_run(output_dirs, tmp_path):

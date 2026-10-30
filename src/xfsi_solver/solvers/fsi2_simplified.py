@@ -18,6 +18,7 @@ from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
@@ -188,6 +189,7 @@ def solve(
     max_quadrature_degree=None,
     mesh_motion_options=None,
     requires_v_sub_IS=False,
+    newton_log_path=None,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -228,7 +230,7 @@ def solve(
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
     degree are integrated inexactly at that degree, and the others keep their estimate. With the
     default None, every integral keeps the degree UFL estimates. The other arguments are those of
-    ``fsi2_biharmonic_mixed.solve``.
+    ``fsi2_biharmonic_mixed.solve``, where ``newton_log_path`` has the blocks v and p.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -803,6 +805,8 @@ def solve(
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    if newton_log_path is not None:
+        newton_log = NewtonLog(solver, newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
 
     if not restart:
         write_output(t, step)
@@ -824,6 +828,8 @@ def solve(
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
+        if newton_log_path is not None:
+            newton_log.start_step(t)
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)

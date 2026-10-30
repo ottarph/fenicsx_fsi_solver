@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_initial_state_rejects_T_not_after_it,
     check_restart_rejects_different_dt,
@@ -37,6 +38,7 @@ def test_fsi2_simplified_solve(output_dirs):
         output_path_p=str(output_dirs["pv"] / "fsi2_simplified_p.bp"),
         qoi_path=str(qoi_path),
         vtx_save_every=4,
+        newton_log_path=str(output_dirs["qoi"] / "fsi2_simplified_newton.txt"),
     )
 
     # The initial state and six time steps, with t, drag, lift and the tip displacement.
@@ -46,6 +48,7 @@ def test_fsi2_simplified_solve(output_dirs):
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
     assert (output_dirs["pv"] / "fsi2_simplified.bp").exists()
+    check_solver_newton_log(output_dirs["qoi"] / "fsi2_simplified_newton.txt", qoi_path, ["v", "p"])
 
 
 def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
