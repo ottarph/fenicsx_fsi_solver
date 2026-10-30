@@ -49,11 +49,10 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
 
 
 @pytest.mark.slow
-def test_threeDfsi_simplified_prediction_and_reuse_options(output_dirs):
+def test_threeDfsi_simplified_prediction_options(output_dirs):
     # The default run predicts the displacements, here without Jacobian reuse, so it assembles in
-    # every Newton iteration. The other starts from the previous step as it is and skips the reuse
-    # test at the first iteration, so it never assembles at the second. Both converge to the same
-    # states, within the Newton tolerance.
+    # every Newton iteration. The other starts from the previous step as it is, with the default
+    # reuse. Both converge to the same states, within the Newton tolerance.
     dt_val = 0.004
 
     def run(name, **kwargs):
@@ -79,8 +78,7 @@ def test_threeDfsi_simplified_prediction_and_reuse_options(output_dirs):
         )
 
     predicted, _ = run("predicted", gamma_reassemble=None)
-    previous, log = run("previous", predict_displacements=False, skip_first_reuse_test=True)
-    assert np.all(log["assembled"][log["it"] == 2] == 0)
+    previous, _ = run("previous", predict_displacements=False)
     for column in range(1, predicted.shape[1]):
         np.testing.assert_allclose(
             predicted[:, column], previous[:, column], rtol=0, atol=1e-6 * np.abs(previous[:, column]).max()

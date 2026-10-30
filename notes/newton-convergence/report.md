@@ -124,6 +124,7 @@ since been made the default.
 
 - `skip_first_reuse_test=True`: the reuse test is not applied to the rate of the first iteration
   of a step. The Jacobian is always reused at the second iteration, and tested from the third on.
+  (Removed since: with the prediction it changes nothing, see below.)
 - `predict_displacements=True`: before each Newton solve, the displacements are updated as after
   a linear solve, from the velocity of the previous step: u_s = u_s_old + dt v_old, node by node,
   and u_f by the mesh motion. Without it, u_f in the initial guess is still that of the previous
@@ -170,7 +171,10 @@ list above), a Jacobian from the step before also contracts the later iterations
 in 30% of them (median 0.06), against 0.014 in the other phase. So J_0 does go out of date within
 one step there, and the first-iteration test only anticipated the assembly. With the prediction,
 the first iteration contracts by much less than γ, so the test never triggers there and the
-option changes nothing: the two predicted runs take the same iterations.
+option changes nothing: the two predicted runs take the same iterations. With the prediction, the
+first-iteration rate also grows with the age of the Jacobian, so it measures the Jacobian like the
+later iterations do, and there is no reason left to leave it out of the test. The option was
+therefore removed again.
 
 ![Tip displacement, Newton iterations and assemblies over time, with and without the prediction](plots/predictor/iterations_over_time.svg)
 

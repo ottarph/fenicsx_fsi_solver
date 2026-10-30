@@ -157,3 +157,13 @@ steps on the coarse 3d mesh with the direct solver: the default prediction witho
 in every iteration), and no prediction with the skipped first test (never assembled at the second
 iteration), and checks that the QoIs agree. It has not been run yet. The effect of the prediction
 in 3d has not been measured.
+
+## 2026-10-30: `skip_first_reuse_test` removed
+
+With the prediction as the default, `skip_first_reuse_test` changed nothing (the first iteration
+contracts by 3e-3 to 2e-2, far below γ = 0.2, and the predicted runs with and without it took the
+same iterations), and without the prediction it saved only 6%. With the prediction, the
+first-iteration rate grows with the age of the Jacobian, so it is a fair input to the reuse test.
+The option is removed from both simplified solvers, with its 2d test; the 3d slow test, which ran
+once with it (passed, 104 s), now compares the prediction on and off only. The results of the runs
+with it stay in `report.md`.

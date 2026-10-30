@@ -190,7 +190,6 @@ def solve(
     mesh_motion_options=None,
     requires_v_sub_IS=False,
     newton_log_path=None,
-    skip_first_reuse_test=False,
     predict_displacements=True,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
@@ -233,12 +232,6 @@ def solve(
     by 19% with the default Jacobian reuse (notes/newton-convergence/report.md). With
     ``predict_displacements=False``, the mixed biharmonic mesh motion and exact solves, the iterates
     are those of fsi2_biharmonic_mixed.
-
-    With ``skip_first_reuse_test=True``, the Jacobian is reused at the second Newton iteration of a
-    time step whatever the first iteration reduced the residual by, and the reuse test of
-    ``gamma_reassemble`` only applies from the third iteration on. The first iteration of a step
-    reduces the residual by about the same factor with a new and a reused Jacobian, so its rate does
-    not tell whether the Jacobian is out of date (notes/newton-convergence/report.md).
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states. They hold no
@@ -709,14 +702,12 @@ def solve(
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         norm = snes.getFunctionNorm()  # residual norm at the current iterate x
-        # The Newton iteration from which on the rate of the last iteration is tested.
-        first_tested = 2 if skip_first_reuse_test else 1
-        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() >= first_tested else None
+        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
         jacobian_state["previous_norm"] = norm
-        # Reuse J if the last Newton iteration converged fast enough, or at the iterations of a
-        # time step before first_tested, where there is no rate yet or it is not tested. Leaving J
-        # unchanged makes PETSc skip PCSetUp, so the fieldsplit submatrices and the factorization
-        # of K_c are reused too. With gamma_reassemble=None, J is never reused.
+        # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
+        # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
+        # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
+        # With gamma_reassemble=None, J is never reused.
         reuse = gamma_reassemble is not None and jacobian_state["assembled"]
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
@@ -878,8 +869,6 @@ def solve(
         reuse_description = "none, reassembled in every Newton iteration"
     else:
         reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
-        if skip_first_reuse_test:
-            reuse_description += ", from the third Newton iteration of a step on"
     if predict_displacements:
         initial_guess_description = "the previous step, with u_s = u_s_old + dt * v_old and its mesh motion"
     else:
