@@ -92,3 +92,22 @@ steps of ||R_(k+1)|| / ||R_k||.
   solves, at 15-20% less time per step.
 - The timings are from five runs sharing the machine, and over one 0.5 s window, so they are
   rough.
+
+## 2026-10-30: Analysis of the first comparison
+
+`xfsi_solver.scripts.plot_newton_logs` plots the Newton logs of several runs: the residual per
+iteration (median and interquartile range over the steps), the contraction against the age of a
+reused Jacobian, the iterations and assemblies over time, and the cost per step and per iteration.
+The analysis is in `report.md`, with the SVG figures in `plots/`.
+
+Two findings changed how the reuse should be read:
+
+- The age of a reused Jacobian is best counted in time steps, not in iterations: J_0 is kept for
+  up to 12 steps (145 iterations). Plotted against iterations, the contraction showed a sawtooth
+  from the position of the iteration within its step.
+- The first iteration of a step contracts by 0.13 to 0.24 independently of the Jacobian, with the
+  same values for a fresh J_0 in every iteration, and with the phase of the oscillation (the full
+  Jacobian shows the same phases, 0.14 against 0.03). With γ = 0.2 inside that band, most
+  assemblies (74 of 126) are triggered right after the first iteration, in the phases where it
+  contracts by more than 0.2. The later iterations, which do measure the age of the Jacobian, only
+  reach γ after 11 to 12 steps.
