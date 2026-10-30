@@ -259,7 +259,7 @@ def solve(
     its residual vanishes, and the first Newton step, whose Jacobian has no derivative through the
     mesh motion, is followed by a mesh update by the displacement of a whole time step. In
     fsi2_simplified on mesh_sec, the prediction cut the first-iteration contraction from 0.16 to
-    3e-3 and the time per step by 19% with the default Jacobian reuse
+    3e-3, and the time per step by 11% with the default Jacobian reuse and by 27% without
     (notes/newton-convergence/report.md).
 
     The Jacobian is reassembled when the residual norm decreased by less than a factor

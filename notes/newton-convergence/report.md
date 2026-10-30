@@ -25,27 +25,33 @@ solver. Rates are medians over the time steps of ||R_(k+1)|| / ||R_k||.
 
 ## Summary
 
+The times in this summary are from a rerun of all runs one at a time, alone on the machine
+(last section), except where noted. The iterations are the same in both.
+
 1. **The approximate Jacobian costs two iterations per step but halves the time.** The full
    Jacobian converges quadratically, in 3 iterations in every step. J_0 converges linearly, with a
    contraction of about 5e-3 per iteration after the first, in 5 to 6 iterations. An iteration
-   with J_0 costs a third of one with the full Jacobian, so a step takes 0.60 s against 1.11 s.
-2. **Reusing J_0 cuts the time per step by another factor 2.6**, to 0.23 s, although it takes 7.6
-   iterations per step instead of 5.2. An iteration that reuses J_0 costs 0.022 s, a fifth of
-   one that assembles and factorizes it (0.117 s), and only 126 of 1506 iterations assemble.
+   with J_0 costs a quarter of one with the full Jacobian, so a step takes 0.54 s against about
+   1.15 s.
+2. **Reusing J_0 cuts the time per step by another factor 2.7**, to 0.20 s, although it takes 7.6
+   iterations per step instead of 5.2. An iteration that reuses J_0 costs 0.020 s, a fifth of
+   one that assembles and factorizes it (0.106 s), and only 126 of 1506 iterations assemble.
 3. **The reuse test at the first iteration of a step does not measure the Jacobian, but skipping
    it does not help.** The first iteration contracts by 0.13 to 0.24 whether J_0 is fresh or 12
    steps old, depending on the phase of the oscillation, and with γ = 0.2 it triggers 74 of the
    126 assemblies. Without that test (`skip_first_reuse_test`), the same steps reassemble a few
    iterations later instead: in about 60% of the period, a J_0 from the step before is too old
-   anyway. That saves 6% of the time.
+   anyway. That saves 2% of the iterations.
 4. **Predicting the displacements before each solve removes the slow first iteration.** With
-   `predict_displacements`, the first iteration contracts by 3e-3 instead of 0.16, and without
-   reuse every step converges in exactly 4 iterations instead of 5.2 (31% less time). With
-   reuse, it takes 6.8 iterations instead of 7.6 and 0.159 s per step instead of 0.197 s (19%
-   less), the fastest of all runs.
+   `predict_displacements`, now the default of the simplified solvers, the first iteration
+   contracts by 3e-3 instead of 0.16, and without reuse every step converges in exactly 4
+   iterations instead of 5.2 (27% less time). With reuse, it takes 6.8 iterations instead of 7.6
+   and 0.153 s per step instead of 0.172 s (11% less), the fastest of all runs: 7.5 times faster
+   than the full Jacobian. (The 31% and 19% given here before compared runs of two batches that
+   shared the machine differently.)
 5. **`fsi2_simplified` takes the same Newton iterations as `fsi2_biharmonic_mixed`**, with the same
    iteration counts and the same assembly pattern in every step and residuals within 1 to 2%, at
-   14 to 21% less time per step.
+   15 to 21% less time per step.
 
 ## Convergence per iteration
 
@@ -165,9 +171,9 @@ fastest of all.
 **Skipping the first reuse test.** Without the test at the first iteration, the 74 assemblies
 it triggered move to later in the same steps: 112 of the 126 assemblies are now at the fourth
 iterate, after the iteration 3→4 contracted by more than γ (its median is 0.26). The number of
-assemblies is the same, and the run saves only the iterations between, 0.15 per step (6% of the
-time). In the phase where the first iteration contracts by more than γ (the first phase of the
-list above), a Jacobian from the step before also contracts the later iterations by more than γ
+assemblies is the same, and the run saves only the iterations between, 0.15 per step (2%; its
+time per step was 6% lower, but it ran in the other batch). In the phase where the first
+iteration contracts by more than γ (the first phase of the list above), a Jacobian from the step before also contracts the later iterations by more than γ
 in 30% of them (median 0.06), against 0.014 in the other phase. So J_0 does go out of date within
 one step there, and the first-iteration test only anticipated the assembly. With the prediction,
 the first iteration contracts by much less than γ, so the test never triggers there and the
@@ -184,17 +190,52 @@ same phase, and keep the Jacobian for many steps in the other.
 ![Cost of the runs, with and without the prediction](plots/predictor/cost.svg)
 
 The prediction costs one more mesh motion solve per step, with the factorization that is kept
-for the whole run. It does not show in the times: the iterations of the predicted runs are even
-about 10% cheaper than those of the others. The four new runs ran as a second batch, so
-differences of that size are within the noise of the shared machine; the savings above come
-mainly from the iteration counts.
+for the whole run. It does not show in the times. The iterations of the predicted runs above
+are about 10% cheaper than those of the others, but that is a difference between the two
+batches: in the rerun, one run at a time, an iteration costs the same with and without the
+prediction (last section), and the savings come from the iteration counts only.
+
+## Rerun one at a time
+
+All runs again with the code of `2922423` (prediction by default in `fsi2_simplified`,
+`skip_first_reuse_test` removed), from the same state on 5 ranks, one after the other with nothing
+else of ours on the machine. Every run took exactly the same iterations and assemblies as before,
+with residuals equal to the 7 digits written, so only the times are new.
+
+| run | its/step | assemblies | time/step (s) | new J (s/it) | reused J (s/it) |
+|---|---:|---:|---:|---:|---:|
+| full Jacobian | 3.00 | 597 | 1.307 (1.145)* | 0.436 (0.382)* | |
+| J_0, reassembled | 5.21 | 1036 | 0.543 | 0.104 | |
+| J_0, reused (γ=0.2) | 7.57 | 126 | 0.203 | 0.106 | 0.020 |
+| simplified, reassembled | 5.21 | 1036 | 0.431 | 0.083 | |
+| simplified, reused (γ=0.2) | 7.57 | 126 | 0.172 | 0.083 | 0.017 |
+| simplified, predicted, reassembled | 4.00 | 796 | 0.315 | 0.079 | |
+| simplified, predicted, reused (γ=0.2) | 6.84 | 109 | 0.153 | 0.083 | 0.017 |
+
+\* The full-Jacobian run of the rerun was 18% slower than in the first batch, evenly over the
+whole run, while every other run was 2 to 13% faster alone. A check of 60 steps of it, alone
+again right after, took 1.145 s per step over steps 2 to 60, against 1.163 s in the first batch
+and 1.305 s in the rerun over the same steps, so something else slowed the rerun down,
+probably interactive work of another user. The numbers in brackets are those of the check.
+
+![Cost of the rerun](plots/rerun/cost.svg)
+
+- An iteration costs the same with and without the prediction (0.083 and 0.017 s), so the
+  prediction saves exactly what it saves in iterations: 23% of the iterations and 27% of the time
+  without reuse, 10% of the iterations and 11% of the time with it.
+- `fsi2_simplified` takes 21% less time per step than `fsi2_biharmonic_mixed` without reuse and
+  15% less with it, from cheaper iterations (0.083 s against 0.104 s with a new Jacobian, 0.017
+  s against 0.020 s with a reused one).
+- The fastest configuration, `fsi2_simplified` with the prediction and γ = 0.2 (the defaults),
+  takes 0.153 s per step, 7.5 times less than the full Jacobian (about 1.15 s).
 
 ## Caveats
 
 - One window of 0.5 s, from one state, on one mesh. The phase pattern repeats in both half
   periods of the window, but longer runs would show how stable the numbers are.
-- The five runs shared the 32-core workstation, 5 ranks each, so the times are relative and
-  rough. The ratios between the runs should hold better than the absolute times.
+- In the first comparison and the prediction section, the runs shared the 32-core workstation, 5
+  ranks each, so their times are rough. The rerun ran them one at a time; its times are the ones
+  to quote.
 - The first step of each run is left out, since the start state comes from another solver.
 - The runs of the prediction section ran as a second batch of four, the first comparison as a
   batch of five, so times between the batches compare less well than within one.
@@ -208,7 +249,7 @@ mainly from the iteration counts.
   where the trade-off between iterations and assemblies is best. With the prediction, the later
   iterations with a reused Jacobian contract by about 0.1, so a smaller γ may pay off. With the
   costs above, an assembly is worth about 4 reused iterations.
-- Time the best configuration again alone on the machine, and over a longer window.
+- Time the best configuration over a longer window.
 
 ## Reproducing
 

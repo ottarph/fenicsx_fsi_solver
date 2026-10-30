@@ -228,8 +228,9 @@ def solve(
     the mesh velocity (u_f - u_f_old) / dt in the residual of the initial guess vanishes, and the
     first Newton step, whose Jacobian has no derivative through the mesh motion, is followed by a
     mesh update by the displacement of a whole time step. On mesh_sec, with the beam oscillating,
-    the prediction cuts the first-iteration contraction from 0.16 to 3e-3 and the time per step
-    by 19% with the default Jacobian reuse (notes/newton-convergence/report.md). With
+    the prediction cuts the first-iteration contraction from 0.16 to 3e-3, and the time per step
+    by 11% with the default Jacobian reuse and by 27% without (notes/newton-convergence/report.md).
+    With
     ``predict_displacements=False``, the mixed biharmonic mesh motion and exact solves, the iterates
     are those of fsi2_biharmonic_mixed.
 

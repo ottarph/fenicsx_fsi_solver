@@ -132,8 +132,9 @@ checks that the states agree and that the initial residual is no larger.
 
 Runs on mesh_sec, from the same state as the first comparison (results in `report.md`): the
 prediction cuts the first-iteration contraction from 0.165 to 3e-3, gives 4 iterations in every
-step without reuse (31% less time) and 19% less time with reuse at γ = 0.2. Skipping the first
-reuse test saves 6%: the assemblies it triggered move to the fourth iterate of the same steps,
+step without reuse and 10% fewer iterations with reuse at γ = 0.2 (the times of this batch
+are corrected by the rerun below). Skipping the first
+reuse test saves 2% of the iterations: the assemblies it triggered move to the fourth iterate of the same steps,
 since a Jacobian from the step before is out of date within one step in that phase of the
 oscillation. This corrects the reading in the first analysis that the first-iteration test causes
 needless assemblies.
@@ -162,8 +163,20 @@ in 3d has not been measured.
 
 With the prediction as the default, `skip_first_reuse_test` changed nothing (the first iteration
 contracts by 3e-3 to 2e-2, far below γ = 0.2, and the predicted runs with and without it took the
-same iterations), and without the prediction it saved only 6%. With the prediction, the
+same iterations), and without the prediction it saved only 2% of the iterations. With the prediction, the
 first-iteration rate grows with the age of the Jacobian, so it is a fair input to the reuse test.
 The option is removed from both simplified solvers, with its 2d test; the 3d slow test, which ran
 once with it (passed, 104 s), now compares the prediction on and off only. The results of the runs
 with it stay in `report.md`.
+
+## 2026-10-30: Rerun one at a time
+
+All seven configurations again, with `2922423`, one after the other on 5 ranks
+(`output/newton_convergence_rerun/`), to time them without sharing the machine. The iterates are
+identical to those of the first batches. The times change: the prediction saves 27% of the time
+without reuse and 11% with it, not the 31% and 19% from comparing runs of two batches, since an
+iteration costs the same with and without it. Skipping the first reuse test saved 2% of the
+iterations; its 6% in time was also a comparison between batches. The full-Jacobian run of the
+rerun was 18% slower than in the first batch, and a 60-step check alone again matched the first
+batch, so the rerun's full-Jacobian time was disturbed by other work on the machine. The docstrings
+of the simplified solvers now quote 11% and 27%. Results in the last section of `report.md`.
