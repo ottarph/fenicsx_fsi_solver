@@ -190,6 +190,8 @@ def solve(
     mesh_motion_options=None,
     requires_v_sub_IS=False,
     newton_log_path=None,
+    skip_first_reuse_test=False,
+    predict_displacements=False,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -220,6 +222,19 @@ def solve(
     with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
     its KSP, replace that default. With the mixed biharmonic mesh motion and exact solves, this gives
     the same iterates as fsi2_biharmonic_mixed.
+
+    The initial guess of each Newton solve is the state of the previous step, where u_f is still the
+    fluid displacement of that step, so the mesh velocity (u_f - u_f_old) / dt in the residual of the
+    initial guess vanishes. With ``predict_displacements=True``, the displacements are instead
+    updated before each solve as after a linear solve, from the velocity of the previous step, to
+    u_s = u_s_old + dt * v_old and its mesh motion. The solve then starts from that prediction, and
+    the iterates differ from those of fsi2_biharmonic_mixed.
+
+    With ``skip_first_reuse_test=True``, the Jacobian is reused at the second Newton iteration of a
+    time step whatever the first iteration reduced the residual by, and the reuse test of
+    ``gamma_reassemble`` only applies from the third iteration on. The first iteration of a step
+    reduces the residual by about the same factor with a new and a reused Jacobian, so its rate does
+    not tell whether the Jacobian is out of date (notes/newton-convergence/report.md).
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states. They hold no
@@ -690,12 +705,14 @@ def solve(
 
     def wrapped_jacobian(snes: PETSc.SNES, x: PETSc.Vec, J: PETSc.Mat, P: PETSc.Mat) -> None:
         norm = snes.getFunctionNorm()  # residual norm at the current iterate x
-        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() > 0 else None
+        # The Newton iteration from which on the rate of the last iteration is tested.
+        first_tested = 2 if skip_first_reuse_test else 1
+        previous_norm = jacobian_state["previous_norm"] if snes.getIterationNumber() >= first_tested else None
         jacobian_state["previous_norm"] = norm
-        # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
-        # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
-        # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        # With gamma_reassemble=None, J is never reused.
+        # Reuse J if the last Newton iteration converged fast enough, or at the iterations of a
+        # time step before first_tested, where there is no rate yet or it is not tested. Leaving J
+        # unchanged makes PETSc skip PCSetUp, so the fieldsplit submatrices and the factorization
+        # of K_c are reused too. With gamma_reassemble=None, J is never reused.
         reuse = gamma_reassemble is not None and jacobian_state["assembled"]
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
@@ -775,15 +792,8 @@ def solve(
     movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
     movable_parent_cells = fluid_cell_map.sub_topology_to_topology(movable_cells, inverse=False)
 
-    def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
-        """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
-        where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
-        sets the next iterate to v - Y and evaluates the residual there."""
-        # The owned v rows come first in x, or are its first block if x is a nest vector.
-        x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
-        v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
-        v.x.scatter_forward()
-
+    def update_displacements() -> None:
+        """Set u_s from v by the kinematic relation, node by node, and u_f by the mesh motion."""
         # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
         # Dirichlet values hold already, since v and v_old vanish there, and are set again exactly.
         u_s.x.array[:] = u_s_old.x.array + dt_val * (
@@ -800,6 +810,16 @@ def solve(
         u_f_bc_func.x.scatter_forward()
 
         mesh_motion.solve()
+
+    def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
+        """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
+        where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
+        sets the next iterate to v - Y and evaluates the residual there."""
+        # The owned v rows come first in x, or are its first block if x is a nest vector.
+        x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
+        v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
+        v.x.scatter_forward()
+        update_displacements()
 
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # The K_c solve is a direct one, and check_converged reports a failure of it through the SNES.
@@ -831,6 +851,11 @@ def solve(
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
+        if predict_displacements:
+            # v is still v_old here, so u_s = u_s_old + dt * v_old. SNES evaluates the residual of
+            # the initial guess before any hook of its own, so the prediction is made here.
+            update_displacements()
+
         if newton_log_path is not None:
             newton_log.start_step(t)
         problem.solve()
@@ -849,6 +874,12 @@ def solve(
         reuse_description = "none, reassembled in every Newton iteration"
     else:
         reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
+        if skip_first_reuse_test:
+            reuse_description += ", from the third Newton iteration of a step on"
+    if predict_displacements:
+        initial_guess_description = "the previous step, with u_s = u_s_old + dt * v_old and its mesh motion"
+    else:
+        initial_guess_description = "the previous step"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -861,6 +892,7 @@ def solve(
             "    linear solve\n"
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
+            f"  Initial guess: {initial_guess_description}\n"
             f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"

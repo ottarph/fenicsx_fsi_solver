@@ -253,3 +253,58 @@ def test_fsi2_simplified_reassembles_the_jacobian_in_every_iteration_without_reu
     )
     assert np.any(reused["assembled"][reused["it"] > 0] == 0)
     assert fresh["assembled"].sum() > reused["assembled"].sum()
+
+
+def test_fsi2_simplified_skips_the_first_reuse_test(output_dirs):
+    # With skip_first_reuse_test, the Jacobian is never assembled at the second Newton iteration of a
+    # step, the one after the first iteration, where the default tests the rate of the first.
+    dt_val = 0.0025
+    newton_log_path = output_dirs["qoi"] / "fsi2_simplified_newton.txt"
+    solve(
+        mesh_path=MESH,
+        T=4 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "fsi2_simplified.bp"),
+        output_path_p=str(output_dirs["pv"] / "fsi2_simplified_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "fsi2_simplified.txt"),
+        newton_log_path=str(newton_log_path),
+        skip_first_reuse_test=True,
+    )
+    check_solver_newton_log(newton_log_path, output_dirs["qoi"] / "fsi2_simplified.txt", ["v", "p"])
+    rows = read_newton_log(newton_log_path)
+    assert np.all(rows["assembled"][rows["it"] == 2] == 0)
+
+
+def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(output_dirs):
+    # The prediction only changes the initial guess of each Newton solve, so the runs agree within
+    # the Newton tolerance. From rest, the structure hardly moves in the first steps, so the residual
+    # of the initial guess hardly changes either; it is smaller with the prediction once the beam
+    # oscillates (notes/newton-convergence/implementation-log.md).
+    dt_val = 0.0025
+
+    def run(name, predict_displacements):
+        solve(
+            mesh_path=MESH,
+            T=4 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+            predict_displacements=predict_displacements,
+        )
+        return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2), read_newton_log(
+            output_dirs["qoi"] / f"{name}_newton.txt"
+        )
+
+    (qoi, log), (qoi_predicted, log_predicted) = run("previous", False), run("predicted", True)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "predicted_newton.txt", output_dirs["qoi"] / "predicted.txt", ["v", "p"]
+    )
+    for column in range(1, qoi.shape[1]):
+        np.testing.assert_allclose(
+            qoi_predicted[:, column], qoi[:, column], rtol=0, atol=1e-6 * np.abs(qoi[:, column]).max()
+        )
+    initial = log["residual"][log["it"] == 0]
+    initial_predicted = log_predicted["residual"][log_predicted["it"] == 0]
+    assert np.all(initial_predicted <= initial * (1 + 1e-6))
