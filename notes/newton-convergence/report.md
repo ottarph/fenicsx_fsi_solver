@@ -14,12 +14,20 @@ the same elements and a biharmonic mesh motion in mixed form (displacement u and
 reach the same discrete solution. They differ in the Jacobian and in which unknowns Newton's method
 sees.
 
-- **`fsi2_biharmonic_fulljacobian`** solves for (u, v, p, z), with the solid stress in terms of u
-  and the kinematic relation (u - u_old) / dt = θ v + (1 - θ) v_old as an equation, using the exact
-  Jacobian. That includes the derivatives of the fluid equations with respect to the mesh
-  displacement (the fluid ALE derivatives). Every Newton iteration assembles it and factorizes the
-  whole coupled system with MUMPS.
-- **`fsi2_biharmonic_mixed`** solves for the same unknowns with the approximate Jacobian J_0. The
+- **`fsi2_biharmonic_fulljacobian`** implements the variational formulation with restricted test
+  functions, as `docs/restricted-iterative-solver.md` sets it out. The displacement u is a single
+  continuous field, and v is one velocity shared by fluid and solid. The displacement test
+  functions on the interface have no fluid part, so the interface rows of the u equation hold only
+  the solid kinematic relation (u - u_old) / dt = θ v + (1 - θ) v_old, and the mesh motion acts on
+  the fluid-interior displacement only. The solver takes (u, v, p, z) as unknowns, with the solid
+  stress in terms of u, and uses the exact Jacobian of this restricted residual. That Jacobian
+  includes the replaced interface rows and the derivatives of the fluid equations with respect to
+  the mesh displacement (the fluid ALE derivatives). Every Newton iteration assembles it and
+  factorizes the whole coupled system with MUMPS. It is the reference for what Newton's method can
+  do on this problem.
+- **`fsi2_biharmonic_mixed`** solves the same restricted formulation, for the same unknowns, with
+  the approximate Jacobian J_0. Only the Jacobian differs; the residual, and so the solution, does
+  not. The
   solid stress is written in terms of v through the kinematic relation,
   u_s = u_s_old + dt (θ v + (1 - θ) v_old), and J_0 leaves out the fluid ALE derivatives. J_0 is
   then block lower triangular in (v, p), u_s and the mesh motion (z, u), and each Newton step is
