@@ -144,3 +144,16 @@ needless assemblies.
 `jobs/fsi2_simplified.sh` use it. With it, the iterates are no longer those of
 `fsi2_biharmonic_mixed`; the test that compares the two solvers and continues each from the
 other's checkpoints passes `predict_displacements=False` to keep comparing the same iterates.
+
+## 2026-10-30: The same options in threeDfsi_simplified
+
+`threeDfsi_simplified` updates the displacements in the same way as `fsi2_simplified`, so it gets
+the same options: `predict_displacements=True` by default, `skip_first_reuse_test=False`,
+`gamma_reassemble=None` for reassembly in every iteration, and `newton_log_path` (blocks v and p),
+which `main()` and `jobs/threeDfsi_simplified.sh` pass next to the QoI file.
+
+The 3d solves are slow tests. `test_threeDfsi_simplified_prediction_and_reuse_options` runs two
+steps on the coarse 3d mesh with the direct solver: the default prediction without reuse (assembled
+in every iteration), and no prediction with the skipped first test (never assembled at the second
+iteration), and checks that the QoIs agree. It has not been run yet. The effect of the prediction
+in 3d has not been measured.

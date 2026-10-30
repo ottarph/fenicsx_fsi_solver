@@ -22,8 +22,9 @@
 #   sbatch --export=ALL,RUN_NAME=threeDfsi_simplified_fine_dt0.002,MESH=/home/hellanottar/code/xfsi_solver/data/meshes/fsi3d/mesh_sec_fine.xdmf,INITIAL_STATE_RUN=threeDfsi_c0ip_fine_t8,DT=0.002,T=10.0 jobs/threeDfsi_simplified.sh
 # Such a run that stopped is resumed with RESTART=True, without INITIAL_STATE_RUN.
 #
-# Each run gets its own directory, RUN_DIR, which holds the QoIs, checkpoints, VTX output, QoI
-# plots and a record of the code version and arguments.
+# Each run gets its own directory, RUN_DIR, which holds the QoIs, the Newton log (one row per
+# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, VTX output, QoI plots and
+# a record of the code version and arguments.
 #
 # The meshes are not in git: copy data/meshes/fsi3d/mesh_sec_<size>.{xdmf,h5} to the checkout
 # on eX3 first.
@@ -124,6 +125,7 @@ solve(
     output_path="$RUN_DIR/pv/$RUN_NAME.bp",
     output_path_p="$RUN_DIR/pv/${RUN_NAME}_p.bp",
     qoi_path="$RUN_DIR/qoi/$RUN_NAME.txt",
+    newton_log_path="$RUN_DIR/qoi/${RUN_NAME}_newton.txt",
     checkpoint_dir="$RUN_DIR/checkpoints",
     checkpoint_every=$CHECKPOINT_EVERY,
     vtx_save_every=$VTX_SAVE_EVERY,
