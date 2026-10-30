@@ -66,6 +66,7 @@ def solve(
     restart=False,
     initial_state_dir=None,
     max_quadrature_degree=None,
+    snes_converged_reason_on=True,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -103,6 +104,11 @@ def solve(
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
     degree are integrated inexactly at that degree, and the others keep their estimate. With the
     default None, every integral keeps the degree UFL estimates.
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -363,7 +369,7 @@ def solve(
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # "snes_monitor": "ascii:output/logs/fsi2_harmonic_snes_log.txt",
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
         },
     )
 

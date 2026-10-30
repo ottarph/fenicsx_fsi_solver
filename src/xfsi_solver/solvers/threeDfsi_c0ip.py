@@ -77,6 +77,7 @@ def solve(
     max_quadrature_degree=8,
     c0ip_a_val=2.0,
     mesh_motion_telescope_reduction_factor=None,
+    snes_converged_reason_on=True,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020,
     Sect. 5.1.2), an elastic beam attached to a cylinder in a channel of square cross
@@ -175,6 +176,11 @@ def solve(
     the time of that checkpoint, the run writes its own QoI file, VTX output and checkpoints,
     and it only reads from ``initial_state_dir``. A restart of such a run continues it from
     the same ``t0``.
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     if max_quadrature_degree is None:
@@ -678,7 +684,7 @@ def solve(
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
             # "snes_monitor": "ascii:output/logs/threeDfsi_c0ip_snes_log.txt",
         },
     )

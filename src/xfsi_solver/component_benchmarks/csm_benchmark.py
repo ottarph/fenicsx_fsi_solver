@@ -53,6 +53,7 @@ def solve(
     pseudo_transient=False,
     static_rtol=1e-7,
     restart=False,
+    snes_converged_reason_on=True,
 ):
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
@@ -294,7 +295,7 @@ def solve(
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
         },
     )
 

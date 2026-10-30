@@ -208,6 +208,7 @@ def solve(
     requires_v_sub_IS=False,
     predict_displacements=True,
     newton_log_path=None,
+    snes_converged_reason_on=True,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -282,6 +283,11 @@ def solve(
     a higher degree are integrated inexactly at that degree, and the others keep their estimate. The
     cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The other arguments are
     those of ``threeDfsi_c0ip.solve``.
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     if max_quadrature_degree is None:
@@ -654,7 +660,9 @@ def solve(
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
         kind="nest" if use_fieldsplit else None,
-        petsc_options=solver_options,
+        petsc_options=solver_options
+        if snes_converged_reason_on
+        else {key: value for key, value in solver_options.items() if key != "snes_converged_reason"},
     )
 
     opts = PETSc.Options()

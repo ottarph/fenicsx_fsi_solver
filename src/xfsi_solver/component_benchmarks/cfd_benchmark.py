@@ -53,6 +53,7 @@ def solve(
     max_steps=None,
     pseudo_transient=False,
     restart=False,
+    snes_converged_reason_on=True,
 ):
 
     if restart and checkpoint_dir is None:
@@ -269,7 +270,7 @@ def solve(
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
         },
     )
 

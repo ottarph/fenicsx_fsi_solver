@@ -72,6 +72,7 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     max_quadrature_degree=None,
+    snes_converged_reason_on=True,
 ):
     """A version of the solver where all the terms with test function `u` (and `z`) are removed from the residual.
 
@@ -87,6 +88,11 @@ def solve(
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
     degree are integrated inexactly at that degree, and the others keep their estimate. With the
     default None, every integral keeps the degree UFL estimates.
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
 
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
@@ -469,7 +475,7 @@ def solve(
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
         },
     )
 

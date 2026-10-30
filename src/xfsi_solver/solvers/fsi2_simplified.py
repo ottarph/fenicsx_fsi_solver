@@ -191,6 +191,7 @@ def solve(
     requires_v_sub_IS=False,
     newton_log_path=None,
     predict_displacements=True,
+    snes_converged_reason_on=True,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -245,6 +246,11 @@ def solve(
     degree are integrated inexactly at that degree, and the others keep their estimate. With the
     default None, every integral keeps the degree UFL estimates. The other arguments are those of
     ``fsi2_biharmonic_mixed.solve``, where ``newton_log_path`` has the blocks v and p.
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -602,7 +608,9 @@ def solve(
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
         kind="nest" if use_fieldsplit else None,
-        petsc_options=solver_options,
+        petsc_options=solver_options
+        if snes_converged_reason_on
+        else {key: value for key, value in solver_options.items() if key != "snes_converged_reason"},
     )
 
     opts = PETSc.Options()

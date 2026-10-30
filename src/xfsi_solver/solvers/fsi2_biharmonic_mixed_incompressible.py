@@ -79,6 +79,7 @@ def solve(
     direct_k_c_solve=False,
     full_direct_solve=False,
     max_quadrature_degree=None,
+    snes_converged_reason_on=True,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, up to time ``T``, in
     ``round((T - t0) / dt_val)`` time steps, writing the initial state at ``t0`` as the
@@ -165,6 +166,11 @@ def solve(
     kinematic viscosity ``nu_f`` (1.0e-3), the solid density ``rho_s`` (1.0e4) and Mooney-Rivlin
     coefficients ``c1`` (0.0) and ``c2`` (2.5e5), the mean inflow velocity ``U_bar`` (1.0), and the channel
     height ``H`` (0.41).
+
+    With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
+    Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
+    fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
+    test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 2.0)
@@ -609,7 +615,7 @@ def solve(
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
             # "ksp_converged_reason": None,
             # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_mixed_snes_log.txt",
         }
@@ -631,7 +637,7 @@ def solve(
             "ksp_error_if_not_converged": False,
             # Print to console.
             # "snes_monitor": None,
-            "snes_converged_reason": None,
+            **({"snes_converged_reason": None} if snes_converged_reason_on else {}),
             # "snes_view": None,
         },
     )
