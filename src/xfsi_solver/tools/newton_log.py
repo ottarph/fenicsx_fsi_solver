@@ -5,11 +5,11 @@
 """A record of every Newton iteration of a ``dolfinx.fem.petsc.NonlinearProblem``, for
 analysing the nonlinear convergence of the solvers.
 
-``NewtonLog`` is a SNES monitor that appends one row per Newton iterate to a text file,
-with the norm of the residual and of the Newton update, in total and per block of
-unknowns, whether the Jacobian of the step to the iterate was assembled anew or reused,
-and the wall time since the start of the nonlinear solve. PETSc's ``snes_monitor`` prints
-only the total residual norm, and has no per-field norms without a DM.
+``NewtonLog`` is a SNES monitor, attached with ``snes.setMonitor``, that appends one row
+per Newton iterate to a text file, with the norm of the residual and of the Newton update,
+in total and per block of unknowns, whether the Jacobian of the step to the iterate was
+assembled anew or reused, and the wall time since the start of the nonlinear solve. PETSc's
+``snes_monitor`` prints only the total residual norm, and has no per-field norms without a DM.
 """
 
 from collections.abc import Mapping
@@ -51,7 +51,9 @@ def field_blocks(problem: dolfinx.fem.petsc.NonlinearProblem, names: list[str]) 
 
 
 class NewtonLog:
-    """Append one row per Newton iterate of ``snes`` to the text file ``path``, on rank 0.
+    """A SNES monitor that appends one row per Newton iterate to the text file ``path``, on rank 0.
+
+    Attach it to a SNES with ``snes.setMonitor(newton_log)``.
 
     The columns are
 
@@ -77,7 +79,6 @@ class NewtonLog:
 
     def __init__(
         self,
-        snes: PETSc.SNES,
         path: str | Path,
         blocks: Mapping[str, np.ndarray],
         comm: MPI.Intracomm,
@@ -99,7 +100,6 @@ class NewtonLog:
             + [f"update_{name}" for name in names]
         )
         init_qoi_file(path, comm, restart, t, dt, header="\t".join(self.columns))
-        snes.setMonitor(self)
 
     def start_step(self, t: float) -> None:
         """Label the rows of the next nonlinear solve with the time ``t``."""

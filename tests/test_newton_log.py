@@ -51,7 +51,8 @@ def test_newton_log_records_every_iterate(tmp_path, kind):
     snes = problem.solver
     snes.setConvergenceHistory()
     path = tmp_path / "newton.txt"
-    log = NewtonLog(snes, path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    log = NewtonLog(path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    snes.setMonitor(log)
     log.start_step(0.25)
     problem.solve()
     assert snes.getConvergedReason() > 0
@@ -96,7 +97,8 @@ def test_newton_log_marks_reused_jacobians(tmp_path):
 
     snes.setJacobian(jacobian_once, J, P)
     path = tmp_path / "newton.txt"
-    log = NewtonLog(snes, path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    log = NewtonLog(path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    snes.setMonitor(log)
     iterations = []
     for t in (0.1, 0.2):
         log.start_step(t)
@@ -117,14 +119,16 @@ def test_newton_log_restart_drops_later_rows(tmp_path):
     path = tmp_path / "newton.txt"
     dt = 0.1
     problem = _make_problem()
-    log = NewtonLog(problem.solver, path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    log = NewtonLog(path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    problem.solver.setMonitor(log)
     for t in (dt, 2 * dt):
         log.start_step(t)
         problem.solve()
 
     # A restart from the state at t = dt keeps the rows up to it and appends after them.
     problem = _make_problem()
-    log = NewtonLog(problem.solver, path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD, restart=True, t=dt, dt=dt)
+    log = NewtonLog(path, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD, restart=True, t=dt, dt=dt)
+    problem.solver.setMonitor(log)
     log.start_step(3 * dt)
     problem.solve()
 
@@ -149,12 +153,13 @@ from test_newton_log import _make_problem
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 
 problem = _make_problem()
-log = NewtonLog(problem.solver, {str(tmp_path / "parallel.txt")!r}, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+log = NewtonLog({str(tmp_path / "parallel.txt")!r}, field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+problem.solver.setMonitor(log)
 problem.solve()
 """
     run_mpi_python(script, ranks=3, timeout=120)
     problem = _make_problem()
-    NewtonLog(problem.solver, tmp_path / "serial.txt", field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD)
+    problem.solver.setMonitor(NewtonLog(tmp_path / "serial.txt", field_blocks(problem, ["u", "w"]), MPI.COMM_WORLD))
     problem.solve()
 
     parallel, serial = read_newton_log(tmp_path / "parallel.txt"), read_newton_log(tmp_path / "serial.txt")

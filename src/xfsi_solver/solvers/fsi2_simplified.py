@@ -808,7 +808,8 @@ def solve(
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
     if newton_log_path is not None:
-        newton_log = NewtonLog(solver, newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
+        newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
+        solver.setMonitor(newton_log)
 
     if not restart:
         write_output(t, step)

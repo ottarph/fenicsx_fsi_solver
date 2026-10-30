@@ -20,8 +20,9 @@ monitor that writes a table instead.
 
 ### `xfsi_solver.tools.newton_log`
 
-`NewtonLog(snes, path, blocks, comm, restart, t, dt)` is a SNES monitor (`snes.setMonitor`) that
-appends one row per Newton iterate to a tab-separated text file on rank 0, with the columns
+`NewtonLog(path, blocks, comm, restart, t, dt)` is a SNES monitor, attached by the solvers with
+`solver.setMonitor(newton_log)`, that appends one row per Newton iterate to a tab-separated text
+file on rank 0, with the columns
 
     t  it  assembled  time  residual  residual_<block>...  update  update_<block>...
 

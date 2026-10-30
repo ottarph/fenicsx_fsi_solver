@@ -639,7 +639,8 @@ def solve(
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
     if newton_log_path is not None:
         blocks = field_blocks(problem, ["u", "v", "p", "z"])
-        newton_log = NewtonLog(solver, newton_log_path, blocks, comm, restart, t, dt_val)
+        newton_log = NewtonLog(newton_log_path, blocks, comm, restart, t, dt_val)
+        solver.setMonitor(newton_log)
 
     if not restart:
         write_output(t, step)
