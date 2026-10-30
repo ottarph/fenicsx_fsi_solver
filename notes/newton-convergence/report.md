@@ -9,7 +9,7 @@ intermediate results this report supersedes, is in `implementation-log.md`.
 
 ### Solvers
 
-All three solvers solve the FSI2 benchmark in monolithic ALE form, with restricted test functions,
+All the solvers solve the FSI2 benchmark in monolithic ALE form, with restricted test functions,
 the same elements and a biharmonic mesh motion in mixed form (displacement u and auxiliary z), and
 reach the same discrete solution. They differ in the Jacobian and in which unknowns Newton's method
 sees.
@@ -25,10 +25,14 @@ sees.
   the mesh displacement (the fluid ALE derivatives). Every Newton iteration assembles it and
   factorizes the whole coupled system with MUMPS. It is the reference for what Newton's method can
   do on this problem.
+- **`fsi2_biharmonic_fulljacobian_initialguess`** is `fsi2_biharmonic_fulljacobian` with the
+  displacement prediction (`predict_displacements`, the default) in an initial-guess hook of the
+  SNES. Before each Newton solve, it sets u = u_old + dt v_old on the solid cells, the interface
+  included, and u and z on the fluid cells from the mixed biharmonic mesh motion with these
+  interface values, solved on the fluid submesh with a factorization kept for the whole run.
 - **`fsi2_biharmonic_mixed`** solves the same restricted formulation, for the same unknowns, with
   the approximate Jacobian J_0. Only the Jacobian differs; the residual, and so the solution, does
-  not. The
-  solid stress is written in terms of v through the kinematic relation,
+  not. The solid stress is written in terms of v through the kinematic relation,
   u_s = u_s_old + dt (θ v + (1 - θ) v_old), and J_0 leaves out the fluid ALE derivatives. J_0 is
   then block lower triangular in (v, p), u_s and the mesh motion (z, u), and each Newton step is
   solved block by block. The mesh motion block is constant, so it is factorized once for the whole
@@ -40,10 +44,10 @@ sees.
   fluid displacement u_f the same way, and solves the mesh motion for u_f. This is what the block
   solve of `fsi2_biharmonic_mixed` does with J_0, since the displacement rows are linear and solved
   exactly in every iteration, so without the prediction both take the same Newton iterates (the
-  rows of the results table agree). The smaller system makes it 15 to 21% faster. Only this
-  solver, and its 3D version `threeDfsi_simplified`, has the displacement prediction
-  (`predict_displacements`, the default): before each Newton solve, it sets
-  u_s = u_s_old + dt v_old and the same on the interface for u_f, and solves the mesh motion.
+  rows of the results table agree). The smaller system makes it 15 to 21% faster. It, and its 3D
+  version `threeDfsi_simplified`, has the displacement prediction (`predict_displacements`, the
+  default): before each Newton solve, it sets u_s = u_s_old + dt v_old and the same on the interface
+  for u_f, and solves the mesh motion.
 
 ### Runs
 
@@ -56,6 +60,7 @@ tolerances are `snes_atol` = 1e-7 and `snes_rtol` = 1e-12, and every run uses 5 
 | run | solver and options |
 |---|---|
 | full Jacobian | `fsi2_biharmonic_fulljacobian` |
+| full Jacobian, predicted | `fsi2_biharmonic_fulljacobian_initialguess` |
 | mixed, reassembled | `fsi2_biharmonic_mixed`, `direct_k_c_solve=True`, `gamma_reassemble=None` |
 | mixed, reused | `fsi2_biharmonic_mixed`, `direct_k_c_solve=True`, `gamma_reassemble=0.2` |
 | simplified, reassembled | `fsi2_simplified`, `predict_displacements=False`, `gamma_reassemble=None` |
@@ -68,16 +73,18 @@ than a factor γ, and is otherwise kept, also across time steps. `gamma_reassemb
 it in every iteration.
 
 The first time step of every run is left out, since it starts from the state of another solver.
-The times are from running the configurations one at a time on the 32-core workstation, except the
-full Jacobian, whose run was disturbed by other work on the machine and is timed by a 60-step check
-run alone (see Caveats). "Rate k→k+1" is the median over the steps of ||R_(k+1)|| / ||R_k||.
+The times are from running the configurations one at a time on the 32-core workstation. The full
+Jacobian with and without the prediction were run later, one after the other on the idle machine,
+since the earlier full-Jacobian run was disturbed by other work (see Caveats). "Rate k→k+1" is the median over the steps of ||R_(k+1)|| / ||R_k||.
 
 ## Findings
 
 1. **The approximate Jacobian costs two iterations per step but halves the time.** The full
    Jacobian converges quadratically, in 3 iterations in every step. J_0 converges linearly, gaining
    2.2 to 2.4 orders of magnitude per iteration, in 5 to 6 iterations. An iteration with J_0 costs a
-   quarter of one with the full Jacobian, so a step takes 0.54 s against 1.15 s.
+   quarter of one with the full Jacobian, so a step takes 0.54 s against 1.15 s. With the
+   prediction in both (`fsi2_simplified` for J_0), the difference is about the same: 4.00 against
+   2.34 iterations, 0.32 s against 0.89 s.
 2. **Reusing J_0 cuts the time per step by another factor 2.7**, to 0.20 s, although it takes 7.6
    iterations per step instead of 5.2. An iteration that reuses J_0 costs a fifth of one that
    assembles and factorizes it, and only 126 of 1506 iterations assemble.
@@ -86,10 +93,16 @@ run alone (see Caveats). "Rate k→k+1" is the median over the steps of ||R_(k+1
    instead of 5.2 (27% less time); with reuse, in 6.8 instead of 7.6 (11% less time). The saving
    grows with the velocity of the solid, which is large in FSI2; with small deformations per step
    it is much smaller (see the note at the end of Iterations over the period).
-4. **`fsi2_simplified` is the fastest solver.** Without the prediction it takes the same iterations
+4. **The prediction helps the full Jacobian even more.** Without it, the first Newton step from the
+   previous state lands outside the region of quadratic convergence, so the full Jacobian needs 3
+   iterations. With it, the first iteration contracts by 5e-4 instead of 0.08, and the step
+   converges in 2 iterations (132 of 199 steps) or 3, at 2.34 per step and 22% less time
+   (0.893 s against 1.152 s).
+5. **`fsi2_simplified` is the fastest solver.** Without the prediction it takes the same iterations
    as `fsi2_biharmonic_mixed`, at 15 to 21% less time per step. With its defaults it takes 0.153 s
-   per step, 7.5 times less than the full Jacobian.
-5. **The reuse test is right to reassemble often in part of the period.** For about 60% of the
+   per step, 7.5 times less than the full Jacobian, and 5.8 times less than the full Jacobian with
+   the prediction.
+6. **The reuse test is right to reassemble often in part of the period.** For about 60% of the
    period, a J_0 from the step before already contracts the later iterations by more than γ, so the
    run reassembles in almost every step there; in the rest, J_0 is kept for up to 12 steps.
 
@@ -97,7 +110,8 @@ run alone (see Caveats). "Rate k→k+1" is the median over the steps of ||R_(k+1
 
 | run | its/step | max its | assemblies | time/step (s) | rate 0→1 | 1→2 | 2→3 | 3→4 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| full Jacobian | 3.00 | 3 | 597 | 1.145 | 7.6e-2 | 1.0e-4 | 9.0e-7 | |
+| full Jacobian | 3.00 | 3 | 597 | 1.152 | 7.6e-2 | 1.0e-4 | 9.0e-7 | |
+| full Jacobian, predicted | 2.34 | 3 | 465 | 0.893 | 4.8e-4 | 1.1e-6 | 1.0e-3 | |
 | mixed, reassembled | 5.21 | 6 | 1036 | 0.543 | 1.6e-1 | 3.7e-3 | 6.8e-3 | 6.9e-3 |
 | mixed, reused | 7.57 | 12 | 126 | 0.203 | 1.6e-1 | 1.5e-2 | 3.1e-2 | 6.6e-2 |
 | simplified, reassembled | 5.21 | 6 | 1036 | 0.431 | 1.6e-1 | 3.7e-3 | 6.8e-3 | 6.9e-3 |
@@ -105,12 +119,13 @@ run alone (see Caveats). "Rate k→k+1" is the median over the steps of ||R_(k+1
 | simplified, predicted, reassembled | 4.00 | 4 | 796 | 0.315 | 3.2e-3 | 5.0e-3 | 3.3e-3 | 2.1e-3 |
 | simplified, predicted, reused | 6.84 | 11 | 109 | 0.153 | 7.2e-3 | 8.5e-2 | 4.3e-2 | 1.4e-1 |
 
-All runs reach the same states: their QoIs agree to 4e-8 relative.
+All runs reach the same states: their QoIs agree to 4e-8 relative. Rate 2→3 of the full Jacobian
+with the prediction is over the 67 steps that take a third iteration.
 
 The figures show each comparison twice, side by side on the same axes: without the prediction,
-where the J_0 runs are those of `fsi2_biharmonic_mixed` (`fsi2_simplified` takes the same
-iterates), and with it, where they are those of `fsi2_simplified`. The full Jacobian has no
-prediction and is shown in both as the reference.
+where the full Jacobian is `fsi2_biharmonic_fulljacobian` and the J_0 runs are those of
+`fsi2_biharmonic_mixed` (`fsi2_simplified` takes the same iterates), and with it, where they are
+`fsi2_biharmonic_fulljacobian_initialguess` and `fsi2_simplified`.
 
 ## Residual per iteration
 
@@ -133,9 +148,9 @@ iterations after the first, the median share of the other blocks in ||R|| is 5e-
 and 3e-12 (z): the mesh motion and the kinematic rows are linear and solved exactly in every
 iteration, so the per-block norms add little here.
 
-**The prediction** (right) changes the first iteration. The solid stress is written in terms of v,
-so the solid part of the residual of the initial guess is consistent already. What lags is the
-fluid displacement u_f: in the initial guess it is that of the previous step, so the mesh velocity
+**The prediction** (right) changes the first iteration. With J_0, the solid stress is written in
+terms of v, so the solid part of the residual of the initial guess is consistent already. What lags
+is the fluid displacement u_f: in the initial guess it is that of the previous step, so the mesh velocity
 (u_f - u_f_old) / dt in the residual vanishes, and the fluid sees the old geometry. J_0 is the
 derivative with respect to (v, p) at fixed displacements, so the first Newton step does not see
 that the update after it moves the fluid mesh by the displacement of a whole time step. With the
@@ -145,6 +160,16 @@ only moves by dt θ (v_1 - v_old). Without reuse, every step then converges in e
 iterations, at a contraction of 2e-3 to 5e-3 per iteration throughout. With reuse, the first
 iteration does most of the work of the step, down to ||R_1|| ≈ 0.7, and the later ones contract
 at the rate of the aged J_0.
+
+The full Jacobian sees the ALE derivatives, yet without the prediction its first iteration only
+contracts by 0.08, to a median ||R_1|| of 7.3: the previous state violates the kinematic relation
+by a whole step of displacement, too far from the solution for the quadratic convergence to set in.
+With the prediction, the initial guess is off by about dt² a / 2 (a the acceleration), the
+residual of the initial guess is again about the same (median 97), and the first iteration reduces
+it to 0.047. The second then reaches `snes_atol` in 132 of the 199 steps (median ||R_2|| of 3e-8),
+and the others need a third. Each iteration costs the same 0.38 s, so the step takes 22% less
+time. The first iteration with the full Jacobian now gains 3.3 orders of magnitude against 2.5
+with J_0, so the full Jacobian gains more from the prediction than J_0 does.
 
 ## Contraction with a reused J_0
 
@@ -196,8 +221,12 @@ prediction:
   12 steps, and the steps take 6 to 12 iterations as it ages.
 
 The full Jacobian shows the same phases in its first iteration (0.14 against 0.03), so they come
-from the solution, not from J_0. Without reuse, the prediction makes every step take 4 iterations,
-against 4 to 6 without it.
+from the solution, not from J_0. Without reuse, the prediction makes every step with J_0 take 4
+iterations, against 4 to 6 without it. With the full Jacobian and the prediction, the steps that
+need a third iteration are those around the turning points of the tip (t in 16.09 to 16.17 and
+16.35 to 16.43), where its acceleration, and so the error of the prediction, is largest: ||R_1||
+correlates with the tip acceleration (0.86), and is 0.077 in the median in those steps against
+0.042 in the others.
 
 **Note: the saving of the prediction depends on how fast the solid moves.** The prediction removes
 the error of a mesh that lags by dt v, so it only pays off when the solid moves noticeably in a
@@ -205,14 +234,15 @@ time step. In FSI2 the tip moves at 0.3 to 1.1 m/s (up to 2.6 mm per step), and 
 prediction the first iteration contracts more the faster it moves (correlation 0.98 with the tip
 speed). Split into thirds by tip speed:
 
-| tip speed (m/s) | rate 0→1, off → on | its/step reassembled, off → on | its/step reused, off → on |
-|---|---|---|---|
-| 0.31 to 0.54 | 0.12 → 4e-3 | 5.00 → 4.00 | 7.63 → 7.52 |
-| 0.54 to 0.86 | 0.17 → 3e-3 | 5.20 → 4.00 | 7.83 → 7.02 |
-| 0.86 to 1.06 | 0.25 → 3e-3 | 5.42 → 4.00 | 7.22 → 5.96 |
+| tip speed (m/s) | J_0: rate 0→1, off → on | J_0 reassembled: its/step | J_0 reused: its/step | full Jacobian: its/step |
+|---|---|---|---|---|
+| 0.31 to 0.54 | 0.12 → 4e-3 | 5.00 → 4.00 | 7.63 → 7.52 | 3.00 → 2.66 |
+| 0.54 to 0.86 | 0.17 → 3e-3 | 5.20 → 4.00 | 7.83 → 7.02 | 3.00 → 2.34 |
+| 0.86 to 1.06 | 0.25 → 3e-3 | 5.42 → 4.00 | 7.22 → 5.96 | 3.00 → 2.00 |
 
 With reuse, the prediction saves almost nothing in the slowest third and 1.3 iterations per step in
-the fastest. The aneurysm model of aneurism-fsi (`threeDfsi_simplified`, 10 steps of dt = 1e-4 at
+the fastest; with the full Jacobian, 0.34 and 1.00. The slow third is also where the tip turns
+and accelerates most. The aneurysm model of aneurism-fsi (`threeDfsi_simplified`, 10 steps of dt = 1e-4 at
 full load, 8 ranks, Jacobian reuse), whose wall moves very little per step, shows the same: the
 prediction lowers the first contraction only from 0.04–0.06 to 0.03–0.04 and saves 0 to 2 of 34 to
 37 Newton iterations. The numbers of this report are for the large deformations of FSI2, which is
@@ -233,7 +263,8 @@ with the factorizations, updates the displacements and assembles the residual (0
 as much as 4 reused iterations.
 
 An iteration costs the same with and without the prediction, which adds one mesh motion solve per
-step with the kept factorization, so the prediction saves exactly its share of iterations.
+step with the kept factorization, so the prediction saves exactly its share of iterations. That
+holds for the full Jacobian too (0.382 s against 0.384 s per iteration).
 
 ## Caveats
 
@@ -241,8 +272,9 @@ step with the kept factorization, so the prediction saves exactly its share of i
   repeats in both half periods, but longer runs would show how stable the numbers are.
 - The full-Jacobian run of the timing batch was 18% slower than in an earlier batch, evenly over
   the whole run, while every other run was 2 to 13% faster alone. A 60-step check run alone right
-  after took 1.145 s per step over steps 2 to 60, against 1.163 s in the earlier batch, so the run
-  was slowed down by other work on the machine; the tables use the check.
+  after took 1.145 s per step, so the run was slowed down by other work on the machine. The tables
+  use a later rerun on the idle machine, together with the run with the prediction: 1.152 s per
+  step, with the same iterates as the disturbed run.
 - Times from runs that shared the machine compare poorly between batches: an earlier version of
   this report gave 19% and 31% for the savings of the prediction from such a comparison.
 - The values in the logs have 7 significant digits, enough for the rates.
@@ -252,6 +284,9 @@ step with the kept factorization, so the prediction saves exactly its share of i
 - A γ sweep with the prediction (for example 0.05, 0.1, 0.3, 0.5) on the same window. With the
   prediction, the later iterations with a reused J_0 contract by about 0.1, so a smaller γ may pay
   off at a cost of 4 reused iterations per assembly.
+- A prediction of higher order, with the acceleration from v_old and the velocity of the step
+  before. The steps where the full Jacobian with the prediction needs a third iteration are those
+  where the tip accelerates most, so it may bring them down to 2.
 - Measure the prediction in `threeDfsi_simplified` on a case with larger deformations. On the
   aneurysm model, with its small wall motion, it saves almost nothing (see the note at the end of
   Iterations over the period).
@@ -269,6 +304,7 @@ setup table, on 5 ranks, one at a time. The figures are made by
 python notes/newton-convergence/make_figures.py
 ```
 
-from those logs and from the 60-step full-Jacobian check in `output/newton_convergence_check/`.
+from those logs and from the full-Jacobian runs with and without the prediction in
+`output/fulljacobian_initialguess/`, run the same way one after the other.
 `python -m xfsi_solver.scripts.plot_newton_logs` makes the standard figure set and the summary
 table for any set of runs.

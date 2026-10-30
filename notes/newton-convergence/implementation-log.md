@@ -247,6 +247,7 @@ and labels. The residual pair puts the run without the prediction first, so the 
 approximate Jacobian come right after the results table; the other pairs put the prediction first.
 `plot_residual_history`, `plot_contraction_by_age` and `plot_iterations_over_time` take a title
 and fixed axis limits for this.
+
 ## 2026-10-30: The prediction in the full-Jacobian solver
 
 `fsi2_biharmonic_fulljacobian_initialguess` is `fsi2_biharmonic_fulljacobian` with the displacement

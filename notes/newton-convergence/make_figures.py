@@ -3,14 +3,16 @@
     python notes/newton-convergence/make_figures.py [figure_dir]
 
 The runs are the rerun of all configurations one at a time (output/newton_convergence_rerun),
-whose iterates are those of the first batches, and the 60-step check of the full Jacobian
-(output/newton_convergence_check), whose times stand in for the disturbed full-Jacobian rerun in
-the cost figure. Writes SVG and PNG figures into figure_dir, by default plots/ next to this file.
+whose iterates are those of the first batches, and the full Jacobian with and without the
+prediction, run one after the other on an idle machine (output/fulljacobian_initialguess), whose
+times stand in for the disturbed full-Jacobian rerun in the cost figure. Writes SVG and PNG figures
+into figure_dir, by default plots/ next to this file.
 
 The residual, contraction and iteration figures come in pairs, with and without the displacement
 prediction, on the same axes and with the same colors and labels, to be shown side by side. The
 J_0 runs without the prediction are those of fsi2_biharmonic_mixed, and those with it of
-fsi2_simplified, which takes the same iterates as fsi2_biharmonic_mixed without the prediction.
+fsi2_simplified, which takes the same iterates as fsi2_biharmonic_mixed without the prediction. The
+full Jacobian with the prediction is fsi2_biharmonic_fulljacobian_initialguess.
 """
 
 import sys
@@ -28,7 +30,7 @@ from xfsi_solver.scripts.plot_newton_logs import (
 )
 
 RERUN = Path("output/newton_convergence_rerun")
-CHECK = Path("output/newton_convergence_check")
+FULL = Path("output/fulljacobian_initialguess")
 GAMMA = 0.2
 
 figure_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "plots"
@@ -39,15 +41,15 @@ mixed_fresh = Run("J_0, reassembled", RERUN / "mixed_none")
 mixed_reused = Run(f"J_0, reused (γ={GAMMA})", RERUN / "mixed_0.2")
 predicted_fresh = Run("J_0, reassembled", RERUN / "simplified_none")
 predicted_reused = Run(f"J_0, reused (γ={GAMMA})", RERUN / "simplified_0.2")
-# The full Jacobian has no prediction; it is the reference in both figures of a pair.
-full_reference = Run("full Jacobian (no prediction)", RERUN / "fulljacobian")
-with_prediction = [full_reference, predicted_fresh, predicted_reused]
+full_predicted = Run("full Jacobian", FULL / "fulljacobian_initialguess")
+with_prediction = [full_predicted, predicted_fresh, predicted_reused]
 without_prediction = [full, mixed_fresh, mixed_reused]
 
 simplified_fresh = Run("simplified, reassembled", RERUN / "simplified_none_nopred")
 simplified_reused = Run(f"simplified, reused (γ={GAMMA})", RERUN / "simplified_0.2_nopred")
 cost_runs = [
-    Run("full Jacobian (60 steps)", CHECK / "fulljacobian"),
+    Run("full Jacobian", FULL / "fulljacobian"),
+    Run("full Jacobian, predicted", FULL / "fulljacobian_initialguess"),
     Run("mixed, reassembled", RERUN / "mixed_none"),
     Run(f"mixed, reused (γ={GAMMA})", RERUN / "mixed_0.2"),
     simplified_fresh,
