@@ -180,3 +180,12 @@ iterations; its 6% in time was also a comparison between batches. The full-Jacob
 rerun was 18% slower than in the first batch, and a 60-step check alone again matched the first
 batch, so the rerun's full-Jacobian time was disturbed by other work on the machine. The docstrings
 of the simplified solvers now quote 11% and 27%. Results in the last section of `report.md`.
+
+## 2026-10-30: Report rewritten
+
+`report.md` is rewritten around the current state: the prediction as the default, the rerun
+timings, and the full-Jacobian time from the 60-step check. The figures are made again from the
+rerun logs by `make_figures.py` next to it (same iterates as the first batches), and replace the
+earlier figure set, which is in the history of the branch. The legends of the contraction and
+iteration plots of `plot_newton_logs` now sit below the axes, clear of the lines. An HTML version of
+the report was published as a claude.ai artifact.
