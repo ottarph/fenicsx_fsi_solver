@@ -196,7 +196,8 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
     if len(runs) > 1:
         fig.suptitle("Contraction per Newton iteration: median and interquartile range", x=0.01, ha="left", fontsize=9)
     axes[0, 0].set_ylabel(r"contraction $\|R_{k+1}\| / \|R_k\|$")
-    axes[0, 0].legend(loc="lower right", fontsize=8, bbox_to_anchor=(1.0, 0.06))
+    # Below the axes, clear of the reference lines, which can lie anywhere.
+    axes[0, 0].legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), ncols=2, fontsize=8)
     fig.savefig(path)
     plt.close(fig)
 
@@ -217,7 +218,6 @@ def plot_iterations_over_time(runs: list[Run], path: Path) -> None:
                     label=f"{_label(run.label)} (mean {run.iterations.mean():.2f})")  # fmt: skip
     ax_its.set_ylabel("Newton iterations")
     ax_its.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-    ax_its.legend(loc="upper left", fontsize=8)
     if reusing:
         ax_asm = axes[2]
         for i, run in enumerate(reusing):
@@ -228,6 +228,9 @@ def plot_iterations_over_time(runs: list[Run], path: Path) -> None:
         ax_asm.set_ylabel("assembly", rotation=0, ha="right", va="center")
         ax_asm.grid(axis="y", visible=False)
     axes[-1].set_xlabel("$t$ [s]")
+    # Below the figure, since the step lines fill the panel at any height.
+    handles, labels = ax_its.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.0), ncols=2, fontsize=8)
     fig.savefig(path)
     plt.close(fig)
 
