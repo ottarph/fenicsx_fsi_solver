@@ -9,8 +9,9 @@
 #   sbatch --export=ALL,RUN_NAME=fsi2_mixed_short,T=0.1 jobs/fsi2_biharmonic_mixed.sh
 # Values are inserted as Python expressions: True/False, None, numbers or arithmetic.
 #
-# Each run gets its own directory, RUN_DIR, which holds the QoIs, checkpoints, VTX output,
-# matrix plots and a record of the code version and arguments.
+# Each run gets its own directory, RUN_DIR, which holds the QoIs, the Newton log (one row per
+# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, VTX output, matrix plots and
+# a record of the code version and arguments.
 #SBATCH -J fsi2-mixed
 #SBATCH -p defq
 #SBATCH -N 1
@@ -63,6 +64,7 @@ solve(
     output_path="$RUN_DIR/pv/$RUN_NAME.bp",
     output_path_p="$RUN_DIR/pv/${RUN_NAME}_p.bp",
     qoi_path="$RUN_DIR/qoi/$RUN_NAME.txt",
+    newton_log_path="$RUN_DIR/qoi/${RUN_NAME}_newton.txt",
     checkpoint_dir="$RUN_DIR/checkpoints",
     checkpoint_every=$CHECKPOINT_EVERY,
     vtx_save_every=$VTX_SAVE_EVERY,

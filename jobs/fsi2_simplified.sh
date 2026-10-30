@@ -24,8 +24,9 @@
 #   sbatch --export=ALL,RUN_NAME=fsi2_simplified_from16,INITIAL_STATE_RUN=fsi2_simplified,T=18.0 jobs/fsi2_simplified.sh
 # Such a run that stopped is resumed with RESTART=True, without INITIAL_STATE_RUN.
 #
-# Each run gets its own directory, RUN_DIR, which holds the QoIs, checkpoints, VTX output, QoI
-# plots and a record of the code version and arguments.
+# Each run gets its own directory, RUN_DIR, which holds the QoIs, the Newton log (one row per
+# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, VTX output, QoI plots and
+# a record of the code version and arguments.
 #SBATCH -J fsi2-simplified
 #SBATCH -p defq
 #SBATCH -N 1
@@ -106,6 +107,7 @@ solve(
     output_path="$RUN_DIR/pv/$RUN_NAME.bp",
     output_path_p="$RUN_DIR/pv/${RUN_NAME}_p.bp",
     qoi_path="$RUN_DIR/qoi/$RUN_NAME.txt",
+    newton_log_path="$RUN_DIR/qoi/${RUN_NAME}_newton.txt",
     checkpoint_dir="$RUN_DIR/checkpoints",
     checkpoint_every=$CHECKPOINT_EVERY,
     vtx_save_every=$VTX_SAVE_EVERY,

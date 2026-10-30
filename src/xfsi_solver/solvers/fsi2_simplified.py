@@ -892,6 +892,7 @@ def main():
     output_path = f"output/pv/{run_name}.bp"
     output_path_p = f"output/pv/{run_name}_p.bp"
     qoi_path = f"output/qoi/{run_name}.txt"
+    newton_log_path = f"output/qoi/{run_name}_newton.txt"
     checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 400
     vtx_save_every = None
@@ -912,6 +913,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,

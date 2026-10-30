@@ -738,6 +738,7 @@ def main():
     output_path = "output/pv/fsi2_biharmonic_fulljacobian.bp"
     output_path_p = "output/pv/fsi2_biharmonic_fulljacobian_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_fulljacobian.txt"
+    newton_log_path = "output/qoi/fsi2_biharmonic_fulljacobian_newton.txt"
     checkpoint_dir = "output/checkpoints/fsi2_biharmonic_fulljacobian"
     checkpoint_every = 100
     vtx_save_every = 4
@@ -753,6 +754,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,

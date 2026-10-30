@@ -954,6 +954,7 @@ def main():
     output_path = "output/pv/fsi2_biharmonic_mixed_fine.bp"
     output_path_p = "output/pv/fsi2_biharmonic_mixed_fine_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_mixed_fine.txt"
+    newton_log_path = "output/qoi/fsi2_biharmonic_mixed_fine_newton.txt"
     checkpoint_dir = "output/checkpoints/fsi2_biharmonic_mixed_fine"
     checkpoint_every = 400
     vtx_save_every = None
@@ -970,6 +971,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,
