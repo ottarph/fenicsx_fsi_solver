@@ -156,7 +156,8 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
     """Contraction factor against the age of the Jacobian in time steps for the runs with reuse,
     separately for the first Newton iteration of a time step and the later ones, with the medians of
     the run ``reference``, which assembles in every iteration."""
-    fig, axes = plt.subplots(1, len(runs), figsize=(6.0 * len(runs), 3.8), sharey=True, squeeze=False)
+    width = 6.0 if len(runs) == 1 else 4.6
+    fig, axes = plt.subplots(1, len(runs), figsize=(width * len(runs), 3.8), sharey=True, squeeze=False)
     kinds = [("first iteration of a step", lambda k: k == 0, SERIES_COLORS[3], -0.15),
              ("later iterations", lambda k: k > 0, SERIES_COLORS[2], 0.15)]  # fmt: skip
     for ax, run in zip(axes[0], runs, strict=True):
@@ -187,8 +188,13 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
         ax.set_xticks(ages)
         ax.grid(axis="x", visible=False)
         ax.set_xlabel("age of the Jacobian (time steps since it was assembled)")
-        ax.set_title(f"Contraction per Newton iteration, {_label(run.label)}: median and interquartile range",
-                     loc="left", fontsize=9)  # fmt: skip
+        if len(runs) == 1:
+            ax.set_title(f"Contraction per Newton iteration, {_label(run.label)}: median and interquartile range",
+                         loc="left", fontsize=9)  # fmt: skip
+        else:
+            ax.set_title(_label(run.label), loc="left", fontsize=9)
+    if len(runs) > 1:
+        fig.suptitle("Contraction per Newton iteration: median and interquartile range", x=0.01, ha="left", fontsize=9)
     axes[0, 0].set_ylabel(r"contraction $\|R_{k+1}\| / \|R_k\|$")
     axes[0, 0].legend(loc="lower right", fontsize=8, bbox_to_anchor=(1.0, 0.06))
     fig.savefig(path)
@@ -261,7 +267,7 @@ def plot_cost(runs: list[Run], path: Path) -> None:
         matplotlib.patches.Patch(color=SERIES_COLORS[1], label="new Jacobian"),
         matplotlib.patches.Patch(color=SERIES_COLORS[2], label="reused Jacobian"),
     ]
-    ax_it.legend(handles=handles, loc="lower right", fontsize=8)
+    ax_it.legend(handles=handles, loc="lower right", bbox_to_anchor=(1.0, 1.0), ncols=2, fontsize=8)
     ax_it.set_xlabel("mean wall time per Newton iteration [s]")
     ax_it.grid(axis="y", visible=False)
     ax_it.set_xlim(0, 1.5 * longest)
@@ -298,8 +304,8 @@ def plot_newton_comparison(
     """Write the figures of the module docstring for ``runs`` into ``figure_dir``, as PNG and SVG.
 
     The cost figure shows ``cost_runs``, by default ``runs``. The contraction figure shows the runs
-    that reuse the Jacobian, against the last run that does not, with the reassembly threshold
-    ``gamma``.
+    that reuse the Jacobian, with the reassembly threshold ``gamma``, against the last run that does
+    not, if any.
     """
     figure_dir = Path(figure_dir)
     figure_dir.mkdir(parents=True, exist_ok=True)

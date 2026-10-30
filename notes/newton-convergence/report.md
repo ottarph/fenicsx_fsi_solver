@@ -32,12 +32,18 @@ solver. Rates are medians over the time steps of ||R_(k+1)|| / ||R_k||.
 2. **Reusing J_0 cuts the time per step by another factor 2.6**, to 0.23 s, although it takes 7.6
    iterations per step instead of 5.2. An iteration that reuses J_0 costs 0.022 s, a fifth of
    one that assembles and factorizes it (0.117 s), and only 126 of 1506 iterations assemble.
-3. **The reuse test at the first iteration of a step does not measure the Jacobian.** The first
-   iteration contracts by 0.13 to 0.24 whether J_0 is fresh or 12 steps old, depending on the
-   phase of the oscillation. With γ = 0.2 right inside that band, the run reassembles in almost
-   every step for about 60% of the period and not at all for the rest, where the Jacobian ages
-   to 12 steps and the step needs up to 12 iterations.
-4. **`fsi2_simplified` takes the same Newton iterations as `fsi2_biharmonic_mixed`**, with the same
+3. **The reuse test at the first iteration of a step does not measure the Jacobian, but skipping
+   it does not help.** The first iteration contracts by 0.13 to 0.24 whether J_0 is fresh or 12
+   steps old, depending on the phase of the oscillation, and with γ = 0.2 it triggers 74 of the
+   126 assemblies. Without that test (`skip_first_reuse_test`), the same steps reassemble a few
+   iterations later instead: in about 60% of the period, a J_0 from the step before is too old
+   anyway. That saves 6% of the time.
+4. **Predicting the displacements before each solve removes the slow first iteration.** With
+   `predict_displacements`, the first iteration contracts by 3e-3 instead of 0.16, and without
+   reuse every step converges in exactly 4 iterations instead of 5.2 (31% less time). With
+   reuse, it takes 6.8 iterations instead of 7.6 and 0.159 s per step instead of 0.197 s (19%
+   less), the fastest of all runs.
+5. **`fsi2_simplified` takes the same Newton iterations as `fsi2_biharmonic_mixed`**, with the same
    iteration counts and the same assembly pattern in every step and residuals within 1 to 2%, at
    14 to 21% less time per step.
 
@@ -110,6 +116,74 @@ Over time, this splits the period in two phases:
 The full Jacobian shows the same phases in its first iteration (0.14 against 0.03), which
 confirms that they come from the solution, not from J_0.
 
+## Predicting the displacements, and skipping the first reuse test
+
+Two options of `fsi2_simplified`, both off by default, were run on the same window from the same
+state, again on 5 ranks each, the four runs at once:
+
+- `skip_first_reuse_test=True`: the reuse test is not applied to the rate of the first iteration
+  of a step. The Jacobian is always reused at the second iteration, and tested from the third on.
+- `predict_displacements=True`: before each Newton solve, the displacements are updated as after
+  a linear solve, from the velocity of the previous step: u_s = u_s_old + dt v_old, node by node,
+  and u_f by the mesh motion. Without it, u_f in the initial guess is still that of the previous
+  step, so the mesh velocity (u_f - u_f_old) / dt in the residual vanishes, and the fluid sees the
+  old geometry. The solid stress needs no prediction: it is written in terms of v already.
+
+| run | its/step | max its | assemblies | time/step (s) | rate 0→1 | 1→2 | 2→3 | 3→4 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| reassembled | 5.21 | 6 | 1036 | 0.468 | 1.6e-01 | 3.7e-03 | 6.8e-03 | 6.9e-03 |
+| predicted, reassembled | 4.00 | 4 | 796 | 0.322 | 3.2e-03 | 5.0e-03 | 3.3e-03 | 2.1e-03 |
+| reused (γ=0.2) | 7.57 | 12 | 126 | 0.197 | 1.6e-01 | 1.5e-02 | 3.1e-02 | 6.6e-02 |
+| skip first test (γ=0.2) | 7.42 | 12 | 126 | 0.186 | 1.6e-01 | 3.9e-02 | 2.8e-02 | 2.6e-01 |
+| predicted, reused (γ=0.2) | 6.84 | 11 | 109 | 0.159 | 7.2e-03 | 8.5e-02 | 4.3e-02 | 1.4e-01 |
+| predicted + skip (γ=0.2) | 6.84 | 11 | 109 | 0.164 | 7.2e-03 | 8.5e-02 | 4.3e-02 | 1.4e-01 |
+
+The first two and the third rows are the `fsi2_simplified` runs of the first comparison. All runs
+reach the same states: their QoIs agree with those of the baseline to 4e-8 relative.
+
+![Residual per Newton iteration, with and without the prediction](plots/predictor/residual_history.svg)
+
+**The prediction.** The residual of the initial guess hardly changes (median 97 against 98), but
+the first iteration now reduces it to 0.3 instead of 16 (fresh J_0 in every iteration). J_0 is
+the derivative with respect to (v, p) at fixed displacements. Without the prediction, the update
+after the first linear solve moves the fluid mesh by the displacement of a whole time step, which
+the Newton step did not take into account. With it, the mesh only moves by dt θ (v_1 - v_old),
+the change of the velocity over the first iteration. Without reuse, every step then converges in
+exactly 4 iterations, at a contraction of 2e-3 to 5e-3 per iteration throughout.
+
+![Contraction against the age of the Jacobian, with and without the prediction](plots/predictor/contraction_by_age.svg)
+
+With reuse, the prediction turns the pattern around. The first iteration of a step now
+contracts by 5e-3 to 2e-2, growing with the age of the Jacobian, and does most of the work of the
+step. The later iterations, which start from ||R_1|| ≈ 0.7, contract by 0.08 to 0.18 with a
+Jacobian from an earlier step, so the step still needs about 6 more iterations. The prediction
+therefore saves less with reuse (0.7 iterations per step) than without (1.2), but the run is the
+fastest of all.
+
+**Skipping the first reuse test.** Without the test at the first iteration, the 74 assemblies
+it triggered move to later in the same steps: 112 of the 126 assemblies are now at the fourth
+iterate, after the iteration 3→4 contracted by more than γ (its median is 0.26). The number of
+assemblies is the same, and the run saves only the iterations between, 0.15 per step (6% of the
+time). In the phase where the first iteration contracts by more than γ (the first phase of the
+list above), a Jacobian from the step before also contracts the later iterations by more than γ
+in 30% of them (median 0.06), against 0.014 in the other phase. So J_0 does go out of date within
+one step there, and the first-iteration test only anticipated the assembly. With the prediction,
+the first iteration contracts by much less than γ, so the test never triggers there and the
+option changes nothing: the two predicted runs take the same iterations.
+
+![Tip displacement, Newton iterations and assemblies over time, with and without the prediction](plots/predictor/iterations_over_time.svg)
+
+With and without the prediction, the runs with reuse reassemble in almost every step in the
+same phase, and keep the Jacobian for many steps in the other.
+
+![Cost of the runs, with and without the prediction](plots/predictor/cost.svg)
+
+The prediction costs one more mesh motion solve per step, with the factorization that is kept
+for the whole run. It does not show in the times: the iterations of the predicted runs are even
+about 10% cheaper than those of the others. The four new runs ran as a second batch, so
+differences of that size are within the noise of the shared machine; the savings above come
+mainly from the iteration counts.
+
 ## Caveats
 
 - One window of 0.5 s, from one state, on one mesh. The phase pattern repeats in both half
@@ -117,17 +191,18 @@ confirms that they come from the solution, not from J_0.
 - The five runs shared the 32-core workstation, 5 ranks each, so the times are relative and
   rough. The ratios between the runs should hold better than the absolute times.
 - The first step of each run is left out, since the start state comes from another solver.
+- The runs of the prediction section ran as a second batch of four, the first comparison as a
+  batch of five, so times between the batches compare less well than within one.
 - All values are written with 7 significant digits, enough for the rates.
 
 ## Next steps
 
-- Leave the first iteration of a step out of the reuse test, or give it its own threshold: its
-  contraction is not a measure of the Jacobian, and with γ = 0.2 it triggers most of the
-  assemblies. A run with that change would show whether the Jacobian can be kept through the
-  whole period.
-- A γ sweep (for example 0.05, 0.1, 0.3, 0.5) in `fsi2_simplified` on the same window, to see
-  where the trade-off between iterations and assemblies is best. With the costs above, an
-  assembly is worth about 4 reused iterations.
+- Make `predict_displacements` the default of `fsi2_simplified`, and try it in
+  `threeDfsi_simplified`, which updates the displacements in the same way.
+- A γ sweep (for example 0.05, 0.1, 0.3, 0.5) with the prediction, on the same window, to see
+  where the trade-off between iterations and assemblies is best. With the prediction, the later
+  iterations with a reused Jacobian contract by about 0.1, so a smaller γ may pay off. With the
+  costs above, an assembly is worth about 4 reused iterations.
 - Time the best configuration again alone on the machine, and over a longer window.
 
 ## Reproducing
@@ -145,4 +220,14 @@ python -m xfsi_solver.scripts.plot_newton_logs notes/newton-convergence/plots \
     -- "simplified, reassembled=$R/simplified_none" "simplified, reused (γ=0.2)=$R/simplified_0.2"
 ```
 
-which writes PNG and SVG figures; only the SVGs are kept here.
+and those of the prediction section with
+
+```bash
+python -m xfsi_solver.scripts.plot_newton_logs notes/newton-convergence/plots/predictor \
+    "reassembled=$R/simplified_none" "predicted, reassembled=$R/simplified_none_pred" \
+    "reused (γ=0.2)=$R/simplified_0.2" "skip first test (γ=0.2)=$R/simplified_0.2_skip" \
+    "predicted, reused (γ=0.2)=$R/simplified_0.2_pred" -- "predicted + skip (γ=0.2)=$R/simplified_0.2_skip_pred"
+```
+
+where the new runs passed `skip_first_reuse_test` and `predict_displacements` to
+`fsi2_simplified.solve()`. The script writes PNG and SVG figures; only the SVGs are kept here.

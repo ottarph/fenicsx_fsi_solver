@@ -111,3 +111,29 @@ Two findings changed how the reuse should be read:
   assemblies (74 of 126) are triggered right after the first iteration, in the phases where it
   contracts by more than 0.2. The later iterations, which do measure the age of the Jacobian, only
   reach γ after 11 to 12 steps.
+
+## 2026-10-30: Predicted displacements and skipping the first reuse test
+
+Two options of `fsi2_simplified`, off by default:
+
+- `skip_first_reuse_test`: `wrapped_jacobian` tests the rate of the last iteration only from the
+  third Newton iteration of a step on (`first_tested = 2`), so the Jacobian is always reused at the
+  second.
+- `predict_displacements`: `update_displacements()`, split out of the KSP post-solve hook, is also
+  called in the time loop right before `problem.solve()`, while v is still v_old. It has to be
+  there rather than in a SNES hook: SNES evaluates the residual of the initial guess before any
+  of its per-iteration hooks (`SNESSetUpdate` runs after it). The solid stress already uses
+  u_s_old + dt (θ v + (1 - θ) v_old), so the prediction only changes u_f, and with it the fluid
+  geometry and the mesh velocity of the initial guess.
+
+The coarse-mesh tests cannot show the effect of the prediction: from rest, the structure hardly
+moves in the first steps, and the residuals of the initial guesses agree to 7 digits. The test
+checks that the states agree and that the initial residual is no larger.
+
+Runs on mesh_sec, from the same state as the first comparison (results in `report.md`): the
+prediction cuts the first-iteration contraction from 0.165 to 3e-3, gives 4 iterations in every
+step without reuse (31% less time) and 19% less time with reuse at γ = 0.2. Skipping the first
+reuse test saves 6%: the assemblies it triggered move to the fourth iterate of the same steps,
+since a Jacobian from the step before is out of date within one step in that phase of the
+oscillation. This corrects the reading in the first analysis that the first-iteration test causes
+needless assemblies.
