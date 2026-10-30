@@ -236,3 +236,14 @@ the first-iteration rate without the prediction correlates with the tip speed (0
 tip speed (0.31–0.54, 0.54–0.86, 0.86–1.06 m/s) it is 0.12, 0.17 and 0.25, and with reuse the
 prediction saves 0.1, 0.8 and 1.3 iterations per step. Added as a note to the report: the findings
 stay based on FSI2, with the prediction doing much less for small deformations.
+
+## 2026-10-30: Report by topic, with paired figures
+
+The report now describes the three solvers (`fsi2_simplified` as an implementation of
+`fsi2_biharmonic_mixed` with Newton only on (v, p)), and is divided by what the figures show
+instead of by with and without the prediction: residual per iteration, contraction against the age
+of a reused J_0, and iterations over the period, each as a pair on shared axes with the same colors
+and labels. The residual pair puts the run without the prediction first, so the full and
+approximate Jacobian come right after the results table; the other pairs put the prediction first.
+`plot_residual_history`, `plot_contraction_by_age` and `plot_iterations_over_time` take a title
+and fixed axis limits for this.
