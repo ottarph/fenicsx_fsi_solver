@@ -17,6 +17,7 @@ from petsc4py import PETSc
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
     append_qoi_row,
@@ -71,6 +72,7 @@ def solve(
     initial_state_dir=None,
     mesh_motion_scaling=None,
     max_quadrature_degree=None,
+    newton_log_path=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -124,6 +126,12 @@ def solve(
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
     degree are integrated inexactly at that degree, and the others keep their estimate. With the
     default None, every integral keeps the degree UFL estimates.
+
+    With ``newton_log_path``, every Newton iterate is recorded in that file by
+    ``xfsi_solver.tools.newton_log.NewtonLog``: the norms of the residual and of the Newton update,
+    in total and on each block u, v, p and z, whether the Jacobian of the step was assembled anew,
+    and the wall time of each iteration. A restart drops the rows after the checkpoint time, as it
+    does from the QoI file.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -629,6 +637,10 @@ def solve(
     solver.setFunction(wrapped_residual, b_vec)
 
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    if newton_log_path is not None:
+        blocks = field_blocks(problem, ["u", "v", "p", "z"])
+        newton_log = NewtonLog(newton_log_path, blocks, comm, restart, t, dt_val)
+        solver.setMonitor(newton_log)
 
     if not restart:
         write_output(t, step)
@@ -650,6 +662,8 @@ def solve(
         if comm.rank == 0:
             print(f"\n{t = :.3f}")
 
+        if newton_log_path is not None:
+            newton_log.start_step(t)
         problem.solve()
         check_converged(problem, f"t = {t:.4f}", writers=writers)
 
@@ -725,6 +739,7 @@ def main():
     output_path = "output/pv/fsi2_biharmonic_fulljacobian.bp"
     output_path_p = "output/pv/fsi2_biharmonic_fulljacobian_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_fulljacobian.txt"
+    newton_log_path = "output/qoi/fsi2_biharmonic_fulljacobian_newton.txt"
     checkpoint_dir = "output/checkpoints/fsi2_biharmonic_fulljacobian"
     checkpoint_every = 100
     vtx_save_every = 4
@@ -740,6 +755,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,

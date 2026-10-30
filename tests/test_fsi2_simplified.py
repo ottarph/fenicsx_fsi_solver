@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_initial_state_rejects_T_not_after_it,
     check_restart_rejects_different_dt,
@@ -16,6 +17,7 @@ from xfsi_solver.solvers.fsi2_simplified import (
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     solve,
 )
+from xfsi_solver.tools.newton_log import read_newton_log
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
@@ -37,6 +39,7 @@ def test_fsi2_simplified_solve(output_dirs):
         output_path_p=str(output_dirs["pv"] / "fsi2_simplified_p.bp"),
         qoi_path=str(qoi_path),
         vtx_save_every=4,
+        newton_log_path=str(output_dirs["qoi"] / "fsi2_simplified_newton.txt"),
     )
 
     # The initial state and six time steps, with t, drag, lift and the tip displacement.
@@ -46,6 +49,7 @@ def test_fsi2_simplified_solve(output_dirs):
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
     assert (output_dirs["pv"] / "fsi2_simplified.bp").exists()
+    check_solver_newton_log(output_dirs["qoi"] / "fsi2_simplified_newton.txt", qoi_path, ["v", "p"])
 
 
 def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
@@ -169,12 +173,12 @@ def test_fsi2_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_p
 
 
 def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp_path):
-    # The two solvers compute the same iterates, up to the quadrature of the mesh motion, and their
-    # checkpoints have the same layout, so their states agree, and each continues from the other's
-    # checkpoint as from its own. The mesh motion of fsi2_simplified integrates each block of the mixed
-    # form at its own degree, while fsi2_biharmonic_mixed integrates the terms of a residual block
-    # together, at the highest degree of any of them, so u differs by 2e-6 of its largest value after
-    # 4 steps.
+    # Without the prediction of the displacements, the two solvers compute the same iterates, up to
+    # the quadrature of the mesh motion, and their checkpoints have the same layout, so their states
+    # agree, and each continues from the other's checkpoint as from its own. The mesh motion of
+    # fsi2_simplified integrates each block of the mixed form at its own degree, while
+    # fsi2_biharmonic_mixed integrates the terms of a residual block together, at the highest degree
+    # of any of them, so u differs by 2e-6 of its largest value after 4 steps.
     dt_val = 0.0025
 
     def run(module_solve, name, T, **kwargs):
@@ -191,7 +195,7 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
         )
 
     mixed = fsi2_biharmonic_mixed.solve
-    run(solve, "simplified", 4 * dt_val)
+    run(solve, "simplified", 4 * dt_val, predict_displacements=False)
     run(mixed, "mixed", 4 * dt_val, direct_k_c_solve=True)
     _, _, state_simplified = read_checkpoint_state(MESH, tmp_path / "simplified", dt_val, ELEMENTS)
     _, _, state_mixed = read_checkpoint_state(MESH, tmp_path / "mixed", dt_val, ELEMENTS)
@@ -201,8 +205,14 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
             state_simplified[name].x.array, values, rtol=0, atol=1e-5 * np.max(np.abs(values)), err_msg=name
         )
 
-    run(solve, "simplified_from_simplified", 8 * dt_val, initial_state_dir=tmp_path / "simplified")
-    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed")
+    run(
+        solve,
+        "simplified_from_simplified",
+        8 * dt_val,
+        initial_state_dir=tmp_path / "simplified",
+        predict_displacements=False,
+    )
+    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed", predict_displacements=False)
     run(
         mixed,
         "mixed_from_simplified",
@@ -223,3 +233,64 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
             np.testing.assert_allclose(
                 rows[:, column], values, rtol=0, atol=1e-6 * np.max(np.abs(values)), err_msg=f"{name}, column {column}"
             )
+
+
+def test_fsi2_simplified_reassembles_the_jacobian_in_every_iteration_without_reuse(output_dirs):
+    # With gamma_reassemble=None, the Jacobian is assembled in every Newton iteration, also in the
+    # first of a time step, which the default reuses from the step before.
+    dt_val = 0.0025
+
+    def run(name, gamma_reassemble):
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            gamma_reassemble=gamma_reassemble,
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+        )
+        return read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+
+    reused, fresh = run("reused", 0.2), run("fresh", None)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "fresh_newton.txt", output_dirs["qoi"] / "fresh.txt", ["v", "p"], always_assembled=True
+    )
+    assert np.any(reused["assembled"][reused["it"] > 0] == 0)
+    assert fresh["assembled"].sum() > reused["assembled"].sum()
+
+
+def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(output_dirs):
+    # The prediction only changes the initial guess of each Newton solve, so the runs agree within
+    # the Newton tolerance. From rest, the structure hardly moves in the first steps, so the residual
+    # of the initial guess hardly changes either; it is smaller with the prediction once the beam
+    # oscillates (notes/newton-convergence/implementation-log.md).
+    dt_val = 0.0025
+
+    def run(name, predict_displacements):
+        solve(
+            mesh_path=MESH,
+            T=4 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+            predict_displacements=predict_displacements,
+        )
+        return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2), read_newton_log(
+            output_dirs["qoi"] / f"{name}_newton.txt"
+        )
+
+    (qoi, log), (qoi_predicted, log_predicted) = run("previous", False), run("predicted", True)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "predicted_newton.txt", output_dirs["qoi"] / "predicted.txt", ["v", "p"]
+    )
+    for column in range(1, qoi.shape[1]):
+        np.testing.assert_allclose(
+            qoi_predicted[:, column], qoi[:, column], rtol=0, atol=1e-6 * np.abs(qoi[:, column]).max()
+        )
+    initial = log["residual"][log["it"] == 0]
+    initial_predicted = log_predicted["residual"][log_predicted["it"] == 0]
+    assert np.all(initial_predicted <= initial * (1 + 1e-6))

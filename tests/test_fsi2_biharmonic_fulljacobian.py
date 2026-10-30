@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_restart_rejects_different_dt,
     check_restart_rejects_T_not_after_checkpoint,
@@ -32,10 +33,18 @@ def test_fsi2_biharmonic_fulljacobian_solve(output_dirs, mesh_motion_scaling):
         qoi_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt"),
         vtx_save_every=4,
         mesh_motion_scaling=mesh_motion_scaling,
+        newton_log_path=str(output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian_newton.txt"),
     )
 
     assert (output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt").exists()
     assert (output_dirs["pv"] / "fsi2_biharmonic_fulljacobian.bp").exists()
+    # The full Jacobian is assembled in every Newton iteration.
+    check_solver_newton_log(
+        output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian_newton.txt",
+        output_dirs["qoi"] / "fsi2_biharmonic_fulljacobian.txt",
+        ["u", "v", "p", "z"],
+        always_assembled=True,
+    )
 
 
 def test_fsi2_biharmonic_fulljacobian_quadrature_cap_changes_the_qois_slightly(output_dirs):

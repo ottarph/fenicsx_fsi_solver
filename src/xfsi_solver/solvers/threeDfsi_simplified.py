@@ -19,6 +19,7 @@ from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_mo
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
     QOI_HEADER_3D,
@@ -205,6 +206,8 @@ def solve(
     mesh_motion_options=None,
     mesh_motion_max_quadrature_degree=8,
     requires_v_sub_IS=False,
+    predict_displacements=True,
+    newton_log_path=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -248,6 +251,24 @@ def solve(
     threeDfsi_c0ip caps its C0IP forms: UFL estimates degree 12 on the facets for P2 on the P2
     tetrahedral mesh, and the mesh motion residual is assembled in every Newton iteration. This cap is
     required too, and None raises ``ValueError``.
+
+    As in fsi2_simplified, with ``predict_displacements=True``, the default, the displacements are
+    also updated before each Newton solve, as after a linear solve, from the velocity of the previous
+    step: u_s = u_s_old + dt * v_old and its mesh motion. Without it, u_f in the initial guess is
+    still the fluid displacement of the previous step, so the mesh velocity (u_f - u_f_old) / dt in
+    its residual vanishes, and the first Newton step, whose Jacobian has no derivative through the
+    mesh motion, is followed by a mesh update by the displacement of a whole time step. In
+    fsi2_simplified on mesh_sec, the prediction cut the first-iteration contraction from 0.16 to
+    3e-3, and the time per step by 11% with the default Jacobian reuse and by 27% without
+    (notes/newton-convergence/report.md).
+
+    The Jacobian is reassembled when the residual norm decreased by less than a factor
+    ``gamma_reassemble`` in the last Newton iteration, and otherwise reused, also across time steps;
+    with ``gamma_reassemble=None``, it is reassembled in every Newton iteration.
+
+    With ``newton_log_path``, every Newton iterate is recorded in that file by
+    ``xfsi_solver.tools.newton_log.NewtonLog``, with the norms on the blocks v and p, as in
+    fsi2_simplified.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the 3d
     solvers do, so runs can restart from or start from each other's states. They hold no field of the
@@ -752,7 +773,9 @@ def solve(
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
         # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+        # With gamma_reassemble=None, J is never reused.
+        reuse = gamma_reassemble is not None and jacobian_state["assembled"]
+        if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         jacobian_state["assembled"] = True
@@ -839,15 +862,8 @@ def solve(
     movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
     movable_parent_cells = fluid_cell_map.sub_topology_to_topology(movable_cells, inverse=False)
 
-    def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
-        """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
-        where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
-        sets the next iterate to v - Y and evaluates the residual there."""
-        # The owned v rows come first in x, or are its first block if x is a nest vector.
-        x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
-        v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
-        v.x.scatter_forward()
-
+    def update_displacements() -> None:
+        """Set u_s from v by the kinematic relation, node by node, and u_f by the mesh motion."""
         # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
         # Dirichlet values hold already, since v and v_old vanish there, and are set again exactly.
         u_s.x.array[:] = u_s_old.x.array + dt_val * (
@@ -865,6 +881,16 @@ def solve(
 
         mesh_motion.solve()
 
+    def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
+        """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
+        where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
+        sets the next iterate to v - Y and evaluates the residual there."""
+        # The owned v rows come first in x, or are its first block if x is a nest vector.
+        x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
+        v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
+        v.x.scatter_forward()
+        update_displacements()
+
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # A failed linear solve of (v, p) makes the SNES stop with DIVERGED_LINEAR_SOLVE, which
     # check_converged reports.
@@ -872,6 +898,9 @@ def solve(
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val, header=QOI_HEADER_3D)
+    if newton_log_path is not None:
+        newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
+        solver.setMonitor(newton_log)
 
     if not restart:
         write_output(t, step)
@@ -896,6 +925,13 @@ def solve(
 
         PETSc.Sys.Print(f"\n{t = :.3f}")
 
+        if predict_displacements:
+            # v is still v_old here, so u_s = u_s_old + dt * v_old. SNES evaluates the residual of
+            # the initial guess before any hook of its own, so the prediction is made here.
+            update_displacements()
+
+        if newton_log_path is not None:
+            newton_log.start_step(t)
         problem.solve()
         step_newton_iterations = solver.getIterationNumber()
         step_linear_iterations = solver.getLinearSolveIterations()
@@ -921,6 +957,14 @@ def solve(
             checkpointer.write(checkpoint_fields, t, step, dt_val, t0)
 
     end = timer()
+    if gamma_reassemble is None:
+        reuse_description = "none, reassembled in every Newton iteration"
+    else:
+        reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
+    if predict_displacements:
+        initial_guess_description = "the previous step, with u_s = u_s_old + dt * v_old and its mesh motion"
+    else:
+        initial_guess_description = "the previous step"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -939,8 +983,8 @@ def solve(
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
             f"  Mesh motion quadrature degree: {quadrature_description(mesh_motion_max_quadrature_degree)}\n"
-            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
-            f"with {gamma_reassemble = }\n"
+            f"  Initial guess: {initial_guess_description}\n"
+            f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
         )
@@ -972,6 +1016,7 @@ def main():
     output_path = f"output/pv/{run_name}.bp"
     output_path_p = f"output/pv/{run_name}_p.bp"
     qoi_path = f"output/qoi/{run_name}.txt"
+    newton_log_path = f"output/qoi/{run_name}_newton.txt"
     checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 250
     vtx_save_every = None
@@ -993,6 +1038,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,

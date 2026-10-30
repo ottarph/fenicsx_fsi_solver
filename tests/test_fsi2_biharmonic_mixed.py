@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_restart_rejects_different_dt,
     check_restart_rejects_T_not_after_checkpoint,
@@ -8,6 +9,7 @@ from restart_helpers import (
 )
 
 from xfsi_solver.solvers.fsi2_biharmonic_mixed import solve
+from xfsi_solver.tools.newton_log import read_newton_log
 
 # p and z live on the fluid submesh but are checkpointed on the full mesh
 ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
@@ -29,6 +31,7 @@ def test_fsi2_biharmonic_mixed_solve(output_dirs, direct):
         qoi_path=str(qoi_path),
         vtx_save_every=4,
         direct_k_c_solve=direct,
+        newton_log_path=str(output_dirs["qoi"] / "fsi2_biharmonic_mixed_newton.txt"),
     )
 
     # The initial state and six time steps, with t, drag, lift and the tip displacement.
@@ -37,6 +40,7 @@ def test_fsi2_biharmonic_mixed_solve(output_dirs, direct):
     # The inflow drives the fluid in the x-direction, so the drag grows.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert (output_dirs["pv"] / "fsi2_biharmonic_mixed.bp").exists()
+    check_solver_newton_log(output_dirs["qoi"] / "fsi2_biharmonic_mixed_newton.txt", qoi_path, ["u", "v", "p", "z"])
 
 
 def test_fsi2_biharmonic_mixed_restart_reproduces_continuous_run(output_dirs, tmp_path):
@@ -117,3 +121,33 @@ def test_fsi2_biharmonic_mixed_quadrature_cap_changes_the_qois_slightly(output_d
     # row of zeros is the same in both.
     np.testing.assert_allclose(capped, exact, rtol=1e-3, atol=0)
     assert not np.array_equal(capped, exact)
+
+
+def test_fsi2_biharmonic_mixed_reassembles_the_jacobian_in_every_iteration_without_reuse(output_dirs):
+    # With gamma_reassemble=None, the Jacobian is assembled in every Newton iteration, also in the
+    # first of a time step, which the default reuses from the step before.
+    dt_val = 0.0025
+
+    def run(name, gamma_reassemble):
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            direct_k_c_solve=True,
+            gamma_reassemble=gamma_reassemble,
+            newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+        )
+        return read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+
+    reused, fresh = run("reused", 0.2), run("fresh", None)
+    check_solver_newton_log(
+        output_dirs["qoi"] / "fresh_newton.txt",
+        output_dirs["qoi"] / "fresh.txt",
+        ["u", "v", "p", "z"],
+        always_assembled=True,
+    )
+    assert np.any(reused["assembled"][reused["it"] > 0] == 0)
+    assert fresh["assembled"].sum() > reused["assembled"].sum()

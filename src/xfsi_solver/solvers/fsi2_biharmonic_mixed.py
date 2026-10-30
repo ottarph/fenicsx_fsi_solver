@@ -17,6 +17,7 @@ from petsc4py import PETSc
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
 from xfsi_solver.tools.qoi import (
@@ -73,6 +74,7 @@ def solve(
     gamma_reassemble=0.2,
     direct_k_c_solve=False,
     max_quadrature_degree=None,
+    newton_log_path=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -105,7 +107,8 @@ def solve(
     ``gamma_reassemble`` in the last iteration (Failer & Richter, J. Sci. Comput. 82:28,
     2020, Sec. 5.3), and is otherwise reused, also across time steps. With
     ``gamma_reassemble=0``, it is reassembled in every Newton iteration except the
-    first of each time step.
+    first of each time step, and with ``gamma_reassemble=None`` in every Newton iteration,
+    as the full Jacobian of fsi2_biharmonic_fulljacobian is.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -147,6 +150,12 @@ def solve(
     The time stepping parameter is theta = 0.5 + ``absolute_theta_shift``, or theta = 0.5 +
     ``relative_theta_shift`` * ``dt_val``; giving both raises ``ValueError``, and with neither,
     ``relative_theta_shift = 1.0``.
+
+    With ``newton_log_path``, every Newton iterate is recorded in that file by
+    ``xfsi_solver.tools.newton_log.NewtonLog``: the norms of the residual and of the Newton update,
+    in total and on each block u, v, p and z, whether the Jacobian of the step was assembled anew,
+    and the wall time of each iteration. A restart drops the rows after the checkpoint time, as it
+    does from the QoI file.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -630,7 +639,9 @@ def solve(
         # Reuse J if the last Newton iteration converged fast enough, or at the first iteration
         # of a time step, where there is no rate yet. Leaving J unchanged makes PETSc skip
         # PCSetUp, so the fieldsplit submatrices and the factorization of K_c are reused too.
-        if jacobian_state["assembled"] and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
+        # With gamma_reassemble=None, J is never reused.
+        reuse = gamma_reassemble is not None and jacobian_state["assembled"]
+        if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
@@ -810,6 +821,10 @@ def solve(
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    if newton_log_path is not None:
+        blocks = field_blocks(problem, ["u", "v", "p", "z"])
+        newton_log = NewtonLog(newton_log_path, blocks, comm, restart, t, dt_val)
+        solver.setMonitor(newton_log)
 
     if not restart:
         write_output(t, step)
@@ -830,6 +845,8 @@ def solve(
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
+        if newton_log_path is not None:
+            newton_log.start_step(t)
         ksp_check.clear()
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
@@ -842,6 +859,10 @@ def solve(
             checkpointer.write([u, v, p, z], t, step, dt_val, t0)
 
     end = timer()
+    if gamma_reassemble is None:
+        reuse_description = "none, reassembled in every Newton iteration"
+    else:
+        reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -873,8 +894,7 @@ def solve(
             "    by MatMatSolve,\n"
             "    CG with Jacobi on A_S\n"
             f"  K_c solve: {k_c_solve_description}"
-            f"  Jacobian reuse: reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, "
-            f"with {gamma_reassemble = }\n"
+            f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
         )
@@ -935,6 +955,7 @@ def main():
     output_path = "output/pv/fsi2_biharmonic_mixed_fine.bp"
     output_path_p = "output/pv/fsi2_biharmonic_mixed_fine_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_mixed_fine.txt"
+    newton_log_path = "output/qoi/fsi2_biharmonic_mixed_fine_newton.txt"
     checkpoint_dir = "output/checkpoints/fsi2_biharmonic_mixed_fine"
     checkpoint_every = 400
     vtx_save_every = None
@@ -951,6 +972,7 @@ def main():
         output_path=output_path,
         output_path_p=output_path_p,
         qoi_path=qoi_path,
+        newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,
