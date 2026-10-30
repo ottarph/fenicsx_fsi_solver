@@ -191,7 +191,7 @@ def solve(
     requires_v_sub_IS=False,
     newton_log_path=None,
     skip_first_reuse_test=False,
-    predict_displacements=False,
+    predict_displacements=True,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -220,15 +220,19 @@ def solve(
     motion is solved as there: it does not couple the x and y components, which have the same matrix, so
     only the x component is factorized, by MUMPS once for the whole run, and both components are solved
     with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
-    its KSP, replace that default. With the mixed biharmonic mesh motion and exact solves, this gives
-    the same iterates as fsi2_biharmonic_mixed.
+    its KSP, replace that default.
 
-    The initial guess of each Newton solve is the state of the previous step, where u_f is still the
-    fluid displacement of that step, so the mesh velocity (u_f - u_f_old) / dt in the residual of the
-    initial guess vanishes. With ``predict_displacements=True``, the displacements are instead
-    updated before each solve as after a linear solve, from the velocity of the previous step, to
-    u_s = u_s_old + dt * v_old and its mesh motion. The solve then starts from that prediction, and
-    the iterates differ from those of fsi2_biharmonic_mixed.
+    With ``predict_displacements=True``, the default, the displacements are also updated before each
+    Newton solve, as after a linear solve, from the velocity of the previous step: u_s = u_s_old +
+    dt * v_old and its mesh motion. With ``predict_displacements=False``, the initial guess is the
+    state of the previous step as it is, where u_f is still the fluid displacement of that step, so
+    the mesh velocity (u_f - u_f_old) / dt in the residual of the initial guess vanishes, and the
+    first Newton step, whose Jacobian has no derivative through the mesh motion, is followed by a
+    mesh update by the displacement of a whole time step. On mesh_sec, with the beam oscillating,
+    the prediction cuts the first-iteration contraction from 0.16 to 3e-3 and the time per step
+    by 19% with the default Jacobian reuse (notes/newton-convergence/report.md). With
+    ``predict_displacements=False``, the mixed biharmonic mesh motion and exact solves, the iterates
+    are those of fsi2_biharmonic_mixed.
 
     With ``skip_first_reuse_test=True``, the Jacobian is reused at the second Newton iteration of a
     time step whatever the first iteration reduced the residual by, and the reuse test of

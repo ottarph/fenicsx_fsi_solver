@@ -118,8 +118,9 @@ confirms that they come from the solution, not from J_0.
 
 ## Predicting the displacements, and skipping the first reuse test
 
-Two options of `fsi2_simplified`, both off by default, were run on the same window from the same
-state, again on 5 ranks each, the four runs at once:
+Two options of `fsi2_simplified`, both off by default when these runs were made, were run on the
+same window from the same state, again on 5 ranks each, the four runs at once. The prediction has
+since been made the default.
 
 - `skip_first_reuse_test=True`: the reuse test is not applied to the rate of the first iteration
   of a step. The Jacobian is always reused at the second iteration, and tested from the third on.
@@ -197,8 +198,8 @@ mainly from the iteration counts.
 
 ## Next steps
 
-- Make `predict_displacements` the default of `fsi2_simplified`, and try it in
-  `threeDfsi_simplified`, which updates the displacements in the same way.
+- Try the prediction in `threeDfsi_simplified`, which updates the displacements in the same way.
+  (It is now the default of `fsi2_simplified`.)
 - A γ sweep (for example 0.05, 0.1, 0.3, 0.5) with the prediction, on the same window, to see
   where the trade-off between iterations and assemblies is best. With the prediction, the later
   iterations with a reused Jacobian contract by about 0.1, so a smaller γ may pay off. With the
@@ -230,4 +231,5 @@ python -m xfsi_solver.scripts.plot_newton_logs notes/newton-convergence/plots/pr
 ```
 
 where the new runs passed `skip_first_reuse_test` and `predict_displacements` to
-`fsi2_simplified.solve()`. The script writes PNG and SVG figures; only the SVGs are kept here.
+`fsi2_simplified.solve()`. Since the prediction is now the default, the `fsi2_simplified` runs
+without it need `predict_displacements=False`. The script writes PNG and SVG figures; only the SVGs are kept here.

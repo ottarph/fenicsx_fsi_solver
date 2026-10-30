@@ -137,3 +137,10 @@ reuse test saves 6%: the assemblies it triggered move to the fourth iterate of t
 since a Jacobian from the step before is out of date within one step in that phase of the
 oscillation. This corrects the reading in the first analysis that the first-iteration test causes
 needless assemblies.
+
+## 2026-10-30: The prediction as the default
+
+`predict_displacements=True` is now the default of `fsi2_simplified`, so `main()` and
+`jobs/fsi2_simplified.sh` use it. With it, the iterates are no longer those of
+`fsi2_biharmonic_mixed`; the test that compares the two solvers and continues each from the
+other's checkpoints passes `predict_displacements=False` to keep comparing the same iterates.

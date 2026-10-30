@@ -173,12 +173,12 @@ def test_fsi2_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_p
 
 
 def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp_path):
-    # The two solvers compute the same iterates, up to the quadrature of the mesh motion, and their
-    # checkpoints have the same layout, so their states agree, and each continues from the other's
-    # checkpoint as from its own. The mesh motion of fsi2_simplified integrates each block of the mixed
-    # form at its own degree, while fsi2_biharmonic_mixed integrates the terms of a residual block
-    # together, at the highest degree of any of them, so u differs by 2e-6 of its largest value after
-    # 4 steps.
+    # Without the prediction of the displacements, the two solvers compute the same iterates, up to
+    # the quadrature of the mesh motion, and their checkpoints have the same layout, so their states
+    # agree, and each continues from the other's checkpoint as from its own. The mesh motion of
+    # fsi2_simplified integrates each block of the mixed form at its own degree, while
+    # fsi2_biharmonic_mixed integrates the terms of a residual block together, at the highest degree
+    # of any of them, so u differs by 2e-6 of its largest value after 4 steps.
     dt_val = 0.0025
 
     def run(module_solve, name, T, **kwargs):
@@ -195,7 +195,7 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
         )
 
     mixed = fsi2_biharmonic_mixed.solve
-    run(solve, "simplified", 4 * dt_val)
+    run(solve, "simplified", 4 * dt_val, predict_displacements=False)
     run(mixed, "mixed", 4 * dt_val, direct_k_c_solve=True)
     _, _, state_simplified = read_checkpoint_state(MESH, tmp_path / "simplified", dt_val, ELEMENTS)
     _, _, state_mixed = read_checkpoint_state(MESH, tmp_path / "mixed", dt_val, ELEMENTS)
@@ -205,8 +205,14 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
             state_simplified[name].x.array, values, rtol=0, atol=1e-5 * np.max(np.abs(values)), err_msg=name
         )
 
-    run(solve, "simplified_from_simplified", 8 * dt_val, initial_state_dir=tmp_path / "simplified")
-    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed")
+    run(
+        solve,
+        "simplified_from_simplified",
+        8 * dt_val,
+        initial_state_dir=tmp_path / "simplified",
+        predict_displacements=False,
+    )
+    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed", predict_displacements=False)
     run(
         mixed,
         "mixed_from_simplified",
