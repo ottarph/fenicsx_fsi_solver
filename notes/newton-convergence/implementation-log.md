@@ -215,3 +215,14 @@ The mesh motion solve is the larger cost: over 40 steps (278 solves), the first,
 and factorizes, took 0.10 to 0.18 s, and the later ones 7.0 ms (1 rank), 3.9 ms (7) and 3.4 ms (28) in
 the median, 9%, 18% and 26% of the run. The MUMPS solves barely speed up with the ranks, so their
 share grows.
+
+## 2026-10-30: The prediction as an initial-guess hook
+
+The prediction now runs in an initial-guess hook of the SNES (`solver.setInitialGuess`, PETSc's
+`SNESSetComputeInitialGuess`) instead of in the time loop. A check with a small problem showed that
+SNES calls it once per solve, before it evaluates the residual of the initial guess, with the solution
+vector already holding the state of the previous step. u_s is set in the same update as the interface
+values of u_f again, after each linear solve and in the prediction: it is cheap, local and keeps u_s
+and u_f updated together. Over 30 steps on mesh_sec, `fsi2_simplified` with the prediction and γ = 0.2,
+the prediction without reuse, and no prediction took the same iterations and assemblies as the rerun
+of the analysis, with the same QoIs to 7 digits.

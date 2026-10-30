@@ -238,32 +238,31 @@ def solve(
     off the velocity block; it is needed with, and only with, a fieldsplit of the velocity block.
 
     The displacements are not unknowns of the Newton system: after each linear solve, a post-solve hook
-    of the KSP updates v to the next iterate, sets the interface values of the fluid displacement u_f
-    from the kinematic relation, u_f_old + dt * (theta * v + (1 - theta) * v_old), node by node, and
-    extends them into the fluid with the mesh motion ``mesh_motion_type``, one of the functions of
-    ``xfsi_solver.mesh_motion``, by default ``biharmonic_c0ip_mesh_motion``, the mesh motion of
-    threeDfsi_c0ip, before SNES evaluates the residual there. The solid stress is written in terms of
-    v, so the residual depends on the solid displacement u_s only through u_s_old, and u_s is set from
-    the same relation once per time step, after the solve. The mesh motion does not couple the x, y
-    and z components, which have the same matrix, so only the x component is factorized, by MUMPS
-    once for the whole run, and the three components are solved with that factorization at once, by
-    one MatMatSolve: by Cholesky for the symmetric positive definite C0IP matrix, as in
-    threeDfsi_c0ip, and by LU for the other mesh motions. ``mesh_motion_options``, the PETSc options
-    of its KSP, replace that default. The quadrature degree
+    of the KSP updates v to the next iterate and sets the displacements from the kinematic relation,
+    node by node: the solid displacement u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), and the
+    same at the interface dofs of the fluid displacement u_f, which the mesh motion
+    ``mesh_motion_type``, one of the functions of ``xfsi_solver.mesh_motion``, by default
+    ``biharmonic_c0ip_mesh_motion``, the mesh motion of threeDfsi_c0ip, extends into the fluid, before
+    SNES evaluates the residual there. The interface values come from v on the fluid cells, so no values
+    pass between the meshes. The mesh motion does not couple the x, y and z components, which have the
+    same matrix, so only the x component is factorized, by MUMPS once for the whole run, and the three
+    components are solved with that factorization at once, by one MatMatSolve: by Cholesky for the
+    symmetric positive definite C0IP matrix, as in threeDfsi_c0ip, and by LU for the other mesh motions.
+    ``mesh_motion_options``, the PETSc options of its KSP, replace that default. The quadrature degree
     of the mesh motion forms is capped at ``mesh_motion_max_quadrature_degree``, by default 8, as
     threeDfsi_c0ip caps its C0IP forms: UFL estimates degree 12 on the facets for P2 on the P2
     tetrahedral mesh, and the mesh motion residual is assembled in every Newton iteration. This cap is
     required too, and None raises ``ValueError``.
 
-    As in fsi2_simplified, with ``predict_displacements=True``, the default, the fluid displacement is
-    also updated before each Newton solve, as after a linear solve, from the velocity of the previous
-    step: u_f = u_f_old + dt * v_old on the interface, and its mesh motion. Without it, u_f in the initial guess is
-    still the fluid displacement of the previous step, so the mesh velocity (u_f - u_f_old) / dt in
-    its residual vanishes, and the first Newton step, whose Jacobian has no derivative through the
-    mesh motion, is followed by a mesh update by the displacement of a whole time step. In
-    fsi2_simplified on mesh_sec, the prediction cut the first-iteration contraction from 0.16 to
-    3e-3, and the time per step by 11% with the default Jacobian reuse and by 27% without
-    (notes/newton-convergence/report.md).
+    As in fsi2_simplified, with ``predict_displacements=True``, the default, the displacements are also
+    set before each Newton solve, by an initial-guess hook of the SNES, as after a linear solve but from
+    the velocity of the previous step: u_s = u_s_old + dt * v_old, the same on the interface for u_f,
+    and its mesh motion. Without it, u_f in the initial guess is still the fluid displacement of the
+    previous step, so the mesh velocity (u_f - u_f_old) / dt in its residual vanishes, and the first
+    Newton step, whose Jacobian has no derivative through the mesh motion, is followed by a mesh update
+    by the displacement of a whole time step. In fsi2_simplified on mesh_sec, the prediction cut the
+    first-iteration contraction from 0.16 to 3e-3, and the time per step by 11% with the default
+    Jacobian reuse and by 27% without (notes/newton-convergence/report.md).
 
     The Jacobian is reassembled when the residual norm decreased by less than a factor
     ``gamma_reassemble`` in the last Newton iteration, and otherwise reused, also across time steps;
@@ -858,22 +857,19 @@ def solve(
     interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
 
-    def update_fluid_displacement() -> None:
-        """Set the interface values of u_f from v by the kinematic relation, and u_f by the mesh motion."""
-        u_f_bc_func.x.array[interface_u_f] = u_f_old.x.array[interface_u_f] + dt_val * (
-            theta_val * v.x.array[interface_v] + (1.0 - theta_val) * v_old.x.array[interface_v]
-        )
-        mesh_motion.solve()
-
-    def update_solid_displacement() -> None:
-        """Set u_s from v by the kinematic relation, node by node. The residual depends on the solid
-        displacement only through u_s_old, so this is done once per time step, after the solve."""
+    def update_displacements() -> None:
+        """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
+        by the mesh motion."""
         # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
         # Dirichlet values hold already, since v and v_old vanish there, and are set again exactly.
         u_s.x.array[:] = u_s_old.x.array + dt_val * (
             theta_val * v.x.array[v_dof_of_u_s] + (1.0 - theta_val) * v_old.x.array[v_dof_of_u_s]
         )
         u_s_bc.set(u_s.x.array)
+        u_f_bc_func.x.array[interface_u_f] = u_f_old.x.array[interface_u_f] + dt_val * (
+            theta_val * v.x.array[interface_v] + (1.0 - theta_val) * v_old.x.array[interface_v]
+        )
+        mesh_motion.solve()
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
@@ -883,12 +879,17 @@ def solve(
         x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
         v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
         v.x.scatter_forward()
-        update_fluid_displacement()
+        update_displacements()
 
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # A failed linear solve of (v, p) makes the SNES stop with DIVERGED_LINEAR_SOLVE, which
     # check_converged reports.
     solver.getKSP().setPostSolve(post_velocity_solve_update)
+
+    if predict_displacements:
+        # SNES calls this once per solve, before it evaluates the residual of the initial guess, when v is
+        # still v_old, so the displacements become u_s_old + dt * v_old and the same on the interface.
+        solver.setInitialGuess(lambda snes, x: update_displacements())
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val, header=QOI_HEADER_3D)
@@ -919,11 +920,6 @@ def solve(
 
         PETSc.Sys.Print(f"\n{t = :.3f}")
 
-        if predict_displacements:
-            # v is still v_old here, so u_f = u_f_old + dt * v_old on the interface. SNES evaluates the
-            # residual of the initial guess before any hook of its own, so the prediction is made here.
-            update_fluid_displacement()
-
         if newton_log_path is not None:
             newton_log.start_step(t)
         problem.solve()
@@ -932,7 +928,6 @@ def solve(
         num_newton_iterations += step_newton_iterations
         num_linear_iterations += step_linear_iterations
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
-        update_solid_displacement()
 
         step_times.append(timer() - step_start)
         PETSc.Sys.Print(
@@ -957,7 +952,7 @@ def solve(
     else:
         reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
     if predict_displacements:
-        initial_guess_description = "the previous step, with u_f = u_f_old + dt * v_old on the interface"
+        initial_guess_description = "the previous step, with the displacements predicted from dt * v_old"
     else:
         initial_guess_description = "the previous step"
     if comm.rank == 0:
@@ -973,8 +968,8 @@ def solve(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
-            "  Newton system: (v, p) only; u_f set from v on the interface, node by node, and by the mesh\n"
-            "    motion after each linear solve; u_s set from v once per time step\n"
+            "  Newton system: (v, p) only; u_s and the interface values of u_f set from v node by node,\n"
+            "    and u_f by the mesh motion, after each linear solve\n"
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
             f"  Mesh motion quadrature degree: {quadrature_description(mesh_motion_max_quadrature_degree)}\n"
