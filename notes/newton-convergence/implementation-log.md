@@ -236,3 +236,30 @@ the first-iteration rate without the prediction correlates with the tip speed (0
 tip speed (0.31–0.54, 0.54–0.86, 0.86–1.06 m/s) it is 0.12, 0.17 and 0.25, and with reuse the
 prediction saves 0.1, 0.8 and 1.3 iterations per step. Added as a note to the report: the findings
 stay based on FSI2, with the prediction doing much less for small deformations.
+
+## 2026-10-30: The prediction in the full-Jacobian solver
+
+`fsi2_biharmonic_fulljacobian_initialguess` is `fsi2_biharmonic_fulljacobian` with the displacement
+prediction as an initial-guess hook of the SNES (`predict_displacements=True`, the default): u =
+u_old + dt v_old on the dofs of the solid cells, and u and z on the fluid cells from the mixed
+biharmonic mesh motion on the fluid submesh (MUMPS on the x component, factorized once), with the
+interface values taken from u_old and v_old, so that a rank holding an interface dof only through a
+fluid cell gets them too. The mesh motion writes into the solver's z, and the hook assigns (u, v, p,
+z) to the initial guess.
+
+Unlike in `fsi2_simplified`, the residual of the initial guess is not smaller with the prediction on
+the coarse mesh from rest (the solid stress is taken at the predicted displacement, which the old
+velocity does not balance), but the residual after the first Newton step is 3 to 20 times smaller.
+
+On the window of the report (200 steps of dt = 0.0025 from t = 16.0025, mesh_sec, 5 ranks, the two
+runs one after the other on an idle machine, output/fulljacobian_initialguess/):
+
+| | its/step | rate 0→1 | median ||R_1|| | s/step |
+|---|---:|---:|---:|---:|
+| full Jacobian | 3.00 | 7.6e-2 | 7.3 | 1.152 |
+| full Jacobian, predicted | 2.34 (132 steps in 2, 67 in 3) | 4.8e-4 | 0.047 | 0.893 |
+
+The initial residual is the same (median 97 against 98). An iteration costs the same (0.38 s), so
+the prediction saves 22% of the time. The QoIs agree with the run without it to all 6 printed digits,
+except the lift, to 4e-9 relative. The control run reproduces the earlier full-Jacobian run exactly
+and takes 1.152 s per step, against 1.145 s in the earlier 60-step check.
