@@ -212,27 +212,28 @@ def solve(
     modes off the velocity block; it is needed with, and only with, a fieldsplit of the velocity block.
 
     The displacements are not unknowns of the Newton system: after each linear solve, a post-solve hook
-    of the KSP updates v to the next iterate, sets the solid displacement u_s on the solid mesh from the
-    kinematic relation, node by node, and extends it into the fluid as u_f on the fluid mesh with the
-    mesh motion ``mesh_motion_type``, one of the functions of ``xfsi_solver.mesh_motion``, by default
-    ``biharmonic_mixed_mesh_motion``, before SNES evaluates the residual there. By default, the mesh
-    motion is solved as there: it does not couple the x and y components, which have the same matrix, so
-    only the x component is factorized, by MUMPS once for the whole run, and both components are solved
-    with that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of
-    its KSP, replace that default.
+    of the KSP updates v to the next iterate and sets the displacements from the kinematic relation,
+    node by node: the solid displacement u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), and the
+    same at the interface dofs of the fluid displacement u_f, which the mesh motion
+    ``mesh_motion_type``, one of the functions of ``xfsi_solver.mesh_motion``, by default
+    ``biharmonic_mixed_mesh_motion``, extends into the fluid, before SNES evaluates the residual there.
+    The interface values come from v on the fluid cells, so no values pass between the meshes. By
+    default, the mesh motion does not couple the x and y components, which have the same matrix, so only
+    the x component is factorized, by MUMPS once for the whole run, and both components are solved with
+    that factorization at once, by one MatMatSolve. ``mesh_motion_options``, the PETSc options of its
+    KSP, replace that default.
 
-    With ``predict_displacements=True``, the default, the displacements are also updated before each
-    Newton solve, as after a linear solve, from the velocity of the previous step: u_s = u_s_old +
-    dt * v_old and its mesh motion. With ``predict_displacements=False``, the initial guess is the
-    state of the previous step as it is, where u_f is still the fluid displacement of that step, so
-    the mesh velocity (u_f - u_f_old) / dt in the residual of the initial guess vanishes, and the
-    first Newton step, whose Jacobian has no derivative through the mesh motion, is followed by a
-    mesh update by the displacement of a whole time step. On mesh_sec, with the beam oscillating,
-    the prediction cuts the first-iteration contraction from 0.16 to 3e-3, and the time per step
-    by 11% with the default Jacobian reuse and by 27% without (notes/newton-convergence/report.md).
-    With
-    ``predict_displacements=False``, the mixed biharmonic mesh motion and exact solves, the iterates
-    are those of fsi2_biharmonic_mixed.
+    With ``predict_displacements=True``, the default, the displacements are also set before each Newton
+    solve, by an initial-guess hook of the SNES, as after a linear solve but from the velocity of the
+    previous step: u_s = u_s_old + dt * v_old, the same on the interface for u_f, and its mesh motion.
+    With ``predict_displacements=False``, the initial guess is the state of the previous step as it is,
+    where u_f is still the fluid displacement of that step, so the mesh velocity (u_f - u_f_old) / dt in
+    the residual of the initial guess vanishes, and the first Newton step, whose Jacobian has no
+    derivative through the mesh motion, is followed by a mesh update by the displacement of a whole time
+    step. On mesh_sec, with the beam oscillating, the prediction cuts the first-iteration contraction
+    from 0.16 to 3e-3, and the time per step by 11% with the default Jacobian reuse and by 27% without
+    (notes/newton-convergence/report.md). With ``predict_displacements=False``, the mixed biharmonic
+    mesh motion and exact solves, the iterates are those of fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the
     other FSI2 solvers do, so runs can restart from or start from each other's states. They hold no
@@ -757,24 +758,14 @@ def solve(
 
     num_v = V.dofmap.index_map.size_local * V.dofmap.index_map_bs
 
-    # The Dirichlet values of u_f are u_s on the interface and 0 on the rest of the fluid boundary. They
-    # pass through u_s_parent on the parent mesh, which is u_s on the solid cells and 0 on the rest. The
-    # cells and dofs of the meshes match, so interpolating u_s_parent into U_f on fluid cells is exact,
-    # and gives u_s at the interface dofs and 0 at the others. The owner of an interface dof need not
-    # hold a solid cell with it, as its cells with that dof may be fluid cells that touch the interface
-    # only at a vertex, so the ranks that do hold one add their values into the owner by a reverse
-    # scatter, and the owner divides the sum by the number of such ranks, solid_rank_count.
-    U_parent = u.function_space
-    num_u_parent = U_parent.dofmap.index_map.size_local * block_size_u
-    u_s_parent = dolfinx.fem.Function(U_parent)
-    u_s_parent.x.array.reshape(-1, block_size_u)[U_parent.dofmap.list[solid_parent_cells], :] = 1.0
-    u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
-    solid_rank_count = np.maximum(u_s_parent.x.array[:num_u_parent], 1.0)  # 1 where no rank adds a value
-
-    # Interpolation writes only the dofs of the cells it is given, and the other dofs of u_f_bc_func stay
-    # 0, so it is done on the local fluid cells with an interface dof, including cells that touch the
-    # interface only at a vertex: locate_dofs_topological finds the interface dofs also on ranks that
-    # hold them only through such cells (remote=True), which no interface facet of the rank would reach.
+    # The Dirichlet values of u_f are 0 on the fluid boundary and, on the interface, the displacement of
+    # the solid, which follows from the same kinematic relation as u_s: u_f = u_f_old + dt * (theta * v +
+    # (1 - theta) * v_old) at the interface dofs. U_f and V have the same element, so the dofmaps of the
+    # fluid cells give the dof of v at each local dof of u_f. Every dof of u_f on a rank lies in one of
+    # its fluid cells, whose dofs of v the rank holds too, and v is up to date on its ghosts, so the
+    # values are set on the owned and ghost dofs alike, without communication. locate_dofs_topological
+    # finds the interface dofs also on ranks that hold them only through fluid cells that touch the
+    # interface at a vertex (remote=True), which no interface facet of the rank would reach.
     fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
         facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
     )
@@ -785,26 +776,25 @@ def solve(
         fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
         remote=True,
     )
-    movable_cells = fluid_cells[np.isin(U_f.dofmap.list[fluid_cells], fluid_movable_dofs).any(axis=1)]
-    movable_parent_cells = fluid_cell_map.sub_topology_to_topology(movable_cells, inverse=False)
+    fluid_parent_cells = fluid_cell_map.sub_topology_to_topology(fluid_cells, inverse=False)
+    num_u_f_dofs = U_f.dofmap.index_map.size_local + U_f.dofmap.index_map.num_ghosts
+    v_dof_of_u_f = np.empty(num_u_f_dofs, dtype=np.int32)
+    v_dof_of_u_f[U_f.dofmap.list[fluid_cells]] = V.dofmap.list[fluid_parent_cells]
+    interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
+    interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
 
     def update_displacements() -> None:
-        """Set u_s from v by the kinematic relation, node by node, and u_f by the mesh motion."""
+        """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
+        by the mesh motion."""
         # u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old), at the owned and ghost dofs. The
         # Dirichlet values hold already, since v and v_old vanish there, and are set again exactly.
         u_s.x.array[:] = u_s_old.x.array + dt_val * (
             theta_val * v.x.array[v_dof_of_u_s] + (1.0 - theta_val) * v_old.x.array[v_dof_of_u_s]
         )
         u_s_bc.set(u_s.x.array)
-
-        u_s_parent.x.array[:] = 0.0
-        u_s_parent.interpolate(u_s, cells0=solid_cells, cells1=solid_parent_cells)
-        u_s_parent.x.scatter_reverse(dolfinx.la.InsertMode.add)
-        u_s_parent.x.array[:num_u_parent] /= solid_rank_count
-        u_s_parent.x.scatter_forward()
-        u_f_bc_func.interpolate(u_s_parent, cells0=movable_parent_cells, cells1=movable_cells)
-        u_f_bc_func.x.scatter_forward()
-
+        u_f_bc_func.x.array[interface_u_f] = u_f_old.x.array[interface_u_f] + dt_val * (
+            theta_val * v.x.array[interface_v] + (1.0 - theta_val) * v_old.x.array[interface_v]
+        )
         mesh_motion.solve()
 
     def post_velocity_solve_update(ksp: PETSc.KSP, b: PETSc.Vec, x: PETSc.Vec) -> None:
@@ -820,6 +810,11 @@ def solve(
     # A KSP has one post-solve hook, so KSPConvCheck, which sets its own, cannot be attached to this KSP.
     # The K_c solve is a direct one, and check_converged reports a failure of it through the SNES.
     solver.getKSP().setPostSolve(post_velocity_solve_update)
+
+    if predict_displacements:
+        # SNES calls this once per solve, before it evaluates the residual of the initial guess, when v is
+        # still v_old, so the displacements become u_s_old + dt * v_old and the same on the interface.
+        solver.setInitialGuess(lambda snes, x: update_displacements())
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
@@ -847,11 +842,6 @@ def solve(
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
-        if predict_displacements:
-            # v is still v_old here, so u_s = u_s_old + dt * v_old. SNES evaluates the residual of
-            # the initial guess before any hook of its own, so the prediction is made here.
-            update_displacements()
-
         if newton_log_path is not None:
             newton_log.start_step(t)
         problem.solve()
@@ -871,7 +861,7 @@ def solve(
     else:
         reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
     if predict_displacements:
-        initial_guess_description = "the previous step, with u_s = u_s_old + dt * v_old and its mesh motion"
+        initial_guess_description = "the previous step, with the displacements predicted from dt * v_old"
     else:
         initial_guess_description = "the previous step"
     if comm.rank == 0:
@@ -882,8 +872,8 @@ def solve(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
-            "  Newton system: (v, p) only; u_s set node by node and u_f by the mesh motion after each\n"
-            "    linear solve\n"
+            "  Newton system: (v, p) only; u_s and the interface values of u_f set from v node by node,\n"
+            "    and u_f by the mesh motion, after each linear solve\n"
             f"  Linear solve: {linear_solve_description}"
             f"  Mesh motion: {mesh_motion_description}\n"
             f"  Initial guess: {initial_guess_description}\n"

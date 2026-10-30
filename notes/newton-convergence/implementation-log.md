@@ -189,3 +189,40 @@ rerun logs by `make_figures.py` next to it (same iterates as the first batches),
 earlier figure set, which is in the history of the branch. The legends of the contraction and
 iteration plots of `plot_newton_logs` now sit below the axes, clear of the lines. An HTML version of
 the report was published as a claude.ai artifact.
+
+## 2026-10-30: Interface values of u_f straight from v
+
+The residual of the simplified solvers depends on the solid displacement only through u_s_old (the
+solid stress is written in terms of v), so the per-iteration u_s served only to carry the interface
+values to the mesh motion, through the parent mesh: an interpolation into the parent space, a
+reverse scatter to the owners with an average over the ranks that hold a solid cell, a forward
+scatter, an interpolation into U_f and another forward scatter. The interface values now come
+directly from v: u_f = u_f_old + dt (θ v + (1 - θ) v_old) at the interface dofs of U_f, through the
+dofs of V on the fluid cells. That is local to each rank: every U_f dof on a rank lies in one of its
+fluid cells, whose V dofs it holds, and v is forward-scattered. u_s is set once per step, after the
+solve, for u_s_old, the QoIs and the checkpoints.
+
+A scratch copy of `fsi2_simplified` with both paths, on mesh_sec from the init_mixed state (defaults,
+prediction and γ = 0.2):
+
+- Same results: QoIs identical to 7 digits, the same iterations and assemblies in every step, and
+  residuals equal to rounding, over 20 steps on 1 and 7 ranks.
+- Little time saved: the old transfer took 0.022 s against 0.003 s over 20 steps on 7 ranks (of a
+  2.9 s run), and 0.048 s against 0.006 s over 40 steps on 28 ranks (of 3.7 s), so about 1%. The
+  change is kept for the simpler code.
+
+The mesh motion solve is the larger cost: over 40 steps (278 solves), the first, which assembles
+and factorizes, took 0.10 to 0.18 s, and the later ones 7.0 ms (1 rank), 3.9 ms (7) and 3.4 ms (28) in
+the median, 9%, 18% and 26% of the run. The MUMPS solves barely speed up with the ranks, so their
+share grows.
+
+## 2026-10-30: The prediction as an initial-guess hook
+
+The prediction now runs in an initial-guess hook of the SNES (`solver.setInitialGuess`, PETSc's
+`SNESSetComputeInitialGuess`) instead of in the time loop. A check with a small problem showed that
+SNES calls it once per solve, before it evaluates the residual of the initial guess, with the solution
+vector already holding the state of the previous step. u_s is set in the same update as the interface
+values of u_f again, after each linear solve and in the prediction: it is cheap, local and keeps u_s
+and u_f updated together. Over 30 steps on mesh_sec, `fsi2_simplified` with the prediction and γ = 0.2,
+the prediction without reuse, and no prediction took the same iterations and assemblies as the rerun
+of the analysis, with the same QoIs to 7 digits.
