@@ -122,7 +122,15 @@ def _label(text: str) -> str:
     return text.replace("J_0", "$J_0$")
 
 
-def plot_residual_history(runs: list[Run], path: Path) -> None:
+def plot_residual_history(
+    runs: list[Run],
+    path: Path,
+    title: str = "Residual per Newton iteration: median and interquartile range over time steps",
+    last_it: int | None = None,
+    ylim: tuple[float, float] | None = None,
+) -> None:
+    """Residual norm against the Newton iteration. ``last_it`` and ``ylim`` fix the axes, so that
+    figures shown side by side compare."""
     max_it = max(int(run.iterations.max()) for run in runs)
     last_plotted = 0
     fig, ax = plt.subplots(figsize=(6.0, 3.6))
@@ -142,20 +150,31 @@ def plot_residual_history(runs: list[Run], path: Path) -> None:
     ax.set_yscale("log")
     ax.set_xlabel("Newton iteration $k$")
     ax.set_ylabel(r"$\|R_k\|_2$")
+    if last_it is not None:
+        last_plotted = last_it
     ax.set_xticks(range(last_plotted + 1))
     ax.set_xlim(-0.4, last_plotted + 0.4)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     ax.grid(axis="x", visible=False)
-    ax.set_title("Residual per Newton iteration: median and interquartile range over time steps",
-                 loc="left", fontsize=9, color=TEXT)  # fmt: skip
+    ax.set_title(_label(title), loc="left", fontsize=9, color=TEXT)
     ax.legend(loc="upper right")
     fig.savefig(path)
     plt.close(fig)
 
 
-def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float, path: Path) -> None:
+def plot_contraction_by_age(
+    runs: list[Run],
+    reference: Run | None,
+    gamma: float,
+    path: Path,
+    title: str | None = None,
+    max_age: int | None = None,
+) -> None:
     """Contraction factor against the age of the Jacobian in time steps for the runs with reuse,
     separately for the first Newton iteration of a time step and the later ones, with the medians of
-    the run ``reference``, which assembles in every iteration."""
+    the run ``reference``, which assembles in every iteration. ``title`` replaces the title of a
+    single run, and ``max_age`` fixes the age axis."""
     width = 6.0 if len(runs) == 1 else 4.6
     fig, axes = plt.subplots(1, len(runs), figsize=(width * len(runs), 3.8), sharey=True, squeeze=False)
     kinds = [("first iteration of a step", lambda k: k == 0, SERIES_COLORS[3], -0.15),
@@ -163,7 +182,7 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
     for ax, run in zip(axes[0], runs, strict=True):
         records = run.iteration_records()
         valid = records["age"] >= 0
-        ages = np.arange(records["age"].max() + 1)
+        ages = np.arange((max_age if max_age is not None else records["age"].max()) + 1)
         for name, selects, color, offset in kinds:
             mask = valid & selects(records["k"])
             present = [a for a in ages if np.any(mask & (records["age"] == a))]
@@ -189,8 +208,8 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
         ax.grid(axis="x", visible=False)
         ax.set_xlabel("age of the Jacobian (time steps since it was assembled)")
         if len(runs) == 1:
-            ax.set_title(f"Contraction per Newton iteration, {_label(run.label)}: median and interquartile range",
-                         loc="left", fontsize=9)  # fmt: skip
+            title = title or f"Contraction per Newton iteration, {run.label}: median and interquartile range"
+            ax.set_title(_label(title), loc="left", fontsize=9)
         else:
             ax.set_title(_label(run.label), loc="left", fontsize=9)
     if len(runs) > 1:
@@ -202,7 +221,11 @@ def plot_contraction_by_age(runs: list[Run], reference: Run | None, gamma: float
     plt.close(fig)
 
 
-def plot_iterations_over_time(runs: list[Run], path: Path) -> None:
+def plot_iterations_over_time(
+    runs: list[Run], path: Path, title: str | None = None, its_ylim: tuple[float, float] | None = None
+) -> None:
+    """Tip displacement, Newton iterations per time step and the assembly steps of the runs with
+    reuse. ``title`` replaces the title, and ``its_ylim`` fixes the iteration axis."""
     reusing = [run for run in runs if reuses_jacobian(run)]
     num_panels = 3 if reusing else 2
     fig, axes = plt.subplots(num_panels, 1, figsize=(6.4, 5.2 if reusing else 4.6), sharex=True,
@@ -211,13 +234,15 @@ def plot_iterations_over_time(runs: list[Run], path: Path) -> None:
     qoi = runs[0].qoi
     ax_disp.plot(qoi[1:, 0], qoi[1:, 4], color=TEXT_SECONDARY, linewidth=1.2)
     ax_disp.set_ylabel("tip $y$-disp. [m]")
-    ax_disp.set_title(f"Tip displacement ({_label(runs[0].label)}) and Newton iterations per time step",
-                      loc="left", fontsize=9)  # fmt: skip
+    title = title or f"Tip displacement ({runs[0].label}) and Newton iterations per time step"
+    ax_disp.set_title(_label(title), loc="left", fontsize=9)
     for run, color in zip(runs, SERIES_COLORS, strict=False):
         ax_its.step(run.times, run.iterations, where="mid", color=color, linewidth=1.2,
                     label=f"{_label(run.label)} (mean {run.iterations.mean():.2f})")  # fmt: skip
     ax_its.set_ylabel("Newton iterations")
     ax_its.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+    if its_ylim is not None:
+        ax_its.set_ylim(*its_ylim)
     if reusing:
         ax_asm = axes[2]
         for i, run in enumerate(reusing):
