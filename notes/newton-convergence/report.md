@@ -58,7 +58,9 @@ All runs reach the same states: their QoIs agree to 4e-8 relative.
    default of `fsi2_simplified` and `threeDfsi_simplified`, sets u_s = u_s_old + dt v_old and its
    mesh motion before each Newton solve. The first iteration then contracts by 3e-3 instead of 0.16.
    Without reuse, every step converges in exactly 4 iterations instead of 5.2 (27% less time); with
-   reuse, in 6.8 instead of 7.6 (11% less time).
+   reuse, in 6.8 instead of 7.6 (11% less time). The saving grows with the velocity of the solid,
+   which is large in FSI2; with small deformations per step it is much smaller (see the note in
+   Displacement prediction).
 4. **`fsi2_simplified` is the fastest solver.** Without the prediction it takes the same iterations
    as `fsi2_biharmonic_mixed`, at 15 to 21% less time per step. With its defaults it takes 0.153 s
    per step, 7.5 times less than the full Jacobian.
@@ -151,6 +153,26 @@ With and without the prediction, the runs with reuse reassemble in almost every 
 phase and keep J_0 for many steps in the other. With the prediction, the assemblies are triggered
 by the later iterations instead of the first.
 
+**Note: the saving depends on how fast the solid moves.** The prediction removes the error of a
+mesh that lags by dt v, so it only pays off when the solid moves noticeably in a time step. In FSI2
+the tip moves at 0.3 to 1.1 m/s (up to 2.6 mm per step), and without the prediction the first
+iteration contracts more the faster it moves (correlation 0.98 with the tip speed). Split into
+thirds by tip speed:
+
+| tip speed (m/s) | rate 0→1, off → on | its/step reassembled, off → on | its/step reused, off → on |
+|---|---|---|---|
+| 0.31 to 0.54 | 0.12 → 4e-3 | 5.00 → 4.00 | 7.63 → 7.52 |
+| 0.54 to 0.86 | 0.17 → 3e-3 | 5.20 → 4.00 | 7.83 → 7.02 |
+| 0.86 to 1.06 | 0.25 → 3e-3 | 5.42 → 4.00 | 7.22 → 5.96 |
+
+With reuse, the prediction saves almost nothing in the slowest third and 1.3 iterations per step in
+the fastest. The aneurysm model of aneurism-fsi (`threeDfsi_simplified`, 10 steps of dt = 1e-4 at
+full load, 8 ranks, Jacobian reuse), whose wall moves very little per step, shows the same: the
+prediction lowers the first contraction only from 0.04–0.06 to 0.03–0.04 and saves 0 to 2 of 34 to
+37 Newton iterations. The numbers of this report are for the large deformations of FSI2, which is
+what the benchmark is for; with small deformations the prediction is cheap and harmless but does
+not do much.
+
 ## Cost
 
 ![Wall time per time step and per Newton iteration](plots/cost.svg)
@@ -184,8 +206,9 @@ step with the kept factorization, so the prediction saves exactly its share of i
 - A γ sweep with the prediction (for example 0.05, 0.1, 0.3, 0.5) on the same window. With the
   prediction, the later iterations with a reused J_0 contract by about 0.1, so a smaller γ may pay
   off at a cost of 4 reused iterations per assembly.
-- Measure the prediction in `threeDfsi_simplified`, which now uses it by default. Its slow test
-  only checks that the states agree.
+- Measure the prediction in `threeDfsi_simplified` on a case with larger deformations. On the
+  aneurysm model, with its small wall motion, it saves almost nothing (see the note in
+  Displacement prediction).
 - The best configuration over a longer window.
 
 ## Reproducing

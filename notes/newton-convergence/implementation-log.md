@@ -226,3 +226,13 @@ values of u_f again, after each linear solve and in the prediction: it is cheap,
 and u_f updated together. Over 30 steps on mesh_sec, `fsi2_simplified` with the prediction and γ = 0.2,
 the prediction without reuse, and no prediction took the same iterations and assemblies as the rerun
 of the analysis, with the same QoIs to 7 digits.
+
+## 2026-10-30: The saving of the prediction depends on the solid velocity
+
+In the aneurism-fsi port of `threeDfsi_simplified` (10 steps of dt = 1e-4 at full load, 8 ranks,
+Jacobian reuse), the prediction lowered the first contraction only from 0.04–0.06 to 0.03–0.04 and
+saved 0 to 2 of 34 to 37 Newton iterations: the wall moves very little per step. In the FSI2 rerun,
+the first-iteration rate without the prediction correlates with the tip speed (0.98); by thirds of
+tip speed (0.31–0.54, 0.54–0.86, 0.86–1.06 m/s) it is 0.12, 0.17 and 0.25, and with reuse the
+prediction saves 0.1, 0.8 and 1.3 iterations per step. Added as a note to the report: the findings
+stay based on FSI2, with the prediction doing much less for small deformations.
