@@ -247,6 +247,11 @@ def solve(
     default None, every integral keeps the degree UFL estimates. The other arguments are those of
     ``fsi2_biharmonic_mixed.solve``, where ``newton_log_path`` has the blocks v and p.
 
+    Returns the statistics of the time steps of this run, the same on every rank: the wall time of the
+    time loop, ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_assemblies`` of the
+    Jacobian, and the Newton iterations and Jacobian assemblies of each step, ``iterations_per_step``
+    and ``assemblies_per_step``.
+
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
@@ -838,6 +843,8 @@ def solve(
 
     first_step = step
     num_newton_iterations = 0
+    # Newton iterations and Jacobian assemblies of each time step of this run
+    iterations_per_step, assemblies_per_step = [], []
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
@@ -852,8 +859,11 @@ def solve(
 
         if newton_log_path is not None:
             newton_log.start_step(t)
+        num_assemblies_before = jacobian_state["num_assemblies"]
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
+        iterations_per_step.append(solver.getIterationNumber())
+        assemblies_per_step.append(jacobian_state["num_assemblies"] - num_assemblies_before)
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
 
         step += 1
@@ -899,7 +909,14 @@ def solve(
     solver.destroy()
     mesh_motion.destroy()
 
-    return
+    return {
+        "elapsed_time": end - start,
+        "num_steps": step - first_step,
+        "num_newton_iterations": num_newton_iterations,
+        "num_assemblies": jacobian_state["num_assemblies"],
+        "iterations_per_step": iterations_per_step,
+        "assemblies_per_step": assemblies_per_step,
+    }
 
 
 def main():

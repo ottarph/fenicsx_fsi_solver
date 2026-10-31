@@ -261,6 +261,28 @@ def test_fsi2_simplified_reassembles_the_jacobian_in_every_iteration_without_reu
     assert fresh["assembled"].sum() > reused["assembled"].sum()
 
 
+def test_fsi2_simplified_returns_the_newton_statistics_of_the_newton_log(output_dirs):
+    # The statistics solve() returns count the same iterations and assemblies as the Newton log.
+    dt_val = 0.0025
+    stats = solve(
+        mesh_path=MESH,
+        T=4 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "stats.bp"),
+        output_path_p=str(output_dirs["pv"] / "stats_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "stats.txt"),
+        newton_log_path=str(output_dirs["qoi"] / "stats_newton.txt"),
+    )
+    log = read_newton_log(output_dirs["qoi"] / "stats_newton.txt")
+
+    assert stats["num_steps"] == 4
+    assert stats["elapsed_time"] > 0.0
+    assert stats["num_newton_iterations"] == sum(stats["iterations_per_step"]) == np.sum(log["it"] > 0)
+    assert stats["num_assemblies"] == sum(stats["assemblies_per_step"]) == log["assembled"].sum()
+    # The first step assembles the Jacobian, at least once
+    assert stats["assemblies_per_step"][0] >= 1
+
+
 def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(output_dirs):
     # The prediction only changes the initial guess of each Newton solve, so the runs agree within
     # the Newton tolerance. From rest, the structure hardly moves in the first steps, so the residual
