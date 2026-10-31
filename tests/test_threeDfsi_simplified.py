@@ -56,7 +56,7 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
     dt_val = 0.004
 
     def run(name, **kwargs):
-        solve(
+        stats = solve(
             mesh_path=MESH,
             T=2 * dt_val,
             dt_val=dt_val,
@@ -71,8 +71,14 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
             output_dirs["qoi"] / f"{name}_newton.txt",
             output_dirs["qoi"] / f"{name}.txt",
             ["v", "p"],
-            always_assembled=kwargs.get("gamma_reassemble", 0.2) is None,
+            always_assembled=kwargs.get("gamma_reassemble", 0.1) is None,
         )
+        # The statistics solve() returns count the same iterations and assemblies as the Newton log.
+        log = read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+        assert stats["num_steps"] == len(stats["step_times"]) == 2
+        assert stats["num_newton_iterations"] == sum(stats["iterations_per_step"]) == np.sum(log["it"] > 0)
+        assert stats["num_assemblies"] == sum(stats["assemblies_per_step"]) == log["assembled"].sum()
+        assert stats["num_linear_iterations"] == sum(stats["linear_iterations_per_step"])
         return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2), read_newton_log(
             output_dirs["qoi"] / f"{name}_newton.txt"
         )

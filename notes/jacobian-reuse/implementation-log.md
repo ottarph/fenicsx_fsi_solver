@@ -122,3 +122,61 @@ Predicted wall time over t = 0 to 15 (`plots/predicted_time.svg`, `tables.md`):
 - Caveat: t_A, t_R and o come from 200 steps in the developed flow; the start-up steps may differ a
   little in cost per iteration. The counts are from 2-rank runs; on other rank counts MUMPS round-off
   could change borderline reuse decisions, which is not expected to shift the averages.
+
+## threeDfsi_simplified from a developed state
+
+Goal (2026-10-31, the user): instrument `threeDfsi_simplified` as `fsi2_simplified` and test a few
+values of γ below its default 0.2 from a developed state. Branch `gamma-reassemble-3d`, from
+`restricted` at 36adee8 (which has the 2D sweep merged and `fsi2_simplified` defaulting to 0.05).
+
+Expectation: in 3D a Newton iteration is dominated by the linear solve (FGMRES), the residual and
+the mesh motion. With `MUMPS_ON_SOLID`, assembling the Jacobian and setting up its preconditioner
+(MUMPS on the solid, ILU on the fluid, BoomerAMG on the Schur complement) is only about a tenth of
+an iteration (notes/fsi3d, 2026-10-29). So t_A / t_R is close to 1, unlike about 4 to 5 in 2D, and
+the fewer iterations of a small γ should pay off more than in 2D, possibly down to γ = None.
+
+- `threeDfsi_simplified.solve` returns the statistics of `fsi2_simplified.solve`, plus the linear
+  iterations and the wall time of each step. The check against the Newton log is added to the slow
+  test `test_threeDfsi_simplified_prediction_options` (not run; slow tests need permission) and was
+  run by hand on a 2-step coarse-mesh run of the driver. Commit 68fda56.
+- `scripts/jacobian_reuse_sweep.py` takes `--solver threeDfsi_simplified`: `MUMPS_ON_SOLID` with
+  `requires_v_sub_IS`, the quadrature cap of 6 also on the mesh motion, the medium mesh, dt = 0.004.
+  Commit 7b1ad24.
+- 16:23: `jobs/jacobian_reuse_3d.sh` launched (process group in `output/logs/jr3d.pid`): γ = 0.2,
+  0.1, 0.05, 0.02, 0.01, None, one at a time on 28 ranks on the otherwise idle machine, 88 steps
+  (two periods of the beam, which oscillates with period 0.176 s at constant amplitude) from the
+  `threeDfsi_mixed_medium` checkpoint at t = 10, into `output/jacobian_reuse_3d/g<γ>/`, logs
+  `output/logs/jr3d_g<γ>.txt`. `analyze_3d.py` writes `tables_3d.md`. Commit 1f14883.
+- 17:14: all six runs finished (432, 411, 410, 540, 599, 604 s for γ = 0.2, 0.1, 0.05, 0.02, 0.01,
+  None), QoIs equal to γ = 0.2 within 2e-7 of their range (drag within 1.5e-5, the digits written).
+
+### Results (`tables_3d.md`)
+
+| γ | Newton it. / step | assemblies / step | FGMRES / solve | s / step, after the first | vs 0.2 |
+|---|---|---|---|---|---|
+| None | 5.00 | 5.00 | 13.5 | 6.78 | +40% |
+| 0.01 | 5.65 | 4.51 | 13.5 | 6.73 | +40% |
+| 0.02 | 5.83 | 3.39 | 13.3 | 6.06 | +26% |
+| 0.05 | 6.22 | 1.05 | 12.9 | 4.58 | −5.1% |
+| 0.1 | 6.26 | 1.00 | 12.9 | 4.58 | −4.9% |
+| 0.2 | 6.88 | 0.86 | 12.5 | 4.82 | 0 |
+
+- **γ = 0.05 and 0.1 are best, both 5% faster than the default 0.2; below 0.05 it gets much worse.**
+- The expectation above was wrong: an iteration that assembles costs t_A = 1.28 s and one that
+  reuses t_R = 0.57 s, a ratio of 2.2. Per assembly: SNESJacobianEval 0.39 s, the factorizations
+  (MUMPS on the solid and ILU on the fluid, two MatLUFactorNum) 0.15 s, the rest of the PC setup
+  (BoomerAMG on the Schur complement) about 0.15 s. The 0.05 s of the Jacobian in notes/fsi3d was
+  per Newton iteration, averaged over 53 iterations with 7 assemblies, so about 0.38 s per assembly,
+  consistent with this; I had misread it as per assembly.
+- Why the step from 0.05 to 0.02 is so large: the Jacobian is that of (v, p) only, without the
+  derivatives through the mesh motion and the update of u_s, so even a fresh Jacobian contracts
+  Newton only linearly, by 0.01 to 0.03 per iteration (median 0.012, 0.006, 0.019, 0.022, 0.026 in
+  iterations 1 to 5 with γ = None). A γ below that floor reassembles in almost every iteration for
+  no faster contraction (γ = 0.01: 4.5 assemblies in 5.65 iterations per step). With γ = 0.05 or
+  0.1, J is reassembled about once per step and the reused one contracts by 0.03 to 0.1. γ = 0.2
+  saves 0.14 assemblies per step but costs 0.6 iterations more.
+- Compared with 2D (best γ = 0.05 at t_A / t_R = 4 to 5), the optimum in 3D is set less by the cost
+  ratio than by the contraction floor of the inexact Jacobian: γ should stay above it. 0.1 keeps
+  more margin from the floor than 0.05 at the same speed. The default 0.2 of
+  `threeDfsi_simplified` is left unchanged for now (the user's decision).
+- `threeDfsi_simplified` now defaults to γ = 0.1, the user's choice after these results.

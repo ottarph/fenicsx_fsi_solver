@@ -201,7 +201,7 @@ def solve(
     vtx_save_every=None,
     restart=False,
     initial_state_dir=None,
-    gamma_reassemble=0.2,
+    gamma_reassemble=0.1,
     max_quadrature_degree=8,
     mesh_motion_options=None,
     mesh_motion_max_quadrature_degree=8,
@@ -283,6 +283,12 @@ def solve(
     a higher degree are integrated inexactly at that degree, and the others keep their estimate. The
     cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The other arguments are
     those of ``threeDfsi_c0ip.solve``.
+
+    Returns the statistics of the time steps of this run: the wall time of the time loop,
+    ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_linear_iterations``,
+    ``num_assemblies`` of the Jacobian, and per step, ``iterations_per_step``, ``assemblies_per_step``,
+    ``linear_iterations_per_step`` and the wall time ``step_times``. The counts are the same on every
+    rank; the wall times are those of each rank.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -914,7 +920,8 @@ def solve(
     first_step = step
     num_newton_iterations = 0
     num_linear_iterations = 0
-    step_times = []
+    # Newton iterations, Jacobian assemblies, linear iterations and wall time of each time step of this run
+    iterations_per_step, assemblies_per_step, linear_iterations_per_step, step_times = [], [], [], []
     start = timer()
     while step < num_steps:
         step_start = timer()
@@ -930,11 +937,15 @@ def solve(
 
         if newton_log_path is not None:
             newton_log.start_step(t)
+        num_assemblies_before = jacobian_state["num_assemblies"]
         problem.solve()
         step_newton_iterations = solver.getIterationNumber()
         step_linear_iterations = solver.getLinearSolveIterations()
         num_newton_iterations += step_newton_iterations
         num_linear_iterations += step_linear_iterations
+        iterations_per_step.append(step_newton_iterations)
+        assemblies_per_step.append(jacobian_state["num_assemblies"] - num_assemblies_before)
+        linear_iterations_per_step.append(step_linear_iterations)
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
 
         step_times.append(timer() - step_start)
@@ -996,7 +1007,17 @@ def solve(
     solver.destroy()
     mesh_motion.destroy()
 
-    return
+    return {
+        "elapsed_time": end - start,
+        "num_steps": step - first_step,
+        "num_newton_iterations": num_newton_iterations,
+        "num_linear_iterations": num_linear_iterations,
+        "num_assemblies": jacobian_state["num_assemblies"],
+        "iterations_per_step": iterations_per_step,
+        "assemblies_per_step": assemblies_per_step,
+        "linear_iterations_per_step": linear_iterations_per_step,
+        "step_times": step_times,
+    }
 
 
 def main():
@@ -1018,7 +1039,7 @@ def main():
     checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 250
     vtx_save_every = None
-    gamma_reassemble = 0.2  # Default 0.2.
+    gamma_reassemble = 0.1  # Default 0.1.
     max_quadrature_degree = 6  # Default 8.
     mesh_motion_max_quadrature_degree = 6  # Default 8.
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
