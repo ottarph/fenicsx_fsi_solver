@@ -179,3 +179,4 @@ the fewer iterations of a small γ should pay off more than in 2D, possibly down
   ratio than by the contraction floor of the inexact Jacobian: γ should stay above it. 0.1 keeps
   more margin from the floor than 0.05 at the same speed. The default 0.2 of
   `threeDfsi_simplified` is left unchanged for now (the user's decision).
+- `threeDfsi_simplified` now defaults to γ = 0.1, the user's choice after these results.

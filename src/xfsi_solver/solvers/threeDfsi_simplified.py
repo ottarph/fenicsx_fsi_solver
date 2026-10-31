@@ -201,7 +201,7 @@ def solve(
     vtx_save_every=None,
     restart=False,
     initial_state_dir=None,
-    gamma_reassemble=0.2,
+    gamma_reassemble=0.1,
     max_quadrature_degree=8,
     mesh_motion_options=None,
     mesh_motion_max_quadrature_degree=8,
@@ -1039,7 +1039,7 @@ def main():
     checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 250
     vtx_save_every = None
-    gamma_reassemble = 0.2  # Default 0.2.
+    gamma_reassemble = 0.1  # Default 0.1.
     max_quadrature_degree = 6  # Default 8.
     mesh_motion_max_quadrature_degree = 6  # Default 8.
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS

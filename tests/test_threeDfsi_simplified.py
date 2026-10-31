@@ -71,7 +71,7 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
             output_dirs["qoi"] / f"{name}_newton.txt",
             output_dirs["qoi"] / f"{name}.txt",
             ["v", "p"],
-            always_assembled=kwargs.get("gamma_reassemble", 0.2) is None,
+            always_assembled=kwargs.get("gamma_reassemble", 0.1) is None,
         )
         # The statistics solve() returns count the same iterations and assemblies as the Newton log.
         log = read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
