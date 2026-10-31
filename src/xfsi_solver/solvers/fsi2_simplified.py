@@ -185,7 +185,7 @@ def solve(
     vtx_save_every=None,
     restart=False,
     initial_state_dir=None,
-    gamma_reassemble=0.2,
+    gamma_reassemble=0.05,
     max_quadrature_degree=None,
     mesh_motion_options=None,
     requires_v_sub_IS=False,
@@ -938,7 +938,7 @@ def main():
     checkpoint_dir = f"output/checkpoints/{run_name}"
     checkpoint_every = 400
     vtx_save_every = None
-    gamma_reassemble = 0.2  # Default 0.2.
+    gamma_reassemble = 0.05  # Default 0.05.
     max_quadrature_degree = 5  # Default None, no cap. 6 gives the same QoIs, 20% faster.
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
@@ -959,7 +959,7 @@ def main():
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,
-        gamma_reassemble=gamma_reassemble,  # Default 0.2.
+        gamma_reassemble=gamma_reassemble,  # Default 0.05.
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
