@@ -18,6 +18,8 @@ def create_mesh(
     semi_structured_quad: bool = True,
     second_order: bool = True,
     solid_refinement: float = 1.0,
+    refinements: int = 0,
+    path: str | None = None,
 ):
     """Generate the FSI2 benchmark mesh (solid flag + ALE fluid domain) and
     write it to ``data/meshes/fsi2/mesh<suffix>.xdmf``.
@@ -45,6 +47,13 @@ def create_mesh(
         Divide the element size in the solid, and on its boundary, by this factor, keeping the
         sizes elsewhere. The fluid cells grade from the solid boundary to their usual size. With a
         factor other than 1, "_solid<factor>x" is appended to the output filename.
+    refinements:
+        Split every cell of the linear mesh into four this many times, before the mesh is made
+        second order, so the refined meshes are nested in the unrefined one and the new nodes on
+        curved boundaries lie on the geometry. With a count other than 0, "_ref<count>" is appended
+        to the output filename.
+    path:
+        Write the mesh here instead of to the path built from the options.
     """
 
     L, H, r = 2.5, 0.41, 0.05
@@ -265,6 +274,9 @@ def create_mesh(
 
     gmsh.model.mesh.generate(gdim)
 
+    for _ in range(refinements):
+        gmsh.model.mesh.refine()
+
     if second_order:
         # Use second order mesh
         gmsh.model.mesh.setOrder(2)
@@ -291,7 +303,8 @@ def create_mesh(
     from pathlib import Path
 
     mesh_path = Path(
-        f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}{f'_solid{solid_refinement:g}x' if solid_refinement != 1.0 else ''}.xdmf"
+        path
+        or f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}{f'_solid{solid_refinement:g}x' if solid_refinement != 1.0 else ''}{f'_ref{refinements}' if refinements else ''}.xdmf"
     )
 
     from dolfinx.io import XDMFFile
