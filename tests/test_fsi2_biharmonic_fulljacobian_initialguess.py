@@ -106,3 +106,43 @@ def test_fsi2_biharmonic_fulljacobian_initialguess_restart_on_different_number_o
 
 def test_fsi2_biharmonic_fulljacobian_initialguess_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(solve, MESH, ELEMENTS, output_dirs, tmp_path)
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_writes_the_spectrum(output_dirs):
+    # The dominant eigenvalues of J_0^-1 N after every step: one row per step, sorted by modulus,
+    # and well inside the unit disc, since J_0 converges. From rest the solid hardly moves, so they
+    # are small, and grow as it starts to.
+    dt_val = 0.0025
+    path = output_dirs["qoi"] / "spectrum.txt"
+    solve(
+        mesh_path=MESH,
+        T=3 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "spectrum.bp"),
+        output_path_p=str(output_dirs["pv"] / "spectrum_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "spectrum_qoi.txt"),
+        spectral_every=1,
+        spectral_path=str(path),
+    )
+    rows = np.genfromtxt(path, names=True)
+    np.testing.assert_allclose(rows["t"], dt_val * np.arange(1, 4), rtol=1e-6)
+    moduli = np.stack([rows[f"abs_{i}"] for i in (1, 2, 3)], axis=1)
+    assert np.all(np.diff(moduli, axis=1) <= 0)
+    np.testing.assert_allclose(
+        moduli, np.hypot(*(np.stack([rows[f"{c}_{i}"] for i in (1, 2, 3)], axis=1) for c in ("re", "im"))), rtol=1e-5
+    )
+    assert np.all((0 < moduli) & (moduli < 0.1))
+    assert np.all(np.diff(rows["abs_1"]) > 0)
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_spectrum_needs_a_path(output_dirs):
+    with pytest.raises(ValueError, match="spectral_path"):
+        solve(
+            mesh_path=MESH,
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "spectrum.bp"),
+            output_path_p=str(output_dirs["pv"] / "spectrum_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "spectrum_qoi.txt"),
+            spectral_every=1,
+        )

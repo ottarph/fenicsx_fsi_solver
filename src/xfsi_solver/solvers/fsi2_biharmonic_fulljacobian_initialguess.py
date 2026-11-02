@@ -83,6 +83,9 @@ def solve(
     snes_atol=1.0e-7,
     snes_rtol=1.0e-12,
     snes_max_it=20,
+    spectral_every=None,
+    spectral_path=None,
+    spectral_nev=3,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -156,6 +159,15 @@ def solve(
 
     ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES, for
     example a tight relative tolerance to follow the rate of the iterations over more of them.
+
+    With ``spectral_every`` and ``spectral_path``, every ``spectral_every`` steps the ``spectral_nev``
+    eigenvalues of largest magnitude of J_0^-1 N at the solution of the step are written as a row of
+    ``spectral_path`` (its time, and the modulus, real and imaginary part of each), by
+    ``xfsi_solver.tools.spectral.dominant_eigenvalues``. N is the derivative of the fluid momentum
+    and continuity residuals with respect to u, the fluid ALE derivatives (the blocks F and D of
+    eq. (1) of docs/restricted-iterative-solver.md), and J_0 = J - N the approximate Jacobian of
+    fsi2_biharmonic_mixed and fsi2_simplified, so the largest modulus is the asymptotic contraction
+    factor of Newton's method with J_0 in that step. A restart appends to ``spectral_path``.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -730,6 +742,64 @@ def solve(
 
         solver.setInitialGuess(predict)
 
+    if spectral_every is not None:
+        from xfsi_solver.tools.spectral import dominant_eigenvalues
+
+        if spectral_path is None:
+            raise ValueError("spectral_every needs spectral_path")
+
+        def fluid_integrals(form: ufl.Form) -> ufl.Form:
+            fluid = [i for i in form.integrals() if i.subdomain_id() == PHYSICAL_MARKERS["ALE_fluid"]]
+            return ufl.Form(fluid)
+
+        # The derivatives with respect to u of the fluid integrals of the momentum rows and of the
+        # continuity rows, with zero diagonal blocks, which give the assembler the spaces of the rows
+        # and columns without a block of their own.
+        du_trial = ufl.TrialFunction(U)
+        N_forms = [
+            [zero_block(U, U), None, None, None],
+            [
+                dolfinx.fem.form(
+                    ufl.derivative(fluid_integrals(residual_blocked[1]), u, du_trial), entity_maps=entity_maps
+                ),
+                zero_block(V, V),
+                None,
+                None,
+            ],
+            [
+                dolfinx.fem.form(ufl.derivative(residual_blocked[2], u, du_trial), entity_maps=entity_maps),
+                None,
+                zero_block(P, P),
+                None,
+            ],
+            [None, None, None, zero_block(Z, Z)],
+        ]
+        if comm.rank == 0 and not restart:
+            columns = [f"{name}_{i}" for i in range(1, spectral_nev + 1) for name in ("abs", "re", "im")]
+            with open(spectral_path, "w") as f:
+                f.write("# t\t" + "\t".join(columns) + "\n")
+
+        def write_spectrum(t: float) -> None:
+            """Write the dominant eigenvalues of J_0^-1 N at the current solution, at time t."""
+            fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
+            post_jacobian(problem.x, J_mat)
+            N_mat = J_mat.duplicate(copy=False)
+            N_mat.zeroEntries()
+            dolfinx.fem.petsc.assemble_matrix(N_mat, N_forms, bcs=bcs_post, diag=0.0)
+            N_mat.assemble()
+            J0_mat = J_mat.duplicate(copy=True)
+            J0_mat.axpy(-1.0, N_mat, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+            values = dominant_eigenvalues(
+                J0_mat, N_mat, nev=spectral_nev, options_prefix=f"{solver.getOptionsPrefix()}spectral_"
+            )
+            N_mat.destroy()
+            J0_mat.destroy()
+            if comm.rank == 0:
+                with open(spectral_path, "a") as f:
+                    f.write(
+                        f"{t:.6e}\t" + "\t".join(f"{abs(x):.6e}\t{x.real:.6e}\t{x.imag:.6e}" for x in values) + "\n"
+                    )
+
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
     if newton_log_path is not None:
         blocks = field_blocks(problem, ["u", "v", "p", "z"])
@@ -766,6 +836,8 @@ def solve(
 
         step += 1
         write_output(t, step)
+        if spectral_every is not None and step % spectral_every == 0:
+            write_spectrum(t)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
             checkpointer.write([u, v, p, z], t, step, dt_val, t0)
