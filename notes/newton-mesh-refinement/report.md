@@ -3,7 +3,8 @@
 Does the linear contraction of Newton's method with the approximate Jacobian J_0 break down when
 the mesh is refined? The FSI2 window of `notes/newton-convergence/report.md`, one period of the
 oscillating beam, is solved on three nested meshes of mesh size h, h/2 and h/4, from the same state.
-The history of the work is in `implementation-log.md`.
+A time step sweep and the spectral radius of the error iteration of J_0 then separate the effects of h
+and dt (see Time step and spectral radius). The history of the work is in `implementation-log.md`.
 
 ## Findings
 
@@ -14,11 +15,11 @@ The history of the work is in `implementation-log.md`.
    relative tolerance of 1e-11.
 2. **The first iteration does not depend on h.** It contracts by 3.2e-3 with the prediction and by
    0.16 to 0.17 without it on every mesh.
-3. **The ratio of successive Newton updates tells the same story, if less clearly.** It estimates how
-   fast the error contracts, and falls from 1.5e-2 to 1.2e-2 with the prediction, but grows from
-   6.4e-3 to 9.2e-3 without it, like the residual ratio. Part of the growth of the residual ratio
-   may be the l2 norm of the residual, which weights the fine-scale components more on a finer
-   mesh; either way it is slow.
+3. **The growth with h is real, not an artefact of the norm.** The spectral radius of J_0^(-1) N,
+   the asymptotic contraction without tolerances or norms, grows by 1.20 and 1.14 per halving of h
+   (4.6e-3, 5.5e-3 and 6.3e-3 at dt = 0.0025), as the measured rates do. The ratio of successive
+   Newton updates, which falls from 1.5e-2 to 1.2e-2 with the prediction (and grows from 6.4e-3 to
+   9.2e-3 without it), is a poorer estimate over only 2 to 4 iterations.
 4. **The full Jacobian stays quadratic.** It takes 3 iterations per step on every mesh, contracting
    by 4.7e-4 to 4.9e-4 and then by 3.5e-6 to 4.5e-6, so the problem itself does not get harder for
    Newton's method on finer meshes.
@@ -30,6 +31,29 @@ The history of the work is in `implementation-log.md`.
    hardly damped by theta = 0.5 + dt, and J_0 with reuse diverged within 7 to 15 steps on h/2 and
    h/4 (see Setup). This is about the transfer, not about the refinement, but it shows that a reused
    J_0 copes badly with high-frequency transients.
+7. **A smaller time step helps the contraction only a little.** On h, the spectral radius falls from
+   7.0e-3 to 4.6e-3, 3.9e-3 and 3.2e-3 as dt halves from 0.005 to 0.000625, roughly dt^0.36, and the
+   measured contraction of the later iterations about as slowly. Only the first iteration with the
+   prediction contracts in proportion to dt (9.6e-3 to 1.3e-3), so a step takes about 5 iterations
+   at every dt.
+8. **Refined in h and dt together, the contraction stays the same.** Over the first 0.04 s of the
+   window, the spectral radius is 4.79e-3 at (h, 0.0025), 4.85e-3 at (h/2, 0.00125) and 4.74e-3 at
+   (h/4, 0.000625), within 2% of each other at every sample time: the growth with h and the decrease
+   with dt cancel. Refined in h alone, it is 6.4e-3 on h/4, and in dt alone, 3.4e-3 at dt = 0.000625.
+   The measured contraction of the later iterations still grows along this line (5.6e-3, 6.3e-3,
+   7.6e-3, from 1.16 to 1.59 times the spectral radius), but the first iteration, in proportion to
+   dt, makes up for it: every step takes 5.00 iterations on all three.
+9. **The two parts of the fluid ALE derivatives must be left out together.** Leaving out only the
+   derivatives of the momentum residual gives a spectral radius of 1.1e-2 at dt = 0.0025 on h, only
+   those of the continuity residual 7.2e-3, and both, as J_0 does, 4.6e-3: the two parts partly
+   cancel, as if the geometry were frozen consistently in all the fluid equations. Each part alone
+   falls with dt as slowly as both together.
+10. **The measured contraction lies above the spectral radius.** Over the 2 to 4 iterations of a step,
+    the measured rate is 1.2 to 2 times the spectral radius at dt = 0.0025 and below (about equal at
+    0.005), most near the turning point of the tip,
+    where the spectral radius falls earlier than the measured rate. The error iteration is far from
+    normal, and its dominant eigenvalues are a complex pair, which makes the measured ratios alternate
+    from one iteration to the next.
 
 ## Setup
 
@@ -125,38 +149,106 @@ curve are steps where an iteration more or fewer changes which ratios enter its 
 With reuse, the three meshes reassemble J_0 in the same phases and as often, and take the same
 number of iterations per step up to the slightly looser absolute tolerance on the finer meshes.
 
-## Why the rate barely depends on h
+## Time step and spectral radius
 
-J_0 leaves out N, the derivatives of the fluid equations with respect to the mesh displacement, and
-the asymptotic contraction is the spectral radius of J_0^(-1) N. The displacement enters the Newton
-step through u = u_old + dt θ E(v on the interface), with E the biharmonic extension, which smooths,
-and the fluid equations depend on u through at most first derivatives, while J_0 holds the mass term
-ρ/dt and the second-order viscous term. N is therefore of lower order than J_0, and J_0^(-1) N stays
-bounded as h → 0, at about dt times the flow and solid velocities. The measurements agree: the rate
-grows only slowly, and most in the phases where the solid moves fast.
+J_0 leaves out N, the derivatives of the fluid momentum and continuity residuals with respect to the
+mesh displacement (the blocks F and D of eq. (1) of `docs/restricted-iterative-solver.md`), and
+near the solution Newton's method with J_0 iterates the error as e_(k+1) = -J_0^(-1) N e_k. The
+spectral radius of J_0^(-1) N is therefore the asymptotic contraction factor.
+`fsi2_biharmonic_fulljacobian_initialguess` computes it with `spectral_every`, at the solution of a
+step: it assembles J and N there, factorizes J_0 = J - N once with MUMPS, and finds the eigenvalues
+of largest modulus by Krylov-Schur in SLEPc (`xfsi_solver.tools.spectral`). On the settled state
+of h, it tracks the measured contraction of `fsi2_simplified`, at 0.6 to 0.8 times it over the first
+steps.
+
+The runs cover the first 0.12 s of the period of the refinement study (from the fast phase of the
+tip to its turning point at t = 16.66), from the same settled states, on h at dt = 0.005, 0.0025,
+0.00125 and 0.000625, on h/2 at dt = 0.0025 and 0.00125, and on h/4 at dt = 0.0025 and, over the
+first 0.04 s only, at 0.000625. The spectral radius is sampled every 0.005 s, at the solution of the
+full Jacobian with the prediction; the measured rates are those of J_0 with the prediction,
+reassembled in every iteration, to a relative tolerance of 1e-11.
+
+| mesh | dt | spectral radius (median, IQR) | measured, later iterations | measured, first iteration |
+|---|---|---|---:|---:|
+| h | 0.005 | 7.0e-3 [6.6e-3, 7.3e-3] | 6.6e-3 | 9.6e-3 |
+| h | 0.0025 | 4.6e-3 [3.6e-3, 5.1e-3] | 5.8e-3 | 5.1e-3 |
+| h | 0.00125 | 3.9e-3 [3.2e-3, 4.4e-3] | 5.1e-3 | 2.6e-3 |
+| h | 0.000625 | 3.2e-3 [2.6e-3, 3.6e-3] | 4.4e-3 | 1.3e-3 |
+| h/2 | 0.0025 | 5.5e-3 [4.6e-3, 6.1e-3] | 6.7e-3 | 5.1e-3 |
+| h/2 | 0.00125 | 4.8e-3 [4.0e-3, 5.4e-3] | 6.7e-3 | 2.6e-3 |
+| h/4 | 0.0025 | 6.3e-3 [5.3e-3, 7.0e-3] | 7.7e-3 | 5.0e-3 |
+| h/4 | 0.000625 (first 0.04 s) | 4.7e-3 [4.4e-3, 5.2e-3] | 7.6e-3 | 8.0e-4 |
+
+The measured rates are medians over the same window as the spectral radius, 0.12 s except on h/4 at
+dt = 0.000625.
+
+![Asymptotic and measured contraction against dt on h](plots/rho_vs_dt.svg)
+
+On h, the spectral radius falls with dt by a factor 1.53, then 1.17 and 1.21 per halving, roughly
+dt^0.36, and the measured contraction of the later iterations by about 1.15 per halving. The first
+iteration with the prediction contracts in proportion to dt: the prediction u_old + dt v_old is
+off by about dt^2 a / 2, against a residual of the initial guess of order dt. With only the
+momentum or only the continuity part left out, the spectral radius is larger (1.1e-2 and 7.2e-3 at
+dt = 0.0025) and falls with dt about as slowly (by 1.59 and 1.67 from dt = 0.0025 to 0.000625,
+against 1.42 for both).
+
+![Spectral radius over the window on h, for the four time steps](plots/rho_over_window.svg)
+
+Over the window, the spectral radius at dt = 0.0025 and below keeps its shape from one time step to
+the next, rising through the fast phase and falling toward the turning point, each curve about 1.2
+times below the last. At dt = 0.005 it stays high through the turning point: there, the dominant
+eigenvalue is real in every sample, while at the smaller time steps it is a complex pair in 83 to
+100% of them, so at the largest time step another mode takes over. The measured rate falls toward
+the turning point later than the spectral radius and stays up to twice as large: over only 2 to 4
+iterations, the ratio of residual norms of a far from normal error iteration is set by more than its
+spectral radius.
+
+![Spectral radius under refinement in h, in dt, and in both](plots/rho_vs_h.svg)
+
+Refined in h at dt = 0.0025, the spectral radius grows by 1.20 and 1.14 per halving; refined in dt
+on h, it falls by 1.17 and 1.21; refined in both, over the first 0.04 s of the window where all three
+are run, it stays at 4.79e-3, 4.85e-3 and 4.74e-3. The measured rate of the later iterations grows
+along the same line (5.6e-3, 6.3e-3 and 7.6e-3), so the transient of the error iteration, not its
+asymptotic rate, grows with refinement; the first iteration contracts by 3.1e-3, 1.6e-3 and 8.0e-4,
+and the steps take 5.00 iterations on all three.
+
+### Why the rate depends so little on h and dt
+
+The displacement enters the Newton step through u = u_old + dt θ E(v on the interface), with E the
+biharmonic extension, and the fluid equations depend on u through at most first derivatives. With
+J_0 dominated by the mass term ρ/dt, this argument predicts a spectral radius bounded in h and
+proportional to dt. It holds for h, where the growth is slow, but not for dt: the spectral radius
+falls only as about dt^0.36, for both parts of N alike. A plausible reason is the pressure: in
+incompressible flow, the pressure answers an acceleration of the interface with an added-mass
+response that scales like 1/dt, which would cancel the factor dt of the displacement for the modes
+that limit the convergence. This is not checked; the eigenvectors of the dominant eigenvalues would
+show where these modes live.
 
 ## Caveats
 
 - One period, from one state, and three meshes; the slow growth may continue. At 17% per halving it
   would take four to five more halvings to double the rate, and since the first iteration does not
-  change, that would add less than one iteration per step.
+  change, that would add less than one iteration per step. Refining dt with h, as one would to keep
+  the accuracy in time, removes the growth altogether over the range measured.
+- The time step sweep and the spectral radius cover the first 0.12 s of the period, from the fast
+  phase to the turning point, and on h/4 at dt = 0.000625 only the first 0.04 s. The states for
+  dt other than 0.0025 start from the settled states of dt = 0.0025, so the first steps of those
+  runs follow a state of another time step.
 - The states are transferred and settled, not spun up from rest on each mesh. The settled states
   follow the same oscillation (the tip displacements of the three meshes lie on top of each other
   over the measured period), but each finer mesh would drift to its own periodic orbit over a
   longer run.
-- One time step, dt = 0.0025. The argument above predicts that the rate scales with dt, which the
-  sketch of this study also meant to measure; it is not done yet.
-- The rates are in the l2 norm of the residual vector, whose weighting of fine and coarse components
-  changes with h. The update ratio, the other estimate, grows without the prediction and falls with
-  it.
+- The spectral radius is the asymptotic rate at the solution of each step; the measured rates of the
+  2 to 4 iterations of a step lie up to twice above it, as the error iteration is far from normal.
+- The explanation of the weak dependence on dt by the added mass of the pressure is not checked.
 - The meshes are regenerated by the current gmsh, so h is not `mesh_sec` itself, but its iterates
   match those of `mesh_sec` in the report to the digits shown.
 
 ## Next steps
 
-- The time step sweep on h (dt from 0.005 to 0.000625) and the diagonal dt ∝ h.
-- The spectral radius of J_0^(-1) N at frozen states on each mesh with SLEPc, which measures the
-  asymptotic rate without tolerances or norms.
+- The eigenvectors of the dominant eigenvalues of J_0^(-1) N, to see where the slow modes live
+  (interface, beam tip, wake, corners) and to check the added-mass explanation.
+- The real mode that dominates at dt = 0.005, and whether it limits larger time steps further.
 
 ## Reproducing
 
@@ -173,7 +265,10 @@ mpirun -n 4 python -m xfsi_solver.scripts.transfer_fsi2_checkpoint data/meshes/f
 transfers the start state to it. The damping, settling and measurement runs call
 `fsi2_biharmonic_mixed.solve`, `fsi2_simplified.solve` and
 `fsi2_biharmonic_fulljacobian_initialguess.solve` with the options above, writing to
-`output/newton_refinement/<run>_ref<n>/`. The figures are made by
+`output/newton_refinement/<run>_ref<n>/`. The runs of the time step sweep start from
+`output/newton_refinement/settle_ref<n>/checkpoints` and write to `output/newton_dt/`; the spectra
+come from `fsi2_biharmonic_fulljacobian_initialguess.solve` with `spectral_every` (every 0.005 s),
+`spectral_path` and, for the parts of N, `spectral_left_out`. The figures are made by
 
 ```bash
 python notes/newton-mesh-refinement/make_figures.py

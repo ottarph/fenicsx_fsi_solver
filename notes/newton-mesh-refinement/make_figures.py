@@ -6,7 +6,13 @@ The runs are one period (200 steps of dt = 0.0025 from t = 16.5525) on each mesh
 data/meshes/fsi2/refinement/mesh_sec_ref{0,1,2}, from the settled states, in the configurations
 j0_pred, j0_nopred (J_0 reassembled in every iteration, with and without the prediction, tight
 relative tolerance), full_pred (the full Jacobian with the prediction, tight relative tolerance) and
-j0_reuse (J_0 with the prediction and reuse, gamma 0.2, default tolerances). Writes SVG and PNG
+j0_reuse (J_0 with the prediction and reuse, gamma 0.2, default tolerances).
+
+The time step sweep and the spectral calculation are in output/newton_dt/: runs over the first
+WINDOW = 0.12 s of that period, from the same states, spec_ref<level>_dt<dt> (the full Jacobian with
+the prediction, writing the spectrum of J_0^-1 N every 0.005 s), j0_ref<level>_dt<dt> (J_0 with the
+prediction, reassembled in every iteration) and split_<part>_ref0_dt<dt> (the spectrum with only the
+momentum or only the continuity part of the fluid ALE derivatives left out of J_0). Writes SVG and PNG
 figures into figure_dir, by default plots/ next to this file.
 """
 
@@ -18,8 +24,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from xfsi_solver.scripts.plot_newton_logs import _RC, SERIES_COLORS, TEXT_SECONDARY, Run
+from xfsi_solver.tools.newton_log import read_newton_log
 
 ROOT = Path("output/newton_refinement")
+DT_ROOT = Path("output/newton_dt")
+DTS = [0.005, 0.0025, 0.00125, 0.000625]
+T_WINDOW_END = 16.5525 + 0.12 + 1e-9
 LEVELS = [0, 1, 2]
 H = {level: 2.0**-level for level in LEVELS}  # mesh size relative to ref0
 LEVEL_LABELS = {0: "ref0 (h)", 1: "ref1 (h/2)", 2: "ref2 (h/4)"}
@@ -188,9 +198,125 @@ def plot_reuse_iterations(path: Path) -> None:
     plt.close(fig)
 
 
+def spectrum(name: str) -> np.ndarray | None:
+    path = DT_ROOT / name / f"{name}_spectrum.txt"
+    return np.genfromtxt(path, names=True) if path.exists() else None
+
+
+def window_ratios(path: Path, first: bool) -> np.ndarray:
+    """The contractions of the steps of a Newton log in the window, in the first iteration or the later ones."""
+    rows = read_newton_log(path)
+    rows = rows[rows["t"] <= T_WINDOW_END]
+    out = []
+    for t in np.unique(rows["t"]):
+        res = rows[rows["t"] == t]["residual"]
+        ks = [0] if first else range(1, len(res) - 1)
+        out += [res[k + 1] / res[k] for k in ks if k + 1 < len(res) and res[k + 1] > FLOOR * res[0]]
+    return np.array(out)
+
+
+def j0_log(level: int, dt: float) -> Path:
+    if dt == 0.0025:  # the first 0.12 s of the period of the refinement study
+        return ROOT / f"j0_pred_ref{level}" / f"j0_pred_ref{level}_newton.txt"
+    return DT_ROOT / f"j0_ref{level}_dt{dt:g}" / f"j0_ref{level}_dt{dt:g}_newton.txt"
+
+
+def plot_rho_vs_dt(path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6.4, 4.0))
+
+    def series(values_by_dt, label, color, marker="o", linestyle="-"):
+        dts = [dt for dt in DTS if values_by_dt.get(dt) is not None and len(values_by_dt[dt])]
+        q = np.array([np.percentile(values_by_dt[dt], [25, 50, 75]) for dt in dts])
+        ax.errorbar(dts, q[:, 1], yerr=[q[:, 1] - q[:, 0], q[:, 2] - q[:, 1]], color=color, marker=marker,
+                    linestyle=linestyle, markersize=5, capsize=3, label=label)  # fmt: skip
+
+    def spectral(prefix):
+        return {dt: (lambda a: None if a is None else a["abs_1"])(spectrum(f"{prefix}_dt{dt:g}")) for dt in DTS}
+
+    series(spectral("spec_ref0"), r"$\rho(J_0^{-1}N)$", SERIES_COLORS[0])
+    series(spectral("split_momentum_ref0"), r"$\rho$, only the momentum part left out", SERIES_COLORS[3], "s", "--")
+    series(spectral("split_continuity_ref0"), r"$\rho$, only the continuity part left out", SERIES_COLORS[4], "s", "--")
+    measured = {dt: window_ratios(j0_log(0, dt), False) if j0_log(0, dt).exists() else None for dt in DTS}
+    first = {dt: window_ratios(j0_log(0, dt), True) if j0_log(0, dt).exists() else None for dt in DTS}
+    series(measured, "$J_0$, predicted: later iterations (measured)", SERIES_COLORS[1], "^", ":")
+    series(first, "$J_0$, predicted: first iteration (measured)", SERIES_COLORS[2], "v", ":")
+    ref = np.array([DTS[0], DTS[-1]])
+    ax.plot(ref, 1.2e-2 * ref / DTS[0], color=TEXT_SECONDARY, linewidth=1.0, linestyle="-.", label=r"$\propto$ dt")
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks(DTS, [f"{dt:g}" for dt in DTS])
+    ax.minorticks_off()
+    ax.set_xlabel("time step dt")
+    ax.set_ylabel("contraction")
+    ax.set_title("Asymptotic and measured contraction against dt on h: median and IQR", loc="left", fontsize=9)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), ncols=2, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def plot_rho_over_window(path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6.4, 3.6))
+    for dt, color in zip(DTS, SERIES_COLORS, strict=False):
+        a = spectrum(f"spec_ref0_dt{dt:g}")
+        if a is not None:
+            ax.plot(a["t"], a["abs_1"], color=color, marker="o", markersize=3, linewidth=1.2, label=f"dt = {dt:g}")
+    ax.set_yscale("log")
+    ax.set_xlabel("$t$ [s]")
+    ax.set_ylabel(r"$\rho(J_0^{-1}N)$")
+    ax.set_title(r"Spectral radius of $J_0^{-1}N$ over the window on h, from the fast phase to the turning point",
+                 loc="left", fontsize=9)  # fmt: skip
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), ncols=4, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def plot_rho_vs_h(path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    # h/4 at dt = 0.000625 covers only the first 0.04 s, so the line refined in both is compared there.
+    lines = [
+        ("h refined, dt = 0.0025", [(level, 0.0025) for level in LEVELS], SERIES_COLORS[0], 0.12),
+        (
+            "h and dt refined together (first 0.04 s)",
+            [(0, 0.0025), (1, 0.00125), (2, 0.000625)],
+            SERIES_COLORS[1],
+            0.04,
+        ),
+        ("dt refined, on h", [(0, 0.0025), (0, 0.00125), (0, 0.000625)], SERIES_COLORS[2], 0.12),
+    ]
+    for label, points, color, window in lines:
+        xs, q = [], []
+        for i, (level, dt) in enumerate(points):
+            a = spectrum(f"spec_ref{level}_dt{dt:g}")
+            if a is not None:
+                a = a[a["t"] <= 16.5525 + window + 1e-9]
+                xs.append(2.0**-i)
+                q.append(np.percentile(a["abs_1"], [25, 50, 75]))
+        if xs:
+            q = np.array(q)
+            ax.errorbar(xs, q[:, 1], yerr=[q[:, 1] - q[:, 0], q[:, 2] - q[:, 1]], color=color, marker="o",
+                        markersize=5, capsize=3, label=label)  # fmt: skip
+    ax.set_xscale("log", base=2)
+    ax.set_yscale("log")
+    ax.set_xticks([1, 0.5, 0.25], ["1", "1/2", "1/4"])
+    ax.minorticks_off()
+    # The values lie within one decade, so the log axis gets its labels explicitly.
+    ticks = [2e-3, 3e-3, 4e-3, 5e-3, 6e-3, 7e-3, 8e-3]
+    ax.set_yticks(ticks, [f"{tick:.0e}".replace("e-0", "e-") for tick in ticks])
+    ax.invert_xaxis()
+    ax.set_xlabel("refinement factor (h, dt or both)")
+    ax.set_ylabel(r"$\rho(J_0^{-1}N)$")
+    ax.set_title("Spectral radius under refinement in h, in dt and in both: median and IQR", loc="left", fontsize=9)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, -0.16), fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 with plt.rc_context(_RC):
     for suffix in ("svg", "png"):
         plot_rates_vs_h(figure_dir / f"rates_vs_h.{suffix}")
         plot_residual_histories(figure_dir / f"residual_histories.{suffix}")
         plot_rate_over_period(figure_dir / f"rate_over_period.{suffix}")
         plot_reuse_iterations(figure_dir / f"reuse_iterations.{suffix}")
+        plot_rho_vs_dt(figure_dir / f"rho_vs_dt.{suffix}")
+        plot_rho_over_window(figure_dir / f"rho_over_window.{suffix}")
+        plot_rho_vs_h(figure_dir / f"rho_vs_h.{suffix}")

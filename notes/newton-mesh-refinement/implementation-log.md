@@ -84,3 +84,47 @@ round-off before the relative tolerance on ref1 and ref2, and most of its steps 
 PETSc's default `snes_stol` (1e-8) after 3 iterations. The ref2 measurements ran side by side on 3
 ranks each; full_pred took 2.6 hours, slowed in its last hour by another user's job on about 30
 cores. Written up in `report.md`, with the figures of `make_figures.py`.
+
+## 2026-11-02: Time step sweep and the spectral radius of J_0^-1 N
+
+`xfsi_solver.tools.spectral.dominant_eigenvalues` finds the eigenvalues of largest modulus of
+J_0^-1 N with SLEPc (Krylov-Schur on a shell operator: N, then a MUMPS solve with J_0, factorized
+once). `fsi2_biharmonic_fulljacobian_initialguess` writes them with `spectral_every` and
+`spectral_path`, at the solution of a step: it reassembles J there, assembles N (the u-derivatives of
+the fluid integrals of the momentum rows and of the continuity rows, with the Dirichlet rows and
+columns zeroed) into a matrix of the layout of J, and takes J_0 = J - N. `spectral_left_out` keeps
+only the momentum or only the continuity part in N. Checked on the settled state of h: the spectral
+radius (3.8e-3 to 4.5e-3 over six steps) tracks the measured later-iteration rates of `j0_pred`
+(4.6e-3 to 6.5e-3), and its dominant eigenvalues are a complex pair, which explains the alternating
+measured ratios.
+
+Runs over the first 0.12 s of the measured period from the settled states (`output/newton_dt/`),
+on 10 ranks next to another user's job of 20 to 30 cores; h/4 at dt = 0.000625 over 0.04 s only:
+
+| mesh | dt | rho (median) | measured later | measured first |
+|---|---|---:|---:|---:|
+| h | 0.005 | 7.0e-3 | 6.6e-3 | 9.6e-3 |
+| h | 0.0025 | 4.6e-3 | 5.8e-3 | 5.1e-3 |
+| h | 0.00125 | 3.9e-3 | 5.1e-3 | 2.6e-3 |
+| h | 0.000625 | 3.2e-3 | 4.4e-3 | 1.3e-3 |
+| h/2 | 0.0025 | 5.5e-3 | 6.7e-3 | 5.1e-3 |
+| h/2 | 0.00125 | 4.8e-3 | 6.7e-3 | 2.6e-3 |
+| h/4 | 0.0025 | 6.3e-3 | 7.7e-3 | 5.0e-3 |
+| h/4 | 0.000625 | 4.7e-3 | 7.6e-3 | 8.0e-4 |
+
+- In h at dt = 0.0025, rho grows by 1.20 and 1.14 per halving, as the measured rates do, so the
+  growth is not an artefact of the l2 norm of the residual.
+- In dt on h, rho falls only as about dt^0.36 (1.53, 1.17, 1.21 per halving), against the scaling
+  argument of the first version of the report, which predicted rho ∝ dt. Only the first iteration
+  with the prediction contracts in proportion to dt. At dt = 0.005 the dominant eigenvalue is real
+  in every sample (another mode); below, a complex pair in 83 to 100% of the samples.
+- Along dt ∝ h, over the first 0.04 s: rho = 4.79e-3, 4.85e-3, 4.74e-3, within 2% at every sample.
+  The measured later-iteration rate grows along it (5.6e-3, 6.3e-3, 7.6e-3), but every step takes
+  5.00 iterations, as the first iteration speeds up in proportion to dt.
+- Split on h (scratch copy of the solver, then `spectral_left_out`): only the momentum part left out
+  gives 1.1e-2 (dt = 0.0025) and 6.9e-3 (0.000625), only the continuity part 7.2e-3 and 4.3e-3,
+  both 4.6e-3 and 3.2e-3. The parts partly cancel, and each falls with dt as slowly as both.
+
+Report and artifact extended with a section on the time step and the spectral radius, three
+figures (`rho_vs_dt`, `rho_over_window`, `rho_vs_h`), findings 3 and 7 to 10, and a revised
+explanation (the added mass of the pressure, as a hypothesis).
