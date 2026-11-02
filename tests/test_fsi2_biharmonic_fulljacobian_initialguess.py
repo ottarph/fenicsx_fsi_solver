@@ -1,11 +1,15 @@
+import dolfinx
 import numpy as np
 import pytest
+from mpi4py import MPI
 from newton_log_helpers import check_solver_newton_log
 from restart_helpers import check_restart_reproduces_continuous_run, check_start_from_initial_state
 
+from xfsi_solver.scripts.transfer_fsi2_checkpoint import _State
 from xfsi_solver.solvers import fsi2_biharmonic_fulljacobian
 from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian_initialguess import solve
 from xfsi_solver.tools.newton_log import read_newton_log
+from xfsi_solver.tools.submesh import all_cells
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 
@@ -186,3 +190,54 @@ def test_fsi2_biharmonic_fulljacobian_initialguess_spectrum_rejects_unknown_part
             spectral_path=str(output_dirs["qoi"] / "spectrum.txt"),
             spectral_left_out="pressure",
         )
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_writes_the_eigenvectors(output_dirs, tmp_path):
+    # Each eigenvector x of J_0^-1 N solves J_0 (lambda x) = N x, and N has no solid rows, so on the
+    # solid x keeps the kinematic relation of J_0 there, u = dt theta v, with theta = 0.5 + dt.
+    dt_val = 0.0025
+    solve(
+        mesh_path=MESH,
+        T=2 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "vectors.bp"),
+        output_path_p=str(output_dirs["pv"] / "vectors_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "vectors_qoi.txt"),
+        spectral_every=2,
+        spectral_path=str(output_dirs["qoi"] / "vectors_spectrum.txt"),
+        spectral_nev=2,
+        spectral_vectors_dir=str(tmp_path / "vectors"),
+    )
+    assert [d.name for d in (tmp_path / "vectors").iterdir()] == [f"t_{2 * dt_val:.6f}"]
+
+    state = _State(MESH, MPI.COMM_WORLD)
+    functions = {
+        f"{name}_{part}_{i}": dolfinx.fem.Function(
+            dolfinx.fem.functionspace(state.fluid_mesh if name in ("p", "z") else state.mesh, element),
+            name=f"{name}_{part}_{i}",
+        )
+        for i in (1, 2)
+        for part in ("re", "im")
+        for name, element in ELEMENTS.items()
+    }
+    state.checkpointer(tmp_path / "vectors" / f"t_{2 * dt_val:.6f}").read(list(functions.values()), dt_val)
+
+    def owned(f):
+        return f.x.array[: f.function_space.dofmap.index_map.size_local * f.function_space.dofmap.bs]
+
+    U = functions["u_re_1"].function_space
+    fluid_cells = state.fluid_cell_map.sub_topology_to_topology(all_cells(state.fluid_mesh), inverse=False)
+    solid_cells = np.setdiff1d(all_cells(state.mesh), fluid_cells)
+    solid = (2 * np.unique(U.dofmap.list[solid_cells])[:, None] + np.arange(2)).ravel()
+    theta = 0.5 + dt_val
+    for i in (1, 2):
+        norm = MPI.COMM_WORLD.allreduce(
+            sum(np.sum(owned(functions[f"{name}_{part}_{i}"]) ** 2) for name in ELEMENTS for part in ("re", "im"))
+        )
+        np.testing.assert_allclose(norm, 1.0, rtol=1e-8)
+        # The pressure holds most of the 2-norm, and u on the solid is of order 1e-6 of it here
+        u_solid = MPI.COMM_WORLD.allreduce(np.abs(functions[f"u_re_{i}"].x.array[solid]).max(), op=MPI.MAX)
+        assert u_solid > 1e-7
+        for part in ("re", "im"):
+            u_mode, v_mode = functions[f"u_{part}_{i}"].x.array, functions[f"v_{part}_{i}"].x.array
+            np.testing.assert_allclose(u_mode[solid], dt_val * theta * v_mode[solid], rtol=0, atol=1e-4 * u_solid)

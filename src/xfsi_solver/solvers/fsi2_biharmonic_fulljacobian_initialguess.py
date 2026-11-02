@@ -7,6 +7,7 @@ Newton solve, set in an initial-guess hook of the SNES with a mesh motion solve,
 
 import sys
 import warnings
+from pathlib import Path
 from timeit import default_timer as timer
 
 import dolfinx
@@ -19,7 +20,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
-from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
+from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -87,6 +88,7 @@ def solve(
     spectral_path=None,
     spectral_nev=3,
     spectral_left_out="both",
+    spectral_vectors_dir=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -171,7 +173,12 @@ def solve(
     factor of Newton's method with J_0 in that step. A restart appends to ``spectral_path``. With
     ``spectral_left_out="momentum"`` or ``"continuity"``, N holds only the derivatives of the momentum
     or of the continuity residual, and J_0 = J - N keeps the others, to find which part of the fluid
-    ALE derivatives limits the contraction.
+    ALE derivatives limits the contraction. With ``spectral_vectors_dir``, the eigenvectors are
+    written too, each sample as a checkpoint in ``spectral_vectors_dir/t_<time>``, read with
+    ``xfsi_solver.tools.checkpoint.Checkpointer`` on any number of ranks: the real and imaginary parts
+    of eigenvector i (from 1, in the order of the row) as the functions ``<f>_re_<i>`` and
+    ``<f>_im_<i>`` for f in u, v, p and z, of unit 2-norm together, and the solution of the step as
+    u, v, p and z.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -747,7 +754,7 @@ def solve(
         solver.setInitialGuess(predict)
 
     if spectral_every is not None:
-        from xfsi_solver.tools.spectral import dominant_eigenvalues
+        from xfsi_solver.tools.spectral import dominant_eigenpairs
 
         if spectral_path is None:
             raise ValueError("spectral_every needs spectral_path")
@@ -784,6 +791,13 @@ def solve(
             ],
             [None, None, None, zero_block(Z, Z)],
         ]
+        if spectral_vectors_dir is not None:
+            modes = [
+                [dolfinx.fem.Function(f.function_space, name=f"{f.name}_{part}_{i}") for f in (u, v, p, z)]
+                for i in range(1, spectral_nev + 1)
+                for part in ("re", "im")
+            ]
+            mode_vec = problem.x.duplicate()
         if comm.rank == 0 and not restart:
             columns = [f"{name}_{i}" for i in range(1, spectral_nev + 1) for name in ("abs", "re", "im")]
             with open(spectral_path, "w") as f:
@@ -799,11 +813,23 @@ def solve(
             N_mat.assemble()
             J0_mat = J_mat.duplicate(copy=True)
             J0_mat.axpy(-1.0, N_mat, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
-            values = dominant_eigenvalues(
+            values, vectors = dominant_eigenpairs(
                 J0_mat, N_mat, nev=spectral_nev, options_prefix=f"{solver.getOptionsPrefix()}spectral_"
             )
             N_mat.destroy()
             J0_mat.destroy()
+            if spectral_vectors_dir is not None:
+                # Through a ghosted vector of the problem, which assign takes owned and ghost values from
+                for functions, vector in zip(modes, [part for pair in vectors for part in pair], strict=True):
+                    vector.copy(mode_vec)
+                    mode_vec.ghostUpdate(addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                    dolfinx.fem.petsc.assign(mode_vec, functions)
+                Checkpointer(Path(spectral_vectors_dir) / f"t_{t:.6f}", mesh, [(fluid_mesh, fluid_cell_map)]).write(
+                    [u, v, p, z, *(f for functions in modes for f in functions)], t, step, dt_val, t0
+                )
+            for pair in vectors:
+                for vector in pair:
+                    vector.destroy()
             if comm.rank == 0:
                 with open(spectral_path, "a") as f:
                     f.write(
