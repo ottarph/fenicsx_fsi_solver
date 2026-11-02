@@ -7,7 +7,8 @@
 With the exact Jacobian J = J_0 + N, Newton's method with the approximate Jacobian J_0 iterates the
 error as e_(k+1) = (I - J_0^-1 J) e_k = -J_0^-1 N e_k near the solution, so its asymptotic
 contraction factor is the spectral radius of J_0^-1 N, which :func:`dominant_eigenvalues` computes
-with SLEPc, from the action of N and a direct solve with J_0.
+with SLEPc, from the action of N and a direct solve with J_0. :func:`dominant_eigenpairs` also
+returns the eigenvectors, the error modes that converge slowest.
 """
 
 import numpy as np
@@ -37,7 +38,7 @@ class _InverseTimes:
             raise RuntimeError(f"The solve with J_0 failed: KSP reason {self.ksp.getConvergedReason()}")
 
 
-def dominant_eigenvalues(
+def dominant_eigenpairs(
     J0: PETSc.Mat,
     N: PETSc.Mat,
     nev: int = 3,
@@ -45,8 +46,9 @@ def dominant_eigenvalues(
     max_it: int = 300,
     solver_options: dict | None = None,
     options_prefix: str = "spectral_",
-) -> np.ndarray:
-    """The ``nev`` eigenvalues of largest magnitude of J_0^-1 N, sorted by decreasing magnitude.
+) -> tuple[np.ndarray, list[tuple[PETSc.Vec, PETSc.Vec]]]:
+    """The ``nev`` eigenvalues of largest magnitude of J_0^-1 N, sorted by decreasing magnitude, and
+    the real and imaginary parts of their eigenvectors, of unit 2-norm, as new vectors of J_0.
 
     J_0 is factorized once, by the KSP options ``solver_options`` (by default MUMPS LU) under
     ``options_prefix``, and the eigenvalues are found by Krylov-Schur to the relative tolerance
@@ -79,7 +81,11 @@ def dominant_eigenvalues(
         converged = eps.getConverged()
         if converged < nev:
             raise RuntimeError(f"Only {converged} of {nev} eigenvalues of J_0^-1 N converged")
-        values = np.array([eps.getEigenvalue(i) for i in range(converged)])
+        values, vectors = [], []
+        for i in range(converged):
+            real, imag = J0.createVecRight(), J0.createVecRight()
+            values.append(eps.getEigenpair(i, real, imag))
+            vectors.append((real, imag))
     finally:
         eps.destroy()
         operator.destroy()
@@ -87,4 +93,20 @@ def dominant_eigenvalues(
         for key in list(opts.getAll()):
             if key.startswith(options_prefix):
                 del opts[key]
-    return values[np.argsort(-np.abs(values))][:nev]
+    order = np.argsort(-np.abs(values), kind="stable")
+    for i in order[nev:]:
+        for vector in vectors[i]:
+            vector.destroy()
+    return np.array(values)[order[:nev]], [vectors[i] for i in order[:nev]]
+
+
+def dominant_eigenvalues(J0: PETSc.Mat, N: PETSc.Mat, nev: int = 3, **kwargs) -> np.ndarray:
+    """The ``nev`` eigenvalues of largest magnitude of J_0^-1 N, sorted by decreasing magnitude.
+
+    Takes the keyword arguments of :func:`dominant_eigenpairs`.
+    """
+    values, vectors = dominant_eigenpairs(J0, N, nev=nev, **kwargs)
+    for pair in vectors:
+        for vector in pair:
+            vector.destroy()
+    return values
