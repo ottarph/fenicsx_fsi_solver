@@ -80,6 +80,9 @@ def solve(
     newton_log_path=None,
     predict_displacements=True,
     snes_converged_reason_on=True,
+    snes_atol=1.0e-7,
+    snes_rtol=1.0e-12,
+    snes_max_it=20,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -150,6 +153,9 @@ def solve(
     factorized once for the whole run, and its z is the z of the solver. It is set in an
     initial-guess hook of the SNES, which runs once per Newton solve, before the residual of the
     initial guess is evaluated. With ``False``, the solver is fsi2_biharmonic_fulljacobian.
+
+    ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES, for
+    example a tight relative tolerance to follow the rate of the iterations over more of them.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -413,10 +419,6 @@ def solve(
     # Cap the quadrature degree before the Jacobian is derived from the residual, so that it keeps the cap.
     residual_blocked = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocked]
 
-    max_iter = 20
-    atol = 1.0e-7
-    rtol = 1.0e-12
-
     if mesh_motion_scaling is None:
         pc_options = {
             "pc_type": "lu",
@@ -437,9 +439,9 @@ def solve(
             "ksp_type": "preonly",
             **pc_options,
             "snes_linesearch_type": "none",
-            "snes_max_it": max_iter,
-            "snes_atol": atol,
-            "snes_rtol": rtol,
+            "snes_max_it": snes_max_it,
+            "snes_atol": snes_atol,
+            "snes_rtol": snes_rtol,
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # "snes_monitor": "ascii:output/logs/fsi2_biharmonic_fulljacobian_snes_log.txt",
