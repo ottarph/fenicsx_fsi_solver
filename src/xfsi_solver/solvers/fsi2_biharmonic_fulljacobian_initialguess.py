@@ -86,6 +86,7 @@ def solve(
     spectral_every=None,
     spectral_path=None,
     spectral_nev=3,
+    spectral_left_out="both",
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -167,7 +168,10 @@ def solve(
     and continuity residuals with respect to u, the fluid ALE derivatives (the blocks F and D of
     eq. (1) of docs/restricted-iterative-solver.md), and J_0 = J - N the approximate Jacobian of
     fsi2_biharmonic_mixed and fsi2_simplified, so the largest modulus is the asymptotic contraction
-    factor of Newton's method with J_0 in that step. A restart appends to ``spectral_path``.
+    factor of Newton's method with J_0 in that step. A restart appends to ``spectral_path``. With
+    ``spectral_left_out="momentum"`` or ``"continuity"``, N holds only the derivatives of the momentum
+    or of the continuity residual, and J_0 = J - N keeps the others, to find which part of the fluid
+    ALE derivatives limits the contraction.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -747,6 +751,8 @@ def solve(
 
         if spectral_path is None:
             raise ValueError("spectral_every needs spectral_path")
+        if spectral_left_out not in ("both", "momentum", "continuity"):
+            raise ValueError(f"spectral_left_out must be both, momentum or continuity, not {spectral_left_out!r}")
 
         def fluid_integrals(form: ufl.Form) -> ufl.Form:
             fluid = [i for i in form.integrals() if i.subdomain_id() == PHYSICAL_MARKERS["ALE_fluid"]]
@@ -759,7 +765,9 @@ def solve(
         N_forms = [
             [zero_block(U, U), None, None, None],
             [
-                dolfinx.fem.form(
+                None
+                if spectral_left_out == "continuity"
+                else dolfinx.fem.form(
                     ufl.derivative(fluid_integrals(residual_blocked[1]), u, du_trial), entity_maps=entity_maps
                 ),
                 zero_block(V, V),
@@ -767,7 +775,9 @@ def solve(
                 None,
             ],
             [
-                dolfinx.fem.form(ufl.derivative(residual_blocked[2], u, du_trial), entity_maps=entity_maps),
+                None
+                if spectral_left_out == "momentum"
+                else dolfinx.fem.form(ufl.derivative(residual_blocked[2], u, du_trial), entity_maps=entity_maps),
                 None,
                 zero_block(P, P),
                 None,

@@ -146,3 +146,43 @@ def test_fsi2_biharmonic_fulljacobian_initialguess_spectrum_needs_a_path(output_
             qoi_path=str(output_dirs["qoi"] / "spectrum_qoi.txt"),
             spectral_every=1,
         )
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_spectrum_of_each_part(output_dirs):
+    # With only the momentum or only the continuity part of the fluid ALE derivatives left out of
+    # J_0, the spectrum is another one, well inside the unit disc too.
+    dt_val = 0.0025
+
+    def run(left_out):
+        path = output_dirs["qoi"] / f"spectrum_{left_out}.txt"
+        solve(
+            mesh_path=MESH,
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"spectrum_{left_out}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"spectrum_{left_out}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"spectrum_{left_out}_qoi.txt"),
+            spectral_every=2,
+            spectral_path=str(path),
+            spectral_left_out=left_out,
+        )
+        return np.atleast_1d(np.genfromtxt(path, names=True))["abs_1"][0]
+
+    rho = {left_out: run(left_out) for left_out in ("both", "momentum", "continuity")}
+    assert all(0 < value < 0.1 for value in rho.values())
+    assert len({round(value, 12) for value in rho.values()}) == 3
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_spectrum_rejects_unknown_part(output_dirs):
+    with pytest.raises(ValueError, match="spectral_left_out"):
+        solve(
+            mesh_path=MESH,
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "spectrum.bp"),
+            output_path_p=str(output_dirs["pv"] / "spectrum_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "spectrum_qoi.txt"),
+            spectral_every=1,
+            spectral_path=str(output_dirs["qoi"] / "spectrum.txt"),
+            spectral_left_out="pressure",
+        )
