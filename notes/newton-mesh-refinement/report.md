@@ -4,7 +4,8 @@ Does the linear contraction of Newton's method with the approximate Jacobian J_0
 the mesh is refined? The FSI2 window of `notes/newton-convergence/report.md`, one period of the
 oscillating beam, is solved on three nested meshes of mesh size h, h/2 and h/4, from the same state.
 A time step sweep and the spectral radius of the error iteration of J_0 then separate the effects of h
-and dt (see Time step and spectral radius). The history of the work is in `implementation-log.md`.
+and dt (see Time step and spectral radius), and its dominant eigenvectors show which errors are slow
+to remove (see The slow modes). The history of the work is in `implementation-log.md`.
 
 ## Findings
 
@@ -54,6 +55,19 @@ and dt (see Time step and spectral radius). The history of the work is in `imple
     where the spectral radius falls earlier than the measured rate. The error iteration is far from
     normal, and its dominant eigenvalues are a complex pair, which makes the measured ratios alternate
     from one iteration to the next.
+11. **The slowest errors live at the tip of the beam.** The dominant eigenvectors of J_0^(-1) N fall
+    into two families (see The slow modes). The dominant complex pair is concentrated at the tip, with
+    its peak at the lower tip corner, a re-entrant corner of the fluid. The real volume modes change
+    the area of the beam and push a column of fluid out of the channel, whose inertia, an added mass of
+    the channel, sets their channel-wide pressure.
+12. **The growth with h comes from the corner singularity.** Only the tip pair grows with h (4.89e-3,
+    5.77e-3 and 6.52e-3 at dt = 0.0025, as the spectral radius does), and it sharpens at the lower tip
+    corner. The volume mode is converged in h (3.54e-3, 3.37e-3 and 3.47e-3). At that corner the flow
+    is singular, and the state's largest |∇v| and |p| near it grow by 1.4 and 1.2 per halving.
+13. **The two families explain the dependence on dt.** The volume modes fall about as dt^0.65 and
+    dominate at dt = 0.005, as the real dominant eigenvalue there. The tip pair falls only about as
+    dt^0.22 and dominates below. The added-mass explanation of the weak dependence on dt holds for the
+    volume modes but not for the dominant tip pair, whose pressure does not scale like 1/dt.
 
 ## Setup
 
@@ -198,7 +212,7 @@ Over the window, the spectral radius at dt = 0.0025 and below keeps its shape fr
 the next, rising through the fast phase and falling toward the turning point, each curve about 1.2
 times below the last. At dt = 0.005 it stays high through the turning point: there, the dominant
 eigenvalue is real in every sample, while at the smaller time steps it is a complex pair in 83 to
-100% of them, so at the largest time step another mode takes over. The measured rate falls toward
+100% of them, so at the largest time step another mode takes over, a volume mode (see The slow modes). The measured rate falls toward
 the turning point later than the spectral radius and stays up to twice as large: over only 2 to 4
 iterations, the ratio of residual norms of a far from normal error iteration is set by more than its
 spectral radius.
@@ -212,17 +226,90 @@ along the same line (5.6e-3, 6.3e-3 and 7.6e-3), so the transient of the error i
 asymptotic rate, grows with refinement; the first iteration contracts by 3.1e-3, 1.6e-3 and 8.0e-4,
 and the steps take 5.00 iterations on all three.
 
-### Why the rate depends so little on h and dt
+## The slow modes
 
-The displacement enters the Newton step through u = u_old + dt θ E(v on the interface), with E the
-biharmonic extension, and the fluid equations depend on u through at most first derivatives. With
-J_0 dominated by the mass term ρ/dt, this argument predicts a spectral radius bounded in h and
-proportional to dt. It holds for h, where the growth is slow, but not for dt: the spectral radius
-falls only as about dt^0.36, for both parts of N alike. A plausible reason is the pressure: in
-incompressible flow, the pressure answers an acceleration of the interface with an added-mass
-response that scales like 1/dt, which would cancel the factor dt of the displacement for the modes
-that limit the convergence. This is not checked; the eigenvectors of the dominant eigenvalues would
-show where these modes live.
+The eigenvectors of the dominant eigenvalues show which errors J_0 is slow to remove.
+`fsi2_biharmonic_fulljacobian_initialguess` writes them with `spectral_vectors_dir`, and
+`analyse_modes.py` measures them. The runs cover the first 0.04 s of the window from the settled
+states, with the 4 dominant eigenpairs every 0.01 s, on h at the four time steps, on h/2 at
+dt = 0.0025 and 0.00125, and on h/4 at 0.0025 and 0.000625; their eigenvalues agree with those of
+the sweep at the same times to 1e-4.
+
+N acts only on the displacement in the fluid, and J_0 extends the displacement from the interface
+into the fluid by the mesh motion, so a mode is set by its interface displacement du_I: J_0^(-1) N
+maps du_I to a response whose interface displacement is λ du_I. Each mode is scaled to
+||du_I||_L2 = 1, with the complex phase that makes the real part of du_I largest. On the solid the
+response keeps u = dt θ v, so the interface velocity is |dv_I| = 1/(dt θ), about 800 at
+dt = 0.0025.
+
+The modes fall into two families:
+
+- **The tip pair**, the complex pair of largest modulus, lives at the tip of the beam. At
+  dt = 0.0025 on h, 92% of |du_I|^2 lies on the last 10% of the beam and the tip, with a peak of some 40
+  times the displacement along the beam at the lower tip corner, a re-entrant corner of the
+  fluid. Its pressure has a core at that corner on top of a channel-wide field.
+- **The volume modes**, real, change the area of the beam: at dt <= 0.0025, 88 to 97% of the
+  integral of |du_I . n| is a net change of area (45 to 66% at dt = 0.005) (the beam's own motion, bending, hardly changes it). Their pressure is a
+  channel-wide field, flat upstream of the beam, where the inflow velocity is fixed, and falling
+  linearly to the outflow. It is the inertia of the fluid column that the change of area pushes out
+  of the channel, about ρ_f L dv / dt over the 1.9 m from the beam to the outflow: an added mass,
+  of the channel rather than of the beam.
+
+![Pressure over the channel, and pressure and velocity near the tip, of the two families](plots/mode_fields.svg)
+
+![Interface displacement of the two families on the three meshes](plots/mode_interface.svg)
+
+A third kind, real modes concentrated at single interface nodes along the beam, appears in some
+samples below the dominant four but never dominates.
+
+![Modulus of the two families against dt and h](plots/mode_families.svg)
+
+| mesh | dt | tip pair \|λ\| | volume mode \|λ\| | tip pair: solid velocity within 0.01 of a corner | tip pair: p dt / (ρ_f \|dv_I\|) |
+|---|---|---:|---:|---:|---:|
+| h | 0.005 | 5.45e-3 | 6.61e-3 | 25% | 0.45 |
+| h | 0.0025 | 4.89e-3 | 3.54e-3 | 56% | 0.12 |
+| h | 0.00125 | 4.16e-3 | 2.42e-3 | 80% | 0.025 |
+| h | 0.000625 | 3.43e-3 | 1.72e-3 | 93% | 0.006 |
+| h/2 | 0.0025 | 5.77e-3 | 3.37e-3 | 63% | 0.11 |
+| h/2 | 0.00125 | 4.97e-3 | 2.45e-3 * | 86% | 0.021 |
+| h/4 | 0.0025 | 6.52e-3 | 3.47e-3 | 67% | 0.10 |
+| h/4 | 0.000625 | 4.89e-3 | 2.41e-3 * | 97% | 0.005 |
+
+The medians are over the 4 samples; * a volume mode is among the dominant four in only 2 of them. The pressure column is the L2 norm of dp scaled by ρ_f |dv_I| / dt;
+it would stay constant for an added-mass response.
+
+**In dt**, the two families fall at different rates, which explains the shape of the spectral
+radius. The volume modes fall about as dt^0.65 and the tip pair about as dt^0.22. At dt = 0.005 a
+volume mode dominates, which is the real dominant eigenvalue of the sweep. Between 0.005 and 0.0025
+it drops below the tip pair, which gives the first, larger drop of the spectral radius (1.53). Below
+that, the slow tip pair dominates, which gives the later factors of 1.17 and 1.21. As dt falls, the
+tip pair also concentrates further at the tip corners.
+
+**The added-mass explanation holds only for the volume modes.** The earlier version of this
+section ascribed the weak dependence on dt to the pressure answering an acceleration of the interface
+like 1/dt. The volume modes do carry such a pressure, the inertia of the channel's fluid column, but
+they fall with dt fast enough. The dominant tip pair does not: its pressure, scaled by ρ_f |dv_I| / dt,
+falls from 0.45 to 0.006 as dt halves from 0.005 to 0.000625.
+
+**In h**, only the tip pair grows: by 1.18 and 1.13 per halving at dt = 0.0025, as the spectral radius does over
+the whole window (1.20 and 1.14), while the volume mode stays at 3.54e-3, 3.37e-3 and 3.47e-3 and its
+interface displacement on the three meshes lies on top of each other. The growth comes
+from the lower tip corner, where the flow is singular. In the settled state, the largest values within
+0.01 of the corner grow with refinement, while at the upper tip corner (in the lee at this phase) and
+at the beam-cylinder junction they stay flat:
+
+| mesh | lower tip corner: max \|∇v\| | max \|p\| | upper tip corner: max \|∇v\| | junction: max \|∇v\| |
+|---|---:|---:|---:|---:|
+| h | 243 | 797 | 32.5 | 2.66 |
+| h/2 | 357 | 957 | 31.4 | 3.12 |
+| h/4 | 489 | 1165 | 34.4 | 3.33 |
+
+A 270° corner of Stokes flow has ∇v and p ~ r^(-0.455), a factor 1.37 per halving of h. N carries the
+state's ∇v and p as coefficients, so the finer the mesh resolves the singularity, the stronger N
+couples the displacement at the corner. Along dt ∝ h, the tip pair keeps its modulus (4.89e-3 at
+(h, 0.0025), 4.97e-3 at (h/2, 0.00125) and 4.89e-3 at (h/4, 0.000625)) while concentrating further at
+the corner (56%, 86% and 97% of its solid velocity within 0.01 of a corner). This explains why the spectral radius stays flat along that line, but not why the two
+effects cancel so exactly.
 
 ## Caveats
 
@@ -240,15 +327,31 @@ show where these modes live.
   longer run.
 - The spectral radius is the asymptotic rate at the solution of each step; the measured rates of the
   2 to 4 iterations of a step lie up to twice above it, as the error iteration is far from normal.
-- The explanation of the weak dependence on dt by the added mass of the pressure is not checked.
+- The modes are measured at 4 samples over the first 0.04 s of the window, on the fast phase of the
+  tip, and are sorted into the two families by a rule (the complex pair of largest modulus, and the
+  real mode of largest modulus whose interface displacement is at least 40% net change of area).
+- The eigenvectors are converged to the SLEPc tolerance of 1e-6 in the 2-norm of the vector, which
+  the pressure dominates. The solid part of some real modes is therefore accurate only to about 1e-2
+  (the kinematic relation u = dt θ v on the solid holds to 1e-3 to 2e-2 there, and to 1e-5 in the
+  complex pairs), enough for their shape but not for fine detail.
+- The corner singularity explains the growth of the tip pair with h only qualitatively: the
+  measured growth (1.18 and 1.13 per halving) is weaker than the 1.37 of the corner exponent.
+- A test of the volume modes by the Poisson ratio of the solid was inconclusive. Changing the
+  material kicks the beam out of its settled state, and in those runs the dominant modes sit at single
+  interface nodes along the beam (see `implementation-log.md`). A clean test needs a state settled for
+  each Poisson ratio.
 - The meshes are regenerated by the current gmsh, so h is not `mesh_sec` itself, but its iterates
   match those of `mesh_sec` in the report to the digits shown.
 
 ## Next steps
 
-- The eigenvectors of the dominant eigenvalues of J_0^(-1) N, to see where the slow modes live
-  (interface, beam tip, wake, corners) and to check the added-mass explanation.
-- The real mode that dominates at dt = 0.005, and whether it limits larger time steps further.
+- Keeping N in J_0 on the cells near the tip corners would target the tip pair, which sets the
+  spectral radius at dt <= 0.0025 and alone grows with h, at the cost of assembling the fluid ALE
+  derivatives only on a few cells.
+- Above dt = 0.005 the volume modes probably limit J_0 more and more: if they keep growing as
+  dt^0.65, they gain on the tip pair with every larger time step. This is not measured. Keeping only the net change of area in N, a single global
+  coupling, would target them.
+- The spectrum near the turning point of the tip, which the eigenvector runs do not cover.
 
 ## Reproducing
 
@@ -268,7 +371,14 @@ transfers the start state to it. The damping, settling and measurement runs call
 `output/newton_refinement/<run>_ref<n>/`. The runs of the time step sweep start from
 `output/newton_refinement/settle_ref<n>/checkpoints` and write to `output/newton_dt/`; the spectra
 come from `fsi2_biharmonic_fulljacobian_initialguess.solve` with `spectral_every` (every 0.005 s),
-`spectral_path` and, for the parts of N, `spectral_left_out`. The figures are made by
+`spectral_path` and, for the parts of N, `spectral_left_out`. The eigenvector runs also pass
+`spectral_vectors_dir` and write to `output/newton_modes/modes_ref<n>_dt<dt>/`, and
+
+```bash
+python notes/newton-mesh-refinement/analyse_modes.py
+```
+
+measures their modes into `output/newton_modes/analysis/`. The figures are made by
 
 ```bash
 python notes/newton-mesh-refinement/make_figures.py

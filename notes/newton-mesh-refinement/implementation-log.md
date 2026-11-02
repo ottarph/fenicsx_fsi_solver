@@ -128,3 +128,54 @@ on 10 ranks next to another user's job of 20 to 30 cores; h/4 at dt = 0.000625 o
 Report and artifact extended with a section on the time step and the spectral radius, three
 figures (`rho_vs_dt`, `rho_over_window`, `rho_vs_h`), findings 3 and 7 to 10, and a revised
 explanation (the added mass of the pressure, as a hypothesis).
+
+## 2026-11-02: The dominant eigenvectors
+
+`xfsi_solver.tools.spectral.dominant_eigenpairs` returns the eigenvectors with the eigenvalues, and
+`fsi2_biharmonic_fulljacobian_initialguess` writes them with `spectral_vectors_dir`, one checkpoint
+per sample with the real and imaginary parts of each as functions `<f>_re_<i>`, `<f>_im_<i>` and the
+solution of the step. Tested on one and two ranks: unit norm, and on the solid u = dt theta v
+exactly, as N has no solid rows.
+
+Runs over the first 0.04 s from the settled states (`output/newton_modes/`), 4 eigenpairs every
+0.01 s: h at dt = 0.005, 0.0025, 0.00125 and 0.000625, h/2 at 0.0025 and 0.00125, h/4 at 0.0025 and
+0.000625, on 2, 2 and 4 ranks next to another user's job of 20 to 45 threads. The eigenvalues agree
+with those of the time step sweep at the same times to 1e-4. `analyse_modes.py` scales each mode to
+||du_I||_L2 = 1 on the interface (N acts only on u in the fluid, where J_0 extends u from the
+interface by the mesh motion, so du_I sets the mode) and measures it.
+
+- The pressure part is large: ||dp|| ~ 4e7 against ||dv_I|| ~ 800 = 1/(dt theta), about
+  rho_f L dv / dt. In the 2-norm of the vector the pressure dominates, so the solid part of a mode
+  converges loosely at the SLEPc tolerance of 1e-6: the kinematic relation u = dt theta v on the
+  solid holds to 1e-5 in the complex pairs but only to 1e-3 to 2e-2 in some real modes.
+- Two families. The complex pair of largest modulus is concentrated at the tip, 92% of |du_I|^2 within
+  the last 10% of the beam and the tip at dt = 0.0025, with its peak at the lower tip corner. The real
+  modes change the area of the beam (88 to 97% of int |du_I . n| is net area change), and their
+  pressure is a channel-wide field, flat upstream (the inflow velocity is fixed) and falling linearly
+  to the outflow, the inertia of the fluid column that the area change pushes out.
+- On h, as dt halves from 0.005 to 0.000625, the tip pair falls by about dt^0.25 and localizes further
+  (solid velocity within 0.01 of a corner: 26%, 56%, 80%, 93%), and the largest real volume mode by
+  about dt^0.6. At dt = 0.005 a real volume mode dominates, which is the real dominant eigenvalue of
+  the sweep; below, the tip pair does.
+- The pressure of the tip pair, scaled by rho_f |dv_I| / dt, falls from 0.5 to 0.006 as dt halves from
+  0.005 to 0.000625: its pressure does not scale like 1/dt, so the added-mass explanation of the
+  first version of the time step section does not hold for the dominant mode.
+- The state at the lower tip corner, a re-entrant corner of the fluid, grows with refinement: max |grad
+  v| within 0.01 of it 243, 357 and 489, max |p| 797, 957 and 1165 on h, h/2 and h/4, while at the
+  upper tip corner and the beam-cylinder junction they stay flat. A Stokes corner of 270 degrees has
+  grad v ~ r^-0.455, 1.37 per halving.
+- A test of the volume modes by the Poisson ratio of the solid (0.2, 0.3, 0.45, 0.49 against 0.4, on h
+  at dt = 0.0025, 4 steps from the settled state) is inconclusive: changing the material kicks the
+  beam out of its settled state, and the dominant modes of those runs sit at single interface nodes
+  along the beam (median |du_I| 1e-4 to 1e-5 of the peak), not at the tip. At 0.49 the second step
+  does not reach the tolerance in 8 iterations. The same protocol at 0.4 reproduces the main run.
+- In h at dt = 0.0025, the tip pair grows (4.89e-3, 5.77e-3, 6.52e-3: 1.18 and 1.13 per halving, as
+  the spectral radius) and sharpens at the lower tip corner; the volume mode does not (3.54e-3,
+  3.37e-3, 3.47e-3), and its interface displacement is the same on the three meshes.
+- Along dt ∝ h, the tip pair keeps its modulus (4.89e-3, 4.97e-3, 4.89e-3) while concentrating at the
+  corner (56%, 86%, 97% of its solid velocity within 0.01 of a corner). h/4 at dt = 0.000625 took
+  4047 s on 4 ranks.
+
+Report and artifact extended with a section on the slow modes, three figures (`mode_fields`,
+`mode_interface`, `mode_families`) and findings 11 to 13; the added-mass explanation of the time step
+section is replaced, and the next steps now target the tip pair and the volume modes.
