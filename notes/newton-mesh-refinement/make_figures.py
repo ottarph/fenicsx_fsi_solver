@@ -12,8 +12,12 @@ The time step sweep and the spectral calculation are in output/newton_dt/: runs 
 WINDOW = 0.12 s of that period, from the same states, spec_ref<level>_dt<dt> (the full Jacobian with
 the prediction, writing the spectrum of J_0^-1 N every 0.005 s), j0_ref<level>_dt<dt> (J_0 with the
 prediction, reassembled in every iteration) and split_<part>_ref0_dt<dt> (the spectrum with only the
-momentum or only the continuity part of the fluid ALE derivatives left out of J_0). Writes SVG and PNG
-figures into figure_dir, by default plots/ next to this file.
+momentum or only the continuity part of the fluid ALE derivatives left out of J_0).
+
+The eigenvectors are in output/newton_modes/: runs over the first 0.04 s, from the same states,
+modes_ref<level>_dt<dt> (the full Jacobian with the prediction, writing the 4 dominant eigenpairs of
+J_0^-1 N every 0.01 s), measured by analyse_modes.py into output/newton_modes/analysis/. Writes SVG
+and PNG figures into figure_dir, by default plots/ next to this file.
 """
 
 import sys
@@ -22,6 +26,8 @@ from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
+from matplotlib.tri import Triangulation
 
 from xfsi_solver.scripts.plot_newton_logs import _RC, SERIES_COLORS, TEXT_SECONDARY, Run
 from xfsi_solver.tools.newton_log import read_newton_log
@@ -33,6 +39,10 @@ T_WINDOW_END = 16.5525 + 0.12 + 1e-9
 LEVELS = [0, 1, 2]
 H = {level: 2.0**-level for level in LEVELS}  # mesh size relative to ref0
 LEVEL_LABELS = {0: "ref0 (h)", 1: "ref1 (h/2)", 2: "ref2 (h/4)"}
+MODES_ROOT = Path("output/newton_modes/analysis")
+# The start of the beam at the cylinder, and its length, the arc length of the interface at the lower tip corner
+BEAM_X0 = 0.2 + np.sqrt(0.05**2 - 0.01**2)
+BEAM_LENGTH = 0.6 - BEAM_X0
 # Ratios only between residuals above FLOOR * ||R_0|| of their step, clear of round-off.
 FLOOR = 1.0e-9
 
@@ -311,6 +321,136 @@ def plot_rho_vs_h(path: Path) -> None:
     plt.close(fig)
 
 
+def modes(name: str) -> list[dict]:
+    """The measured modes of a run of output/newton_modes/, by sample time and then by index."""
+    out = []
+    for path in sorted(MODES_ROOT.glob(f"{name}_t*_mode*.npz")):
+        d = dict(np.load(path))
+        d["index"] = int(path.stem.rsplit("mode", 1)[1])
+        d["eigenvalue"] = complex(d["eigenvalue"])
+        out.append(d)
+    return out
+
+
+def families(name: str) -> dict[str, list[dict]]:
+    """In every sample, the complex pair of largest modulus (the tip pair) and the real mode of largest
+    modulus whose interface displacement is at least 40% net change of the area of the beam (the volume mode)."""
+    by_t = {}
+    for d in modes(name):
+        by_t.setdefault(float(d["t"]), []).append(d)
+    out = {"tip": [], "volume": []}
+    for ds in by_t.values():
+        pairs = [d for d in ds if abs(d["eigenvalue"].imag) > 0.05 * abs(d["eigenvalue"])]
+        volume = [
+            d
+            for d in ds
+            if abs(d["eigenvalue"].imag) <= 0.05 * abs(d["eigenvalue"])
+            and abs(d["flux_u_I"].real) >= 0.4 * d["flux_abs_u_I"]
+        ]
+        for key, candidates in (("tip", pairs), ("volume", volume)):
+            if candidates:
+                out[key].append(max(candidates, key=lambda d: abs(d["eigenvalue"])))
+    return out
+
+
+FAMILY_LABELS = {"tip": "tip pair (complex)", "volume": "volume mode (real)"}
+
+
+def plot_mode_families(path: Path) -> None:
+    fig, (ax_dt, ax_h) = plt.subplots(1, 2, figsize=(7.6, 3.6), sharey=True)
+
+    def series(ax, xs, names, key, color, marker):
+        points = [(x, [abs(d["eigenvalue"]) for d in families(name)[key]]) for x, name in zip(xs, names, strict=True)]
+        points = [(x, v) for x, v in points if v]
+        if points:
+            q = np.array([np.percentile(v, [25, 50, 75]) for _, v in points])
+            ax.errorbar([x for x, _ in points], q[:, 1], yerr=[q[:, 1] - q[:, 0], q[:, 2] - q[:, 1]], color=color,
+                        marker=marker, markersize=5, capsize=3, label=FAMILY_LABELS[key])  # fmt: skip
+
+    for key, color, marker in (("tip", SERIES_COLORS[0], "o"), ("volume", SERIES_COLORS[1], "s")):
+        series(ax_dt, DTS, [f"modes_ref0_dt{dt:g}" for dt in DTS], key, color, marker)
+        series(ax_h, [H[level] for level in LEVELS], [f"modes_ref{level}_dt0.0025" for level in LEVELS], key, color,
+               marker)  # fmt: skip
+    for ax in (ax_dt, ax_h):
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.minorticks_off()
+        ax.invert_xaxis()
+    ax_dt.set_xticks(DTS, [f"{dt:g}" for dt in DTS])
+    ax_h.set_xticks([1, 0.5, 0.25], ["h", "h/2", "h/4"])
+    ticks = [1e-3, 2e-3, 3e-3, 5e-3, 7e-3]
+    ax_dt.set_yticks(ticks, [f"{tick:.0e}".replace("e-0", "e-") for tick in ticks])
+    ax_dt.set_xlabel("time step dt, on h")
+    ax_h.set_xlabel("mesh, at dt = 0.0025")
+    ax_dt.set_ylabel(r"$|\lambda|$ of $J_0^{-1}N$")
+    ax_dt.set_title("The two families of slow modes: median and IQR over 4 samples", loc="left", fontsize=9)
+    ax_dt.legend(loc="upper left", bbox_to_anchor=(0.0, -0.2), ncols=2, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def first_sample(name: str, key: str) -> dict | None:
+    found = [d for d in families(name)[key] if "field_x" in d]
+    return found[0] if found else None
+
+
+def plot_mode_fields(path: Path) -> None:
+    """dp over the channel, and dp and |dv| near the tip, of the two families, on h at dt = 0.0025."""
+    name = "modes_ref0_dt0.0025"
+    zoom = (0.45, 0.75, 0.12, 0.28)
+    fig, axes = plt.subplots(3, 2, figsize=(9.8, 6.6), layout="constrained",
+                             gridspec_kw={"height_ratios": [1.0, 1.3, 1.3]})  # fmt: skip
+    for column, key in enumerate(("tip", "volume")):
+        d = first_sample(name, key)
+        if d is None:
+            continue
+        x = d["field_x"]
+        tri = Triangulation(x[:, 0], x[:, 1], d["field_triangles"])
+        p, speed = d["field_p"], np.hypot(*d["field_v"].T)
+        in_zoom = (x[:, 0] > zoom[0]) & (x[:, 0] < zoom[1]) & (x[:, 1] > zoom[2]) & (x[:, 1] < zoom[3])
+        lam = d["eigenvalue"]
+        axes[0, column].set_title(f"{FAMILY_LABELS[key]}: $\\lambda$ = {lam.real:.2e} {lam.imag:+.2e}i", loc="left",
+                                  fontsize=9)  # fmt: skip
+        for row, values, limit in ((0, p, np.percentile(np.abs(p), 99.5)), (1, p, np.abs(p[in_zoom]).max())):
+            image = axes[row, column].tripcolor(tri, values, cmap="RdBu_r", vmin=-limit, vmax=limit,
+                                                shading="gouraud", rasterized=True)  # fmt: skip
+            fig.colorbar(image, ax=axes[row, column], label=r"$\delta p$", shrink=0.9)
+        low, high = np.percentile(speed[in_zoom], [2, 100])
+        image = axes[2, column].tripcolor(tri, np.clip(speed, low, high), cmap="Blues", norm=LogNorm(low, high),
+                                          shading="gouraud", rasterized=True)  # fmt: skip
+        fig.colorbar(image, ax=axes[2, column], label=r"$|\delta v|$", shrink=0.9)
+    for ax in axes.ravel():
+        ax.set_aspect("equal")
+        ax.tick_params(labelsize=7)
+    for ax in axes[1:].ravel():
+        ax.set_xlim(*zoom[:2])
+        ax.set_ylim(*zoom[2:])
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def plot_mode_interface(path: Path) -> None:
+    """|du_I| along the interface of the two families on the three meshes, at dt = 0.0025."""
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.4), sharey=True)
+    for ax, key in zip(axes, ("tip", "volume"), strict=True):
+        for level, color in zip(LEVELS, SERIES_COLORS, strict=False):
+            found = families(f"modes_ref{level}_dt0.0025")[key]
+            if found:
+                d = found[0]
+                magnitude = np.sqrt(np.abs(d["trace_u_n"]) ** 2 + np.abs(d["trace_u_t"]) ** 2)
+                ax.plot(d["trace_s"] / BEAM_LENGTH, magnitude, color=color, linewidth=1.0, label=LEVEL_LABELS[level])
+        for corner in (BEAM_LENGTH, BEAM_LENGTH + 0.02):
+            ax.axvline(corner / BEAM_LENGTH, color=TEXT_SECONDARY, linewidth=0.8, linestyle=":")
+        ax.set_yscale("log")
+        ax.set_ylim(3e-2, 30)
+        ax.set_xlabel("arc length / beam length: bottom, tip, top")
+        ax.set_title(FAMILY_LABELS[key], loc="left", fontsize=9)
+    axes[0].set_ylabel(r"$|\delta u_I|$, with $\|\delta u_I\|_{L^2} = 1$")
+    axes[0].legend(loc="upper left", bbox_to_anchor=(0.0, -0.2), ncols=3, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 with plt.rc_context(_RC):
     for suffix in ("svg", "png"):
         plot_rates_vs_h(figure_dir / f"rates_vs_h.{suffix}")
@@ -320,3 +460,6 @@ with plt.rc_context(_RC):
         plot_rho_vs_dt(figure_dir / f"rho_vs_dt.{suffix}")
         plot_rho_over_window(figure_dir / f"rho_over_window.{suffix}")
         plot_rho_vs_h(figure_dir / f"rho_vs_h.{suffix}")
+        plot_mode_families(figure_dir / f"mode_families.{suffix}")
+        plot_mode_fields(figure_dir / f"mode_fields.{suffix}")
+        plot_mode_interface(figure_dir / f"mode_interface.{suffix}")
