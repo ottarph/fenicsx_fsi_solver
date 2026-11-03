@@ -17,7 +17,8 @@ momentum or only the continuity part of the fluid ALE derivatives left out of J_
 The eigenvectors are in output/newton_modes/: runs over the first 0.04 s, from the same states,
 modes_ref<level>_dt<dt> (the full Jacobian with the prediction, writing the 4 dominant eigenpairs of
 J_0^-1 N every 0.01 s), measured by analyse_modes.py into output/newton_modes/analysis/, and
-modes30_ref<level>_dt<dt> (the 30 dominant eigenvalues, at the first 2 of those samples). Writes SVG
+modes30_ref<level>_dt<dt> (the 30 dominant eigenvalues, at the first 2 of those samples). The CFL
+numbers of the states come from cfl_numbers.py. Writes SVG
 and PNG figures into figure_dir, by default plots/ next to this file.
 """
 
@@ -452,6 +453,53 @@ def plot_mode_interface(path: Path) -> None:
     plt.close(fig)
 
 
+# The largest flow CFL number |v| dt / h of the settled state at dt = 0.0025 on each mesh, from
+# cfl_numbers.py; it scales with dt.
+CFL_AT_0025 = {0: 0.88, 1: 1.87, 2: 3.84}
+MODE_RUNS = [(0, dt) for dt in DTS] + [(1, 0.0025), (1, 0.00125), (2, 0.0025), (2, 0.000625)]
+
+
+def plot_mode_cfl(path: Path) -> None:
+    """The two families against the largest flow CFL number and against dt, on all meshes."""
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.6), sharey=True)
+    markers = {0: "o", 1: "s", 2: "^"}
+    for key, color in (("tip", SERIES_COLORS[0]), ("volume", SERIES_COLORS[1])):
+        for level, dt in MODE_RUNS:
+            found = families(f"modes_ref{level}_dt{dt:g}")[key]
+            if not found:
+                continue
+            median = np.median([abs(d["eigenvalue"]) for d in found])
+            cfl = CFL_AT_0025[level] * dt / 0.0025
+            for ax, x in zip(axes, (cfl, dt), strict=True):
+                ax.plot(x, median, markers[level], color=color, markersize=6, markerfacecolor="none" if key == "volume"
+                        else color)  # fmt: skip
+    for ax in axes:
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.minorticks_off()
+    ticks = [1e-3, 2e-3, 3e-3, 5e-3, 7e-3]
+    axes[0].set_yticks(ticks, [f"{tick:.0e}".replace("e-0", "e-") for tick in ticks])
+    cfls = [0.22, 0.44, 0.88, 1.76, 3.52]
+    axes[0].set_xticks(cfls, [f"{c:g}" for c in cfls])
+    axes[1].set_xticks(DTS, [f"{dt:g}" for dt in DTS])
+    axes[0].set_xlabel("largest flow CFL number |v| dt / h")
+    axes[1].set_xlabel("time step dt")
+    axes[0].set_ylabel(r"$|\lambda|$ of $J_0^{-1}N$, median")
+    axes[0].set_title("The tip pair lines up in the CFL number, the volume mode in dt", loc="left", fontsize=9)
+    handles = [
+        matplotlib.lines.Line2D([], [], color=SERIES_COLORS[0], marker="o", linestyle="", label=FAMILY_LABELS["tip"]),
+        matplotlib.lines.Line2D([], [], color=SERIES_COLORS[1], marker="o", markerfacecolor="none", linestyle="",
+                                label=FAMILY_LABELS["volume"]),
+    ] + [
+        matplotlib.lines.Line2D([], [], color=TEXT_SECONDARY, marker=markers[level], markerfacecolor="none",
+                                linestyle="", label=LEVEL_LABELS[level])
+        for level in LEVELS
+    ]  # fmt: skip
+    axes[0].legend(handles=handles, loc="upper left", bbox_to_anchor=(0.0, -0.2), ncols=5, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 DECAY_RUNS = [("modes30_ref0_dt0.0025", "h, dt = 0.0025"), ("modes30_ref2_dt0.0025", "h/4, dt = 0.0025"),
               ("modes30_ref0_dt0.005", "h, dt = 0.005")]  # fmt: skip
 
@@ -496,3 +544,4 @@ with plt.rc_context(_RC):
         plot_mode_fields(figure_dir / f"mode_fields.{suffix}")
         plot_mode_interface(figure_dir / f"mode_interface.{suffix}")
         plot_spectrum_decay(figure_dir / f"spectrum_decay.{suffix}")
+        plot_mode_cfl(figure_dir / f"mode_cfl.{suffix}")

@@ -40,7 +40,7 @@ to remove (see The slow modes). The history of the work is in `implementation-lo
 8. **Refined in h and dt together, the contraction stays the same.** Over the first 0.04 s of the
    window, the spectral radius is 4.79e-3 at (h, 0.0025), 4.85e-3 at (h/2, 0.00125) and 4.74e-3 at
    (h/4, 0.000625), within 2% of each other at every sample time: the growth with h and the decrease
-   with dt cancel. Refined in h alone, it is 6.4e-3 on h/4, and in dt alone, 3.4e-3 at dt = 0.000625.
+   with dt cancel, as the CFL number stays the same (see The CFL number). Refined in h alone, it is 6.4e-3 on h/4, and in dt alone, 3.4e-3 at dt = 0.000625.
    The measured contraction of the later iterations still grows along this line (5.6e-3, 6.3e-3,
    7.6e-3, from 1.16 to 1.59 times the spectral radius), but the first iteration, in proportion to
    dt, makes up for it: every step takes 5.00 iterations on all three.
@@ -75,6 +75,11 @@ to remove (see The slow modes). The history of the work is in `implementation-lo
     3.4e-3 on both, which ends its growth with h. Removing the three real modes too would lower it to
     the band. Neither saves an iteration per step at the tolerance of 1e-11: that would need the later
     iterations to contract about 4.6 times faster.
+15. **The tip pair follows the CFL number, the volume mode dt.** The scheme has no CFL condition for
+    stability, but at dt = 0.0025 the largest flow CFL number |v| dt / h is 0.88, 1.87 and 3.84 on h,
+    h/2 and h/4. The tip pair depends on h and dt nearly only through it, about as its 0.22nd power,
+    and the volume mode on dt alone. So at dt <= 0.0025 the spectral radius follows the CFL number,
+    about as (dt/h)^0.25, which is why it stays flat along dt ∝ h.
 
 ## Setup
 
@@ -315,8 +320,8 @@ A 270° corner of Stokes flow has ∇v and p ~ r^(-0.455), a factor 1.37 per hal
 state's ∇v and p as coefficients, so the finer the mesh resolves the singularity, the stronger N
 couples the displacement at the corner. Along dt ∝ h, the tip pair keeps its modulus (4.89e-3 at
 (h, 0.0025), 4.97e-3 at (h/2, 0.00125) and 4.89e-3 at (h/4, 0.000625)) while concentrating further at
-the corner (56%, 86% and 97% of its solid velocity within 0.01 of a corner). This explains why the spectral radius stays flat along that line, but not why the two
-effects cancel so exactly.
+the corner (56%, 86% and 97% of its solid velocity within 0.01 of a corner). This explains why the spectral radius stays flat along that line; The CFL number shows why the two
+effects cancel.
 
 ### Below the dominant modes
 
@@ -364,6 +369,51 @@ dt = 0.0025, the first gaining 2.3 decades and the later ones 2.2. A fourth iter
 only if the later ones gained 2.9 decades, contracting by 1.3e-3, about 4.6 times below the measured
 5.8e-3. Even the band alone is above that.
 
+## The CFL number
+
+The scheme has no CFL condition for stability. The fluid and the solid are both implicit, with
+θ = 0.5 + dt, and each step is solved to 1e-11 by Newton's method. The fluid is incompressible, so
+there is no acoustic limit, and the mesh motion is elliptic and solved within the step. The monolithic
+coupling also avoids the added-mass instability of partitioned schemes.
+
+The CFL numbers still set the accuracy in time, and they turn out to set the tip pair. `cfl_numbers.py`
+measures them in the settled states at dt = 0.0025 (t = 16.5625):
+- the flow CFL number |v| dt / h on the fluid cells, with |v| at the cell midpoint, h the cell
+  diameter and the mesh velocity left out;
+- the elastic CFL numbers of the solid, c dt / h with the pressure and shear wave speeds
+  c_p = 17.3 and c_s = 7.07 (ν_s = 0.4).
+
+| mesh | smallest fluid h | \|v\| dt / h: max | 99th percentile | median | solid c_p dt / h | solid c_s dt / h |
+|---|---:|---:|---:|---:|---:|---:|
+| h | 4.1e-3 | 0.88 | 0.64 | 0.13 | 11 | 4.5 |
+| h/2 | 2.0e-3 | 1.87 | 1.26 | 0.26 | 22 | 9.0 |
+| h/4 | 1.0e-3 | 3.84 | 2.54 | 0.52 | 44 | 18 |
+
+Refined in h at a fixed dt, the CFL number grows as 1/h. At dt = 0.0025 on h/4, the flow crosses up to
+about four cells per step, so near the beam the error in time probably dominates the error in space.
+The elastic waves of the solid are far from resolved on every mesh. They do not matter for the bending
+of the beam, but θ = 0.5 + dt damps them only slightly, which may be why a disturbed state rings
+(finding 6); this is not tested.
+
+![The two families against the largest flow CFL number and against dt](plots/mode_cfl.svg)
+
+The tip pair depends on h and dt nearly only through the CFL number. Its modulus on h rises from
+3.43e-3 to 5.45e-3 as the largest CFL number goes from 0.22 to 1.76, about as its 0.22nd power. At a
+CFL number of about 0.9, the three meshes give 4.89e-3, 4.97e-3 and 4.89e-3. At about 1.8, h and h/2
+give 5.45e-3 and 5.77e-3.
+
+The volume mode instead lines up in dt: 3.54e-3, 3.37e-3 and 3.47e-3 at dt = 0.0025, and 2.42e-3 and
+2.45e-3 at 0.00125. The exception is h/4 at dt = 0.000625, at 2.41e-3 against 1.72e-3 on h, where a
+volume mode is among the four dominant in only 2 of the 4 samples.
+
+The spectral radius is the larger of the two. At dt <= 0.0025, where the tip pair dominates, it
+therefore follows the CFL number: by the sweep, dt^0.26 at a fixed h and h^-0.23 at a fixed dt, about
+(dt/h)^0.25. Along dt ∝ h the CFL number stays at 0.88 to 0.96, and the spectral radius stays flat.
+At dt = 0.005 the volume mode takes over, and the spectral radius depends on dt beyond the CFL number.
+
+This is a measured scaling, not a derivation. The tip pair is some 100 times smaller than dt times the
+largest |∇v| at the corner, and the corner singularity explains where it lives, not this power.
+
 ## Caveats
 
 - One period, from one state, and three meshes; the slow growth may continue. At 17% per halving it
@@ -390,6 +440,9 @@ only if the later ones gained 2.9 decades, contracting by 1.3e-3, about 4.6 time
 - The 30 dominant eigenvalues are measured at only 2 samples, on h and h/4 at dt = 0.0025 and on h
   at dt = 0.005; the modes of h/4 are sorted by their moduli alone, as their eigenvectors are not
   written.
+- The CFL numbers come from one state per mesh and leave out the mesh velocity, which lowers the
+  velocity relative to the mesh near the moving beam. The power 0.22 of the tip pair rests on four
+  time steps on h and four points on the finer meshes.
 - The corner singularity explains the growth of the tip pair with h only qualitatively: the
   measured growth (1.18 and 1.13 per halving) is weaker than the 1.37 of the corner exponent.
 - A test of the volume modes by the Poisson ratio of the solid was inconclusive. Changing the
@@ -413,6 +466,9 @@ only if the later ones gained 2.9 decades, contracting by 1.3e-3, about 4.6 time
   dt^0.65, they gain on the tip pair with every larger time step. This is not measured. Keeping only the net change of area in N, a single global
   coupling, would target them.
 - The spectrum near the turning point of the tip, which the eigenvector runs do not cover.
+- A direct test of the CFL scaling: h/2 at dt = 0.005 and h/4 at dt = 0.00125 would put the tip pair at
+  a CFL number of 3.7 and 1.9 on meshes not yet measured there, next to h/4 at 0.0025 and h/2 at
+  0.0025.
 
 ## Reproducing
 
@@ -441,7 +497,8 @@ python notes/newton-mesh-refinement/analyse_modes.py
 
 measures their modes into `output/newton_modes/analysis/`. The runs of the 30 dominant eigenvalues,
 `output/newton_modes/modes30_ref<n>_dt<dt>/`, take `spectral_nev=30` over the first 0.02 s, and
-`analyse_modes.py modes30_ref0_dt0.0025 modes30_ref0_dt0.005` measures their modes. The figures are
+`analyse_modes.py modes30_ref0_dt0.0025 modes30_ref0_dt0.005` measures their modes;
+`python notes/newton-mesh-refinement/cfl_numbers.py` prints the CFL numbers. The figures are
 made by
 
 ```bash

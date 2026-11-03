@@ -211,3 +211,25 @@ few would speed up J_0 noticeably?
 Report extended with finding 14, a subsection "Below the dominant modes" with the figure
 `spectrum_decay`, a caveat on the two samples, and the first next step now quantified and split
 into a measurement in the monolithic solver and the low-rank form it would take in `fsi2_simplified`.
+
+## 2026-11-03: The CFL number
+
+Question: is there a CFL condition in the FSI system? Not for stability (implicit fluid and solid
+with θ = 0.5 + dt, Newton to 1e-11, incompressible fluid, elliptic mesh motion solved in the step,
+monolithic coupling), but the CFL numbers turn out to line up the tip pair.
+
+- `cfl_numbers.py` reads the state of the first eigenvector sample of `modes_ref<n>_dt0.0025`
+  (t = 16.5625). Largest flow CFL number |v| dt / h (|v| at cell midpoints, h the cell diameter, mesh
+  velocity left out): 0.88, 1.87, 3.84 on h, h/2, h/4 (99th percentile 0.64, 1.26, 2.54; max |v|
+  2.23). Solid c_p dt / h 11, 22, 44 and c_s dt / h 4.5, 9.0, 18 (c_p = 17.3, c_s = 7.07).
+- The tip pair against the largest CFL number (scaled with dt from those values): on h 3.43e-3,
+  4.16e-3, 4.89e-3, 5.45e-3 at 0.22, 0.44, 0.88, 1.76 (about CFL^0.22); at about 0.9 the three
+  meshes give 4.89e-3, 4.97e-3, 4.89e-3, at about 1.8 h and h/2 give 5.45e-3 and 5.77e-3. The volume
+  mode lines up in dt instead (3.54e-3, 3.37e-3, 3.47e-3 at 0.0025; 2.42e-3, 2.45e-3 at 0.00125),
+  except h/4 at 0.000625 (2.41e-3 against 1.72e-3 on h, a volume mode in only 2 of 4 samples).
+- The sweep's spectral radius at dt <= 0.0025 goes as dt^0.26 at fixed h and h^-0.23 at fixed dt,
+  about (dt/h)^0.25, which explains the flat line along dt ∝ h (CFL 0.88 to 0.96).
+- Not derived: the tip pair is about 100 times smaller than dt max |∇v| at the corner (0.61 on h).
+
+Report extended with finding 15, a section "The CFL number" with the figure `mode_cfl`, a caveat,
+and a next step to test the scaling on h/2 at dt = 0.005 and h/4 at dt = 0.00125.
