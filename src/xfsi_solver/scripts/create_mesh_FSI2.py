@@ -19,6 +19,7 @@ def create_mesh(
     second_order: bool = True,
     solid_refinement: float = 1.0,
     refinements: int = 0,
+    tip_fillet: float = 0.0,
     path: str | None = None,
 ):
     """Generate the FSI2 benchmark mesh (solid flag + ALE fluid domain) and
@@ -52,6 +53,10 @@ def create_mesh(
         second order, so the refined meshes are nested in the unrefined one and the new nodes on
         curved boundaries lie on the geometry. With a count other than 0, "_ref<count>" is appended
         to the output filename.
+    tip_fillet:
+        Round the two corners of the free end of the solid with quarter circles of this radius, so
+        that the fluid has no re-entrant corner there. With a radius other than 0,
+        "_fillet<radius>" is appended to the output filename.
     path:
         Write the mesh here instead of to the path built from the options.
     """
@@ -98,14 +103,38 @@ def create_mesh(
     obstacle_left_point = gmsh.model.occ.addPoint(C_x - r, C_y, 0.0)
     obstacle_right_point = gmsh.model.occ.addPoint(C_x + r, C_y, 0.0)
 
-    flag_top_curve = gmsh.model.occ.addLine(flag_tl_point, flag_tr_point)
-    flag_right_curve = gmsh.model.occ.addLine(flag_tr_point, flag_br_point)
-    flag_bottom_curve = gmsh.model.occ.addLine(flag_br_point, flag_bl_point)
     flag_left_curve = gmsh.model.occ.addCircleArc(flag_bl_point, obstacle_right_point, flag_tl_point, center=False)
 
     obstacle_left_curve = gmsh.model.occ.addCircleArc(flag_tl_point, obstacle_left_point, flag_bl_point, center=False)
 
-    flag_loop = gmsh.model.occ.addCurveLoop([flag_top_curve, flag_right_curve, flag_bottom_curve, flag_left_curve])
+    if tip_fillet > 0.0:
+        assert tip_fillet < h / 2
+        # The straight sides end where the quarter circles begin; flag_tr_point and flag_br_point
+        # are not used
+        top_end = gmsh.model.occ.addPoint(flag_right - tip_fillet, flag_top, 0.0)
+        right_top = gmsh.model.occ.addPoint(flag_right, flag_top - tip_fillet, 0.0)
+        right_bot = gmsh.model.occ.addPoint(flag_right, flag_bot + tip_fillet, 0.0)
+        bot_end = gmsh.model.occ.addPoint(flag_right - tip_fillet, flag_bot, 0.0)
+        top_centre = gmsh.model.occ.addPoint(flag_right - tip_fillet, flag_top - tip_fillet, 0.0)
+        bot_centre = gmsh.model.occ.addPoint(flag_right - tip_fillet, flag_bot + tip_fillet, 0.0)
+        flag_curves = [
+            gmsh.model.occ.addLine(flag_tl_point, top_end),
+            gmsh.model.occ.addCircleArc(top_end, top_centre, right_top),
+            gmsh.model.occ.addLine(right_top, right_bot),
+            gmsh.model.occ.addCircleArc(right_bot, bot_centre, bot_end),
+            gmsh.model.occ.addLine(bot_end, flag_bl_point),
+            flag_left_curve,
+        ]
+        gmsh.model.occ.remove([(0, flag_tr_point), (0, flag_br_point), (0, top_centre), (0, bot_centre)])
+    else:
+        flag_curves = [
+            gmsh.model.occ.addLine(flag_tl_point, flag_tr_point),
+            gmsh.model.occ.addLine(flag_tr_point, flag_br_point),
+            gmsh.model.occ.addLine(flag_br_point, flag_bl_point),
+            flag_left_curve,
+        ]
+
+    flag_loop = gmsh.model.occ.addCurveLoop(flag_curves)
     obstacle_loop = gmsh.model.occ.addCurveLoop([flag_left_curve, obstacle_left_curve])
 
     flag = gmsh.model.occ.addPlaneSurface([flag_loop])
@@ -304,7 +333,7 @@ def create_mesh(
 
     mesh_path = Path(
         path
-        or f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}{f'_solid{solid_refinement:g}x' if solid_refinement != 1.0 else ''}{f'_ref{refinements}' if refinements else ''}.xdmf"
+        or f"data/meshes/fsi2/mesh{'_quad' if quads else ''}{'_ssq' if semi_structured_quad else ''}{'_fine' if fine else ''}{'_sec' if second_order else ''}{'_coarse' if coarse else ''}{f'_solid{solid_refinement:g}x' if solid_refinement != 1.0 else ''}{f'_ref{refinements}' if refinements else ''}{f'_fillet{tip_fillet:g}' if tip_fillet else ''}.xdmf"
     )
 
     from dolfinx.io import XDMFFile
