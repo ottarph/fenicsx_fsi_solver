@@ -2,7 +2,8 @@
 
     python notes/newton-mesh-refinement/analyse_modes.py [run ...]
 
-Each run (by default every modes_ref<level>_dt<dt> in output/newton_modes/) wrote, with
+Each run (by default every modes_ref<level>[_fillet<radius>]_dt<dt> in output/newton_modes/, the
+runs named with a fillet on the meshes with rounded tip corners) wrote, with
 fsi2_biharmonic_fulljacobian_initialguess and spectral_vectors_dir, the NEV dominant eigenpairs of
 J_0^-1 N every 0.01 s, from the settled states of the refinement study. For every sample and mode,
 this writes output/newton_modes/analysis/<run>_t<time>_mode<i>.npz, which make_figures.py plots.
@@ -19,7 +20,8 @@ measured by
 - the volume fluxes: the area change of the beam by du_I, and the fluxes of dv out of the beam and
   through the outflow;
 - the cumulative fractions of the fluid integrals of |dv|^2 and dp^2, and of the solid integral of
-  |dv|^2, by the distance of each cell from the beam and from the nearest of its four corners;
+  |dv|^2, by the distance of each cell from the beam and from the nearest of its four corners (on the
+  meshes with a fillet, the corners before the rounding);
 - for the first sample, the real parts of dv (interpolated to P1) and dp on the fluid, for field plots.
 """
 
@@ -40,24 +42,40 @@ OUT = ROOT / "analysis"
 ELEMENTS = {"u": ("P", 2, (2,)), "v": ("P", 2, (2,)), "p": ("P", 1), "z": ("P", 2, (2,))}
 ON_FLUID = ("p", "z")
 # The beam in the reference configuration: from the cylinder (centre (0.2, 0.2), radius 0.05) to
-# x = 0.6, between y = 0.19 and 0.21.
+# x = 0.6, between y = 0.19 and 0.21, its tip corners rounded with quarter circles on the meshes with
+# a fillet.
 X0, X1, Y0, Y1 = 0.2 + np.sqrt(0.05**2 - 0.01**2), 0.6, 0.19, 0.21
 CORNERS = np.array([[X0, Y0], [X1, Y0], [X1, Y1], [X0, Y1]])
 BEAM_LENGTH = X1 - X0
 
 
-def arc_length(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Arc length s along the interface, and the outward unit normal of the solid, at points x."""
+def arc_length(x: np.ndarray, fillet: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Arc length s along the interface, and the outward unit normal of the solid, at points x, on a beam
+    whose tip corners are rounded with radius ``fillet``."""
     s, n = np.empty(len(x)), np.empty((len(x), 2))
     tol = 1e-8
-    bottom = np.abs(x[:, 1] - Y0) < tol
-    top = np.abs(x[:, 1] - Y1) < tol
-    tip = (np.abs(x[:, 0] - X1) < tol) & ~bottom & ~top
-    if not np.all(bottom | top | tip):
+    straight = x[:, 0] <= X1 - fillet + tol
+    bottom = (np.abs(x[:, 1] - Y0) < tol) & straight
+    top = (np.abs(x[:, 1] - Y1) < tol) & straight
+    tip = (np.abs(x[:, 0] - X1) < tol) & (x[:, 1] > Y0 + fillet - tol) & (x[:, 1] < Y1 - fillet + tol) & ~bottom & ~top
+    rest = ~(bottom | top | tip)
+    centres = {"lower": np.array([X1 - fillet, Y0 + fillet]), "upper": np.array([X1 - fillet, Y1 - fillet])}
+    on_arc = {
+        side: rest & (np.abs(np.linalg.norm(x[:, :2] - c, axis=1) - fillet) < tol) & (sign * (x[:, 1] - c[1]) > 0)
+        for (side, c), sign in zip(centres.items(), (-1, 1), strict=True)
+    }
+    if not np.all(bottom | top | tip | on_arc["lower"] | on_arc["upper"]):
         raise ValueError("Interface points off the beam outline")
+    quarter, side = 0.5 * np.pi * fillet, Y1 - Y0 - 2 * fillet
     s[bottom], n[bottom] = x[bottom, 0] - X0, (0.0, -1.0)
-    s[tip], n[tip] = BEAM_LENGTH + x[tip, 1] - Y0, (1.0, 0.0)
-    s[top], n[top] = BEAM_LENGTH + (Y1 - Y0) + X1 - x[top, 0], (0.0, 1.0)
+    s[tip], n[tip] = BEAM_LENGTH - fillet + quarter + x[tip, 1] - Y0 - fillet, (1.0, 0.0)
+    s[top], n[top] = BEAM_LENGTH - fillet + 2 * quarter + side + X1 - fillet - x[top, 0], (0.0, 1.0)
+    for name, start in (("lower", BEAM_LENGTH - fillet), ("upper", BEAM_LENGTH - fillet + quarter + side)):
+        arc = on_arc[name]
+        d = x[arc, :2] - centres[name]
+        angle = np.arctan2(d[:, 1], d[:, 0])  # from -pi/2 to 0 on the lower arc, 0 to pi/2 on the upper
+        s[arc] = start + fillet * (angle + (0.5 * np.pi if name == "lower" else 0.0))
+        n[arc] = d / np.linalg.norm(d, axis=1)[:, None]
     return s, n
 
 
@@ -77,10 +95,13 @@ class Run:
     def __init__(self, name: str):
         self.name = name
         level = int(name.split("_ref")[1].split("_")[0])
+        self.fillet = float(name.split("_fillet")[1].split("_")[0]) if "_fillet" in name else 0.0
         self.dt = float(name.split("_dt")[1])
         self.theta = 0.5 + self.dt
         self.dir = ROOT / name
-        mesh_path = f"data/meshes/fsi2/refinement/mesh_sec_ref{level}.xdmf"
+        mesh_path = (
+            f"data/meshes/fsi2/refinement/mesh_sec_ref{level}{f'_fillet{self.fillet:g}' if self.fillet else ''}.xdmf"
+        )
         with dolfinx.io.XDMFFile(MPI.COMM_SELF, mesh_path, "r") as infile:
             self.mesh = infile.read_mesh()
             cell_tags = infile.read_meshtags(self.mesh, name="Cell tags")
@@ -97,7 +118,7 @@ class Run:
         interface = facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
         dofs = dolfinx.fem.locate_dofs_topological(self.spaces["u"], tdim - 1, interface)
         x = self.spaces["u"].tabulate_dof_coordinates()[dofs]
-        s, n = arc_length(x)
+        s, n = arc_length(x, self.fillet)
         order = np.argsort(s)
         self.interface_dofs, self.s, self.normal = dofs[order], s[order], n[order]
 
@@ -124,6 +145,12 @@ class Run:
             ufl.as_vector((0.0, -1.0)),
             ufl.conditional(ufl.lt(abs(x[1] - Y1), 1e-8), ufl.as_vector((0.0, 1.0)), ufl.as_vector((1.0, 0.0))),
         )
+        if self.fillet:
+            # On the quarter circles, the radial direction from their centres
+            r = self.fillet
+            for y_c, on_arc in ((Y0 + r, ufl.lt(x[1], Y0 + r)), (Y1 - r, ufl.gt(x[1], Y1 - r))):
+                d = x - ufl.as_vector((X1 - r, y_c))
+                n_s = ufl.conditional(ufl.And(ufl.gt(x[0], X1 - r), on_arc), d / ufl.sqrt(ufl.inner(d, d)), n_s)
         dS_I = self.dS(PHYSICAL_MARKERS["solid_fluid_interface"])
         ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=facet_tags)
         self.flux_forms = {
