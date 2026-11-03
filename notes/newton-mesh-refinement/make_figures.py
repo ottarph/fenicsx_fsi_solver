@@ -18,18 +18,22 @@ The eigenvectors are in output/newton_modes/: runs over the first 0.04 s, from t
 modes_ref<level>_dt<dt> (the full Jacobian with the prediction, writing the 4 dominant eigenpairs of
 J_0^-1 N every 0.01 s), measured by analyse_modes.py into output/newton_modes/analysis/, and
 modes30_ref<level>_dt<dt> (the 30 dominant eigenvalues, at the first 2 of those samples). The CFL
-numbers of the states come from cfl_numbers.py. Writes SVG
+numbers of the states come from cfl_numbers.py. The same settle and eigenvector runs on the meshes
+with rounded tip corners carry the suffix _fillet0.005 after ref<level>. Writes SVG
 and PNG figures into figure_dir, by default plots/ next to this file.
 """
 
 import sys
 from pathlib import Path
 
+import dolfinx
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 from matplotlib.colors import LogNorm
 from matplotlib.tri import Triangulation
+from mpi4py import MPI
 
 from xfsi_solver.scripts.plot_newton_logs import _RC, SERIES_COLORS, TEXT_SECONDARY, Run
 from xfsi_solver.tools.newton_log import read_newton_log
@@ -531,6 +535,117 @@ def plot_spectrum_decay(path: Path) -> None:
     plt.close(fig)
 
 
+# The meshes with the tip corners rounded with quarter circles of radius 0.005, a quarter of the
+# thickness of the beam
+FILLET = "_fillet0.005"
+SHAPES = {"": ("sharp tip corners", "-", None), FILLET: ("rounded, radius 0.005", "--", "none")}
+
+
+def mesh_edges(mesh_path: str, box: tuple[float, float, float, float]) -> tuple[list[np.ndarray], list[bool]]:
+    """The edges of the P2 triangles near box, as the quadratics through their end and middle nodes, and
+    whether each lies in a solid cell."""
+    with dolfinx.io.XDMFFile(MPI.COMM_SELF, mesh_path, "r") as infile:
+        mesh = infile.read_mesh()
+        cell_tags = infile.read_meshtags(mesh, name="Cell tags")
+    x, dofs = mesh.geometry.x[:, :2], mesh.geometry.dofmaps[0]
+    solid = np.isin(np.arange(len(dofs)), cell_tags.find(1))
+    centres = x[dofs].mean(axis=1)
+    near = (np.abs(centres[:, 0] - 0.5 * (box[0] + box[1])) < 0.5 * (box[1] - box[0]) + 0.003) & (
+        np.abs(centres[:, 1] - 0.5 * (box[2] + box[3])) < 0.5 * (box[3] - box[2]) + 0.003
+    )
+    t = np.linspace(0.0, 1.0, 9)[:, None]
+    edges, in_solid = [], []
+    for cell in np.flatnonzero(near):
+        # The vertices 0, 1, 2 and the edge midpoints 3 (of 1-2), 4 (of 0-2) and 5 (of 0-1)
+        for a, b, m in ((0, 1, 5), (1, 2, 3), (2, 0, 4)):
+            pa, pb, pm = x[dofs[cell, [a, b, m]]]
+            edges.append((1 - t) * (1 - 2 * t) * pa + 4 * t * (1 - t) * pm + t * (2 * t - 1) * pb)
+            in_solid.append(solid[cell])
+    return edges, in_solid
+
+
+def plot_fillet_meshes(path: Path) -> None:
+    """The lower tip corner on the sharp and the rounded meshes, the quarter circle dotted."""
+    box = (0.589, 0.604, 0.1855, 0.2005)
+    fig, axes = plt.subplots(2, 3, figsize=(7.6, 5.3), layout="none")
+    for row, (shape, (label, _, _)) in enumerate(SHAPES.items()):
+        for ax, level in zip(axes[row], LEVELS, strict=True):
+            edges, in_solid = mesh_edges(f"data/meshes/fsi2/refinement/mesh_sec_ref{level}{shape}.xdmf", box)
+            colors = [SERIES_COLORS[1] if s else SERIES_COLORS[0] for s in in_solid]
+            # Rasterized, as the SVG would otherwise hold some 10^4 curves
+            ax.add_collection(LineCollection(edges, colors=colors, linewidths=0.5, rasterized=True))
+            if shape:
+                angle = np.linspace(-0.5 * np.pi, 0.0, 50)
+                ax.plot(0.595 + 0.005 * np.cos(angle), 0.195 + 0.005 * np.sin(angle), color="k", linewidth=1.0,
+                        linestyle=":")  # fmt: skip
+            ax.set_xlim(box[0], box[1])
+            ax.set_ylim(box[2], box[3])
+            ax.set_aspect("equal")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_color(TEXT_SECONDARY)
+            ax.set_title(f"{label}, {LEVEL_LABELS[level].split()[1].strip('()')}", loc="left", fontsize=8)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.88, wspace=0.06, hspace=0.14)
+    fig.suptitle("The lower tip corner: solid orange, fluid blue, the P2 edges curved", x=0.02, ha="left", fontsize=9)
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
+def plot_fillet(path: Path) -> None:
+    """The two families at dt = 0.0025, and the measured contraction of J_0 in the settle runs, against h, on
+    the sharp and the rounded meshes."""
+    fig, (ax_modes, ax_rates) = plt.subplots(1, 2, figsize=(7.6, 3.6), sharey=True)
+    xs = [H[level] for level in LEVELS]
+    for shape, (_, linestyle, facecolor) in SHAPES.items():
+        for key, color, marker in (("tip", SERIES_COLORS[0], "o"), ("volume", SERIES_COLORS[1], "s")):
+            points = [(x, [abs(d["eigenvalue"]) for d in families(f"modes_ref{level}{shape}_dt0.0025")[key]])
+                      for x, level in zip(xs, LEVELS, strict=True)]  # fmt: skip
+            points = [(x, np.median(v)) for x, v in points if v]
+            if points:
+                ax_modes.plot(*zip(*points, strict=True), color=color, marker=marker, linestyle=linestyle,
+                              markerfacecolor=facecolor, markersize=5)  # fmt: skip
+        points = []
+        for x, level in zip(xs, LEVELS, strict=True):
+            run_dir = ROOT / f"settle_ref{level}{shape}"
+            if (run_dir / f"settle_ref{level}{shape}_newton.txt").exists():
+                points.append((x, np.percentile(ratios(Run(run_dir.name, run_dir), first=False), [25, 50, 75])))
+        if points:
+            q = np.array([v for _, v in points])
+            # The rounded meshes slightly to the right, so that the two IQRs do not overlap
+            shift = 0.95 if shape else 1.0
+            ax_rates.errorbar([shift * x for x, _ in points], q[:, 1], yerr=[q[:, 1] - q[:, 0], q[:, 2] - q[:, 1]],
+                              color=SERIES_COLORS[2], marker="D", linestyle=linestyle, markerfacecolor=facecolor,
+                              markersize=5, capsize=3)  # fmt: skip
+    for ax in (ax_modes, ax_rates):
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.minorticks_off()
+        ax.invert_xaxis()
+        ax.set_xticks([1, 0.5, 0.25], ["h", "h/2", "h/4"])
+    ticks = [2e-3, 3e-3, 4e-3, 5e-3, 7e-3, 1e-2]
+    ax_modes.set_yticks(ticks, [f"{tick:.0e}".replace("e-0", "e-") for tick in ticks])
+    ax_modes.set_xlabel("mesh, at dt = 0.0025")
+    ax_rates.set_xlabel("mesh, settle runs (median and IQR)")
+    ax_modes.set_ylabel(r"$|\lambda|$ of $J_0^{-1}N$ / contraction")
+    ax_modes.set_title("Rounded tip corners end the growth with h", loc="left", fontsize=9)
+    ax_rates.set_title("measured J_0, later iterations", loc="left", fontsize=9)
+    handles = [
+        matplotlib.lines.Line2D([], [], color=SERIES_COLORS[0], marker="o", linestyle="", label=FAMILY_LABELS["tip"]),
+        matplotlib.lines.Line2D([], [], color=SERIES_COLORS[1], marker="s", linestyle="",
+                                label=FAMILY_LABELS["volume"]),
+        matplotlib.lines.Line2D([], [], color=SERIES_COLORS[2], marker="D", linestyle="", label="measured"),
+    ] + [
+        matplotlib.lines.Line2D([], [], color=TEXT_SECONDARY, linestyle=linestyle, marker="o",
+                                markerfacecolor=facecolor, label=label)
+        for label, linestyle, facecolor in SHAPES.values()
+    ]  # fmt: skip
+    ax_modes.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.0, -0.2), ncols=3, fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 with plt.rc_context(_RC):
     for suffix in ("svg", "png"):
         plot_rates_vs_h(figure_dir / f"rates_vs_h.{suffix}")
@@ -545,3 +660,5 @@ with plt.rc_context(_RC):
         plot_mode_interface(figure_dir / f"mode_interface.{suffix}")
         plot_spectrum_decay(figure_dir / f"spectrum_decay.{suffix}")
         plot_mode_cfl(figure_dir / f"mode_cfl.{suffix}")
+        plot_fillet(figure_dir / f"fillet.{suffix}")
+        plot_fillet_meshes(figure_dir / f"fillet_meshes.{suffix}")

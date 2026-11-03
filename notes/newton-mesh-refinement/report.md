@@ -5,7 +5,8 @@ the mesh is refined? The FSI2 window of `notes/newton-convergence/report.md`, on
 oscillating beam, is solved on three nested meshes of mesh size h, h/2 and h/4, from the same state.
 A time step sweep and the spectral radius of the error iteration of J_0 then separate the effects of h
 and dt (see Time step and spectral radius), and its dominant eigenvectors show which errors are slow
-to remove (see The slow modes). The history of the work is in `implementation-log.md`.
+to remove (see The slow modes). The same runs on meshes with rounded tip corners test where the
+growth with h comes from (see Rounded tip corners). The history of the work is in `implementation-log.md`.
 
 ## Findings
 
@@ -63,7 +64,8 @@ to remove (see The slow modes). The history of the work is in `implementation-lo
 12. **The growth with h comes from the corner singularity.** Only the tip pair grows with h (4.89e-3,
     5.77e-3 and 6.52e-3 at dt = 0.0025, as the spectral radius does), and it sharpens at the lower tip
     corner. The volume mode is converged in h (3.54e-3, 3.37e-3 and 3.47e-3). At that corner the flow
-    is singular, and the state's largest |∇v| and |p| near it grow by 1.4 and 1.2 per halving.
+    is singular, and the state's largest |∇v| and |p| near it grow by 1.4 and 1.2 per halving. With
+    the corners rounded, the growth stops (finding 16).
 13. **The two families explain the dependence on dt.** The volume modes fall about as dt^0.65 and
     dominate at dt = 0.005, as the real dominant eigenvalue there. The tip pair falls only about as
     dt^0.22 and dominates below. The added-mass explanation of the weak dependence on dt holds for the
@@ -79,7 +81,17 @@ to remove (see The slow modes). The history of the work is in `implementation-lo
     stability, but at dt = 0.0025 the largest flow CFL number |v| dt / h is 0.88, 1.87 and 3.84 on h,
     h/2 and h/4. The tip pair depends on h and dt nearly only through it, about as its 0.22nd power,
     and the volume mode on dt alone. So at dt <= 0.0025 the spectral radius follows the CFL number,
-    about as (dt/h)^0.25, which is why it stays flat along dt ∝ h.
+    about as (dt/h)^0.25, which is why it stays flat along dt ∝ h. The rounded meshes show that this
+    is a coincidence of two exponents (finding 16).
+16. **Rounding the tip corners ends the growth with h.** With the two tip corners of the beam
+    rounded to a radius of 0.005, a quarter of its thickness, the tip pair stays at 3.46e-3, 3.38e-3
+    and 3.37e-3 on h, h/2 and h/4 at dt = 0.0025, against 4.89e-3, 5.77e-3 and 6.52e-3 with sharp
+    corners, and the volume mode, now the dominant mode, at 4.16e-3, 4.12e-3 and 4.11e-3. The spectral
+    radius is then converged in h, 15% to 37% below that of the sharp corners. The measured contraction
+    of J_0 grows by 4% and 1% per halving instead of 13% and 8%. The growth with h of the sharp
+    meshes is therefore the corner singularity, not the CFL number: on the rounded meshes, the
+    spectral radius falls along dt ∝ h (4.16e-3, 2.82e-3 and 2.31e-3), until on h/4 at
+    dt = 0.000625 a mode of the dense band leads.
 
 ## Setup
 
@@ -412,7 +424,104 @@ therefore follows the CFL number: by the sweep, dt^0.26 at a fixed h and h^-0.23
 At dt = 0.005 the volume mode takes over, and the spectral radius depends on dt beyond the CFL number.
 
 This is a measured scaling, not a derivation. The tip pair is some 100 times smaller than dt times the
-largest |∇v| at the corner, and the corner singularity explains where it lives, not this power.
+largest |∇v| at the corner, and the corner singularity explains where it lives, not this power. With
+the corners rounded, the tip pair no longer depends on h, and the alignment in the CFL number
+disappears (see Rounded tip corners): the h^-0.23 came from the corner, and the dt^0.26 from the
+time step, and the two exponents only happen to agree.
+
+## Rounded tip corners
+
+If the growth with h comes from the singularity at the lower tip corner, it should stop once the
+mesh resolves a rounding of the corner; if it came from the CFL number, it should not.
+`create_mesh_FSI2.create_mesh(tip_fillet=r)` replaces the two corners of the free end of the beam by
+quarter circles of radius r, tangent to the sides, so that the fluid has no re-entrant corner there;
+the corners at the cylinder are unchanged. With r = 0.005, a quarter of the beam's thickness, and the
+same refinements, each quarter circle is 2, 4 and 8 cell edges (5, 9 and 17 nodes) on h, h/2 and
+h/4, so the rounding is barely resolved on h and well resolved on h/4. gmsh meshes the rounded
+geometry anew, so these meshes are not those of the sharp corners with the corners cut off, but
+they have the same cell sizes:
+
+| mesh | relative h | cells | nodes |
+|---|---|---:|---:|
+| `refinement/mesh_sec_ref0_fillet0.005` | h | 5885 | 11997 |
+| `refinement/mesh_sec_ref1_fillet0.005` | h/2 | 23540 | 47534 |
+| `refinement/mesh_sec_ref2_fillet0.005` | h/4 | 94160 | 189228 |
+
+![The lower tip corner on the sharp and the rounded meshes, the quarter circle dotted](plots/fillet_meshes.svg)
+
+The rounding removes 1.07e-5 of the beam's area of 7.0e-3. The protocol is that of the sharp meshes:
+the `mesh_sec` state at t = 16.0025 transferred onto each mesh, 20 steps of backward Euler and 200
+of the usual θ with J_0 reassembled in every iteration, and from the settled state at t = 16.5525
+the same eigenvector runs. The settled states settle to the same initial residuals as the sharp ones
+(97 on h), and the tip follows the same oscillation, slightly shifted in phase: at t = 16.5525 the tip
+displacement A_y is -4.3e-3 against -7.4e-3 with the sharp corners, of an amplitude of about 0.08.
+
+![The two families at dt = 0.0025, and the measured contraction of J_0 in the settle runs, on the sharp and the rounded meshes](plots/fillet.svg)
+
+| mesh | dt | tip pair: sharp | rounded | volume mode: sharp | rounded | spectral radius: sharp | rounded |
+|---|---|---:|---:|---:|---:|---:|---:|
+| h | 0.005 | 5.45e-3 | 4.17e-3 | 6.61e-3 | 6.36e-3 | 6.61e-3 | 6.36e-3 |
+| h | 0.0025 | 4.89e-3 | 3.46e-3 | 3.54e-3 | 4.16e-3 | 4.89e-3 | 4.16e-3 |
+| h | 0.00125 | 4.16e-3 | 2.75e-3 | 2.42e-3 | 2.88e-3 | 4.16e-3 | 2.88e-3 |
+| h | 0.000625 | 3.43e-3 | 2.12e-3 | 1.72e-3 | 2.02e-3 | 3.43e-3 | 2.12e-3 |
+| h/2 | 0.0025 | 5.77e-3 | 3.38e-3 | 3.37e-3 | 4.12e-3 | 5.77e-3 | 4.12e-3 |
+| h/2 | 0.00125 | 4.97e-3 | 2.70e-3 | 2.45e-3 | 2.82e-3 | 4.97e-3 | 2.82e-3 |
+| h/4 | 0.0025 | 6.52e-3 | 3.37e-3 | 3.47e-3 | 4.11e-3 | 6.52e-3 | 4.11e-3 |
+| h/4 | 0.000625 | 4.89e-3 | 1.98e-3 (1 of 4) | 2.41e-3 (2 of 4) | below 1.9e-3 | 4.89e-3 | 2.31e-3 (a band mode) |
+
+(medians over the 4 samples, the families sorted by the rule of The slow modes; "1 of 4" where a
+family is among the 4 dominant modes in only some samples, "below" where in none. The spectral radius
+is the median of the largest modulus, the larger of the two families except on rounded h/4 at
+dt = 0.000625.)
+
+**The tip pair stops growing with h.** At dt = 0.0025 it stays within 3% on the three rounded
+meshes, and at dt = 0.00125 on h and h/2 (2.75e-3 and 2.70e-3), where with sharp corners it grows by
+1.18 and 1.13 per halving. It is 24% to 48% weaker, the more the finer the mesh and the smaller dt, and it still lives at the tip (88% of |du_I|^2
+within the last 10% of the beam and the tip at dt = 0.0025, against 92% to 95%), but less sharply
+at the corner (49% to 53% of its solid velocity within 0.01 of it, against 56% to 67%). On h it now
+falls about as dt^0.33 instead of dt^0.22.
+
+**The volume mode becomes the dominant mode.** It stays converged in h, as with sharp corners, but
+is 15% to 22% stronger at dt <= 0.0025 (4.16e-3 against 3.54e-3 on h at dt = 0.0025; 4% weaker at
+dt = 0.005), and dominates down to
+dt = 0.00125; at 0.000625 on h the two families are about equal (2.12e-3 and 2.02e-3). Why the
+rounding strengthens it is not clear: the shift in phase of the state may play a part, and its
+interface displacement is now a purer change of area (96% to 97% against 88% to 90%). On h, the 30
+dominant eigenvalues show that below these two families nothing changes: the second volume mode
+(2.69e-3 against 2.65e-3) and the top of the dense band (1.87e-3 against 1.88e-3) are those of the
+sharp corners. No other real mode stands above the band, where the sharp corners had the
+upper-corner mode (2.1e-3).
+
+**The spectral radius is converged in h**, at 4.16e-3, 4.12e-3 and 4.11e-3 at dt = 0.0025, so the
+whole of its growth on the sharp meshes came from the corners. Along dt ∝ h it now falls (4.16e-3,
+2.82e-3 and 2.31e-3 at (h, 0.0025), (h/2, 0.00125) and (h/4, 0.000625)), as the CFL explanation
+would not have it: the largest flow CFL number of the rounded meshes is nearly that of the sharp ones
+(0.81, 1.75 and 3.60 at dt = 0.0025, against 0.88, 1.87 and 3.84), but the tip pair no longer
+depends on h.
+
+**At the finest mesh and time step, a mode of the band leads.** On rounded h/4 at dt = 0.000625, the
+tip pair is among the 4 dominant modes in only one sample (1.98e-3) and the volume mode in none. The
+dominant mode there (1.95e-3 to 2.84e-3 over the window) is a nearly real pair (imaginary part 2% to
+3%) on about 8 interface nodes on the bottom of the beam, 0.056 before the tip, with no change of
+area, a pressure some 40 times smaller than that of the tip pair, and |du_t| ≈ |du_n|: where the
+dense band of the 30 eigenvalues peaks. It is not new with the rounding: on sharp h/4 at the same dt
+it is the third mode in two samples (2.53e-3 and 2.80e-3), and on rounded h the fourth (1.2e-3 to
+1.8e-3). With the corner modes weakened and the volume modes falling with dt, the band sets the
+spectral radius there.
+
+**The measured contraction follows.** In the settle runs (J_0 in every iteration, 199 steps, the same
+on both families of meshes), the later iterations contract by 4.31e-3, 4.47e-3 and 4.51e-3 on the
+rounded meshes (median), against 5.32e-3, 6.01e-3 and 6.51e-3 with sharp corners, and the steps take
+4.98, 4.65 and 4.53 iterations against 5.16, 5.13 and 4.98 (to the absolute `snes_atol` of 1e-7,
+which asks less on a finer mesh, so the counts fall with h on both). The first iteration contracts
+by 0.16 on both.
+
+**The corner state.** In the settled states, the largest |p| within 0.01 of the lower tip corner no
+longer grows (763, 786 and 766, against 797, 957 and 1165), while the largest |∇v| still does, if
+more slowly (294, 362 and 417, by 1.23 and 1.15 per halving, against 1.47 and 1.37). The rounding
+has no singularity, so this is the thin shear layer on the rounded tip, still being resolved; it
+does not show in the tip pair, which converges already on h. At the upper tip corner the largest
+|∇v| is 38.7, 46.3 and 49.0.
 
 ## Caveats
 
@@ -451,6 +560,10 @@ largest |∇v| at the corner, and the corner singularity explains where it lives
   each Poisson ratio.
 - The meshes are regenerated by the current gmsh, so h is not `mesh_sec` itself, but its iterates
   match those of `mesh_sec` in the report to the digits shown.
+- The rounded corners are tested with one radius, 0.005. Already on h, where each quarter circle is
+  only two cell edges, the tip pair is 29% weaker, so even an unresolved rounding helps; how the effect
+  depends on the radius is not measured. The rounded beam also has a slightly different state (a shift in phase
+  of the tip), and the stronger volume mode on it is not explained.
 
 ## Next steps
 
@@ -462,6 +575,9 @@ largest |∇v| at the corner, and the corner singularity explains where it lives
   `fsi2_biharmonic_fulljacobian_initialguess`, where it changes only which cells N is left out on; in
   `fsi2_simplified`, whose Newton unknowns are v and p, N couples the interface velocity to the fluid
   through the mesh motion, so the corner part of it is a correction of low rank, not a few entries.
+  The rounded corners show what the target is: with the tip pair weakened, the spectral radius drops
+  to the volume mode and stays flat in h. Where the geometry allows a rounding, it does the same
+  without a change to the solver.
 - Above dt = 0.005 the volume modes probably limit J_0 more and more: if they keep growing as
   dt^0.65, they gain on the tip pair with every larger time step. This is not measured. Keeping only the net change of area in N, a single global
   coupling, would target them.
@@ -498,8 +614,12 @@ python notes/newton-mesh-refinement/analyse_modes.py
 measures their modes into `output/newton_modes/analysis/`. The runs of the 30 dominant eigenvalues,
 `output/newton_modes/modes30_ref<n>_dt<dt>/`, take `spectral_nev=30` over the first 0.02 s, and
 `analyse_modes.py modes30_ref0_dt0.0025 modes30_ref0_dt0.005` measures their modes;
-`python notes/newton-mesh-refinement/cfl_numbers.py` prints the CFL numbers. The figures are
-made by
+`python notes/newton-mesh-refinement/cfl_numbers.py` prints the CFL numbers. The meshes with
+rounded tip corners come from `create_mesh(..., tip_fillet=0.005, path='data/meshes/fsi2/refinement/mesh_sec_ref<n>_fillet0.005.xdmf')`,
+with the same transfer into `output/newton_refinement/states/ref<n>_fillet0.005`, and their runs
+carry `_fillet0.005` after `ref<n>` in every name (`settle_ref<n>_fillet0.005`,
+`modes_ref<n>_fillet0.005_dt<dt>`, `modes30_ref0_fillet0.005_dt0.0025`); `analyse_modes.py` and
+`cfl_numbers.py _fillet0.005` read them. The figures are made by
 
 ```bash
 python notes/newton-mesh-refinement/make_figures.py

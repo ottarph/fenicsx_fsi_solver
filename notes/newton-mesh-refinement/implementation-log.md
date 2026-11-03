@@ -233,3 +233,48 @@ monolithic coupling), but the CFL numbers turn out to line up the tip pair.
 
 Report extended with finding 15, a section "The CFL number" with the figure `mode_cfl`, a caveat,
 and a next step to test the scaling on h/2 at dt = 0.005 and h/4 at dt = 0.00125.
+
+## 2026-11-03: Rounded tip corners
+
+Question: is the growth of the tip pair with h the singularity at the lower tip corner, or the CFL
+number? A rounded corner tells them apart: the singularity goes, the CFL number stays.
+
+- `create_mesh_FSI2.create_mesh(tip_fillet=r)` replaces the two corners of the free end of the beam
+  by quarter circles of radius r (lines to the tangent points, `addCircleArc` about the centres,
+  the unused corner and centre points removed before the cut). With r = 0 the mesh is unchanged
+  (the h5 of ref0 identical to the stored one). With r = 0.005 and 0, 1 and 2 refinements: 5885,
+  23540 and 94160 cells, each quarter circle 2, 4 and 8 P2 edges (5, 9 and 17 nodes), its nodes on the circle to 5e-17, the
+  solid area smaller by 1.07e-5 = 2 (1 - π/4) r^2.
+- `analyse_modes.py` reads the radius from the run name (`modes_ref<n>_fillet<r>_dt<dt>`), takes
+  the arc length and the normal around the quarter circles, and the radial normal there for the
+  fluxes. On the sharp mesh, s, the normals and the interface dofs are identical to before; on
+  the rounded one the interface is 0.0043 = (4 - π) r shorter, and the divergence check (u =
+  (x - X0, 0)) leaves the same junction flux as on the sharp mesh.
+- Runs (session scratchpad `fillet/fillet_runs.py`, `fillet_chain.sh`): the `mesh_sec` state at
+  t = 16.0025 transferred onto each mesh, damp (20 steps) and settle (200 steps) as before, then the
+  4-eigenpair runs on h at dt = 0.005 to 0.000625, h/2 at 0.0025 and 0.00125, h/4 at 0.0025 and
+  0.000625, and the 30 eigenvalues on h at 0.0025; on 2, 2 and 4 ranks next to another user's job
+  of 22 cores. Settle took 267, 1077 and 2805 s.
+- The settled states: initial residual 97 on h as with sharp corners; the tip shifted slightly in
+  phase (A_y = -4.3e-3 against -7.4e-3 at t = 16.5525).
+- At dt = 0.0025, tip pair 3.46e-3, 3.38e-3, 3.37e-3 (sharp 4.89e-3, 5.77e-3, 6.52e-3) and volume mode
+  4.16e-3, 4.12e-3, 4.11e-3 (sharp 3.54e-3, 3.37e-3, 3.47e-3), the volume mode now dominant. On h
+  the tip pair falls as about dt^0.33 (4.17e-3 to 2.12e-3 from 0.005 to 0.000625), the volume mode as
+  about dt^0.55. h/2 at 0.00125: 2.70e-3 and 2.82e-3.
+- Settle runs, later iterations (median over 199 steps, floor 1e-9): 4.31e-3, 4.47e-3, 4.51e-3,
+  against 5.32e-3, 6.01e-3, 6.51e-3 sharp; 4.98, 4.65, 4.53 iterations per step against 5.16, 5.13,
+  4.98.
+- Corner state (settled, within 0.01 of the lower tip corner): max |p| 763, 786, 766 (sharp 797, 957,
+  1165); max |∇v| 294, 362, 417 (sharp 243, 357, 489). Largest flow CFL number 0.81, 1.75, 3.60.
+- h/4 at dt = 0.000625 (3859 s on 4 ranks): spectral radius 1.95e-3 to 2.84e-3 (median 2.31e-3, sharp
+  4.89e-3), led by a nearly real pair (Im 2% to 3%) on about 8 interface nodes on the bottom of the
+  beam at s ≈ 0.295 (x ≈ 0.544, 0.056 before the tip), no area change, pressure ~40 times below the
+  tip pair's: the location of the dense band. The same mode is third on sharp h/4 at that dt in two
+  samples (2.53e-3, 2.80e-3) and fourth on rounded h (1.2e-3 to 1.8e-3). Tip pair among the 4 dominant
+  in one sample only (1.98e-3), the volume mode in none.
+- 30 eigenvalues on h: the volume mode first, then the tip pair at 0.75 to 0.81, the second volume
+  mode at 0.69 to 0.72 (2.69e-3, as sharp), the band from 0.50 (1.87e-3, as sharp).
+
+Report extended with finding 16, a section "Rounded tip corners" with the figure `fillet`, a caveat,
+and the first next step tied to it; finding 15 now notes that its CFL alignment is a coincidence of
+exponents.
