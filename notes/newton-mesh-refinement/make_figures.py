@@ -16,7 +16,8 @@ momentum or only the continuity part of the fluid ALE derivatives left out of J_
 
 The eigenvectors are in output/newton_modes/: runs over the first 0.04 s, from the same states,
 modes_ref<level>_dt<dt> (the full Jacobian with the prediction, writing the 4 dominant eigenpairs of
-J_0^-1 N every 0.01 s), measured by analyse_modes.py into output/newton_modes/analysis/. Writes SVG
+J_0^-1 N every 0.01 s), measured by analyse_modes.py into output/newton_modes/analysis/, and
+modes30_ref<level>_dt<dt> (the 30 dominant eigenvalues, at the first 2 of those samples). Writes SVG
 and PNG figures into figure_dir, by default plots/ next to this file.
 """
 
@@ -451,6 +452,37 @@ def plot_mode_interface(path: Path) -> None:
     plt.close(fig)
 
 
+DECAY_RUNS = [("modes30_ref0_dt0.0025", "h, dt = 0.0025"), ("modes30_ref2_dt0.0025", "h/4, dt = 0.0025"),
+              ("modes30_ref0_dt0.005", "h, dt = 0.005")]  # fmt: skip
+
+
+def plot_spectrum_decay(path: Path) -> None:
+    """|lambda_k| / |lambda_1| of the 30 dominant eigenvalues, each sample a line; open markers complex."""
+    fig, ax = plt.subplots(figsize=(6.4, 3.8))
+    for (name, label), color in zip(DECAY_RUNS, SERIES_COLORS, strict=False):
+        file = Path("output/newton_modes") / name / f"{name}_spectrum.txt"
+        if not file.exists():
+            continue
+        rows = np.atleast_1d(np.genfromtxt(file, names=True))
+        nev = sum(1 for key in rows.dtype.names if key.startswith("abs_"))
+        k = np.arange(1, nev + 1)
+        for j, row in enumerate(rows):
+            moduli = np.array([row[f"abs_{i}"] for i in k])
+            complex_ = np.array([row[f"im_{i}"] != 0.0 for i in k])
+            ratio = moduli / moduli[0]
+            ax.plot(k, ratio, color=color, linewidth=1.0, label=label if j == 0 else None)
+            ax.plot(k[~complex_], ratio[~complex_], "o", color=color, markersize=4)
+            ax.plot(k[complex_], ratio[complex_], "o", color=color, markersize=4, markerfacecolor="none")
+    ax.set_ylim(0.0, 1.05)
+    ax.set_xlabel("k, by decreasing modulus (a complex pair counts twice)")
+    ax.set_ylabel(r"$|\lambda_k| / |\lambda_1|$")
+    ax.set_title("The 30 dominant eigenvalues of $J_0^{-1}N$ at t = 16.5625 and 16.5725; open: complex", loc="left",
+                 fontsize=9)  # fmt: skip
+    ax.legend(loc="upper right", fontsize=8)
+    fig.savefig(path)
+    plt.close(fig)
+
+
 with plt.rc_context(_RC):
     for suffix in ("svg", "png"):
         plot_rates_vs_h(figure_dir / f"rates_vs_h.{suffix}")
@@ -463,3 +495,4 @@ with plt.rc_context(_RC):
         plot_mode_families(figure_dir / f"mode_families.{suffix}")
         plot_mode_fields(figure_dir / f"mode_fields.{suffix}")
         plot_mode_interface(figure_dir / f"mode_interface.{suffix}")
+        plot_spectrum_decay(figure_dir / f"spectrum_decay.{suffix}")

@@ -68,6 +68,13 @@ to remove (see The slow modes). The history of the work is in `implementation-lo
     dominate at dt = 0.005, as the real dominant eigenvalue there. The tip pair falls only about as
     dt^0.22 and dominates below. The added-mass explanation of the weak dependence on dt holds for the
     volume modes but not for the dominant tip pair, whose pressure does not scale like 1/dt.
+14. **A few slow modes stand above a dense band.** Of the 30 dominant eigenvalues, the tip pair and
+    three real modes stand apart; from 0.44 of the spectral radius on h and 0.39 on h/4 (at
+    dt = 0.0025), the rest form a dense band of complex pairs that falls only slowly. Removing the tip
+    pair alone would lower the spectral radius to 0.75 of its value on h and 0.56 on h/4, to about
+    3.4e-3 on both, which ends its growth with h. Removing the three real modes too would lower it to
+    the band. Neither saves an iteration per step at the tolerance of 1e-11: that would need the later
+    iterations to contract about 4.6 times faster.
 
 ## Setup
 
@@ -311,6 +318,52 @@ couples the displacement at the corner. Along dt ∝ h, the tip pair keeps its m
 the corner (56%, 86% and 97% of its solid velocity within 0.01 of a corner). This explains why the spectral radius stays flat along that line, but not why the two
 effects cancel so exactly.
 
+### Below the dominant modes
+
+The runs `modes30_*` compute the 30 dominant eigenvalues at the first two samples (t = 16.5625 and
+16.5725), on h at dt = 0.0025 and 0.005, with the eigenvectors, and on h/4 at dt = 0.0025, without
+them.
+
+![The 30 dominant eigenvalues, relative to the largest](plots/spectrum_decay.svg)
+
+At dt = 0.0025 on h, the tip pair and three real modes stand above the rest. The real modes are, in
+order:
+- a volume mode at 0.74 to 0.77 of the largest, peaking at the lower tip corner, with a net change
+  of area of 91% of the integral of |du_I . n|;
+- a second volume mode at 0.59 to 0.62, peaking on the bottom side 0.025 before the tip, at 86 to
+  88%;
+- a mode at the upper tip corner at 0.50 to 0.55, its interface displacement on about four nodes.
+
+From 0.44 down, the spectrum is a dense band of complex pairs, still at 0.30 at the 30th. Their
+interface displacements peak on the bottom side, 0.04 to 0.06 before the tip, and spread over 10 to
+60 nodes.
+
+At dt = 0.005 the same kinds come in another order: the two volume modes (1 and 0.84 to 0.89), the
+tip pair (0.81 to 0.82) and the upper-corner mode (0.41 to 0.44). The band follows from 0.33 to 0.36,
+down to 0.23 at the 30th.
+
+| mesh | dt | tip pair | the three real modes | top of the band | 30th |
+|---|---|---:|---:|---:|---:|
+| h | 0.0025 | 4.28e-3, 4.71e-3 | 3.31 to 2.13e-3, 3.49 to 2.59e-3 | 1.87e-3, 2.09e-3 | 1.29e-3, 1.40e-3 |
+| h/4 | 0.0025 | 5.73e-3, 6.25e-3 | 3.14 to 2.63e-3, 3.56 to 2.82e-3 | 2.22e-3, 2.35e-3 | 1.88e-3, 2.04e-3 |
+| h | 0.005 | 4.88e-3, 5.30e-3 | 5.95, 5.29, 2.60e-3; 6.51, 5.47, 2.68e-3 | 1.96e-3, 2.36e-3 | 1.38e-3, 1.69e-3 |
+
+In h, only the tip pair separates from the rest. The next eigenvalue, the volume mode of the lower tip
+corner, is the same on h and h/4 (about 3.3e-3 and 3.5e-3), so the tip pair leads it by 0.75 on h and
+by 0.56 on h/4. The band rises by 1.1 to 1.2 from h to h/4 and flattens, as the finer mesh resolves more
+of it. At h/4 the second sample has two more real eigenvalues at its top, at 0.44 and 0.41.
+
+For the error iteration, the gap means the following:
+- A correction of the tip pair alone, the first of the next steps, would lower the spectral radius at
+  dt = 0.0025 to about 3.4e-3 on both meshes, the volume mode, and end its growth with h.
+- Removing the tip pair and the three real modes would leave the top of the band, 2.0 to 2.4e-3. No
+  correction of a few modes gets below it.
+
+At the tolerance of 1e-11, neither saves an iteration. The steps take 5 iterations on h at
+dt = 0.0025, the first gaining 2.3 decades and the later ones 2.2. A fourth iteration would suffice
+only if the later ones gained 2.9 decades, contracting by 1.3e-3, about 4.6 times below the measured
+5.8e-3. Even the band alone is above that.
+
 ## Caveats
 
 - One period, from one state, and three meshes; the slow growth may continue. At 17% per halving it
@@ -334,6 +387,9 @@ effects cancel so exactly.
   the pressure dominates. The solid part of some real modes is therefore accurate only to about 1e-2
   (the kinematic relation u = dt θ v on the solid holds to 1e-3 to 2e-2 there, and to 1e-5 in the
   complex pairs), enough for their shape but not for fine detail.
+- The 30 dominant eigenvalues are measured at only 2 samples, on h and h/4 at dt = 0.0025 and on h
+  at dt = 0.005; the modes of h/4 are sorted by their moduli alone, as their eigenvectors are not
+  written.
 - The corner singularity explains the growth of the tip pair with h only qualitatively: the
   measured growth (1.18 and 1.13 per halving) is weaker than the 1.37 of the corner exponent.
 - A test of the volume modes by the Poisson ratio of the solid was inconclusive. Changing the
@@ -347,7 +403,12 @@ effects cancel so exactly.
 
 - Keeping N in J_0 on the cells near the tip corners would target the tip pair, which sets the
   spectral radius at dt <= 0.0025 and alone grows with h, at the cost of assembling the fluid ALE
-  derivatives only on a few cells.
+  derivatives only on a few cells. By the gap below it (see Below the dominant modes), that would lower
+  the spectral radius to the volume mode, to 0.75 of its value on h and 0.56 on h/4, and end its
+  growth with h, but save less than one iteration per step. It is first worth measuring in
+  `fsi2_biharmonic_fulljacobian_initialguess`, where it changes only which cells N is left out on; in
+  `fsi2_simplified`, whose Newton unknowns are v and p, N couples the interface velocity to the fluid
+  through the mesh motion, so the corner part of it is a correction of low rank, not a few entries.
 - Above dt = 0.005 the volume modes probably limit J_0 more and more: if they keep growing as
   dt^0.65, they gain on the tip pair with every larger time step. This is not measured. Keeping only the net change of area in N, a single global
   coupling, would target them.
@@ -378,7 +439,10 @@ come from `fsi2_biharmonic_fulljacobian_initialguess.solve` with `spectral_every
 python notes/newton-mesh-refinement/analyse_modes.py
 ```
 
-measures their modes into `output/newton_modes/analysis/`. The figures are made by
+measures their modes into `output/newton_modes/analysis/`. The runs of the 30 dominant eigenvalues,
+`output/newton_modes/modes30_ref<n>_dt<dt>/`, take `spectral_nev=30` over the first 0.02 s, and
+`analyse_modes.py modes30_ref0_dt0.0025 modes30_ref0_dt0.005` measures their modes. The figures are
+made by
 
 ```bash
 python notes/newton-mesh-refinement/make_figures.py

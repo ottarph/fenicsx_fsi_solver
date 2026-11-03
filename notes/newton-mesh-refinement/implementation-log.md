@@ -179,3 +179,35 @@ interface by the mesh motion, so du_I sets the mode) and measures it.
 Report and artifact extended with a section on the slow modes, three figures (`mode_fields`,
 `mode_interface`, `mode_families`) and findings 11 to 13; the added-mass explanation of the time step
 section is replaced, and the next steps now target the tip pair and the volume modes.
+
+## 2026-11-03: The 30 dominant eigenvalues
+
+Question: are there only a few slow modes, with a gap below them, so that a correction of those
+few would speed up J_0 noticeably?
+
+- Runs `output/newton_modes/modes30_ref<n>_dt<dt>/`, from the settled states, over the first 0.02 s
+  with `spectral_nev=30` at t = 16.5625 and 16.5725: h at dt = 0.0025 and 0.005, with the
+  eigenvectors (about 50 s each on 4 ranks), and h/4 at dt = 0.0025 without them (732 s on 4
+  ranks). The first four eigenvalues agree with the 4-eigenvalue runs on h to 3e-4 relative for
+  the tip pair and to 1% for the real modes, within the SLEPc tolerance of 1e-6 on the vector.
+- On h at dt = 0.0025, relative to the largest: the tip pair (1), a volume mode peaking at the lower
+  tip corner (0.74 to 0.77, area change 91%), a second volume mode peaking on the bottom 0.025
+  before the tip (0.59 to 0.62, 86 to 88%), and a real mode at the upper tip corner (0.50 to 0.55,
+  on about 4 interface nodes). Then, from 0.44, a dense band of complex pairs falling only to 0.30
+  at k = 30, peaking on the bottom 0.04 to 0.06 before the tip and spread over 10 to 60 nodes.
+- At dt = 0.005: the two volume modes (1, 0.84 to 0.89), the tip pair (0.81), the upper-corner mode
+  (0.41 to 0.44), then the band from 0.33 to 0.36 down to 0.23.
+- On h/4 at dt = 0.0025 (sorted by modulus only): the tip pair (5.73e-3, 6.25e-3), three real
+  eigenvalues at 0.46 to 0.57 (the first 3.14e-3 and 3.56e-3, as on h), then the band from 0.38 to
+  0.39 down to 0.33. The next eigenvalue after the tip pair does not change with h, so the gap below
+  the tip pair widens with h (0.75 on h, 0.56 on h/4); the band rises by 1.1 to 1.2.
+- Gain: without the tip pair the spectral radius would be about 3.4e-3 on both meshes; without all
+  four leading modes, the top of the band, 2.0 to 2.4e-3. At the tolerance of 1e-11, 5 iterations
+  per step (first 2.3 decades, later 2.2) drop to 4 only if the later iterations contract by
+  1.3e-3, 4.6 times below the measured 5.8e-3, so neither correction saves an iteration.
+- Driver scripts in the session scratchpad: `modes30_runs.py` (`mode_runs.py` with
+  `WINDOW, SAMPLE, NEV = 0.02, 0.01, 30` and the vectors optional) and `modes30_chain.sh`.
+
+Report extended with finding 14, a subsection "Below the dominant modes" with the figure
+`spectrum_decay`, a caveat on the two samples, and the first next step now quantified and split
+into a measurement in the monolithic solver and the low-rank form it would take in `fsi2_simplified`.
