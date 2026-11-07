@@ -976,11 +976,11 @@ def main():
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     requires_v_sub_IS = False
-    solver_options = MUMPS_ON_SOLID
-    requires_v_sub_IS = True
+    # solver_options = MUMPS_ON_SOLID
+    # requires_v_sub_IS = True
     initial_state_dir = args.initial_state_dir
     restart = args.restart
-    restart = True
+    # restart = True
     solve(
         mesh_path=mesh_path,
         T=T,
