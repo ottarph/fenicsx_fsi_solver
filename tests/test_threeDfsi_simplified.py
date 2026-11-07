@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from newton_log_helpers import check_solver_newton_log
-from restart_helpers import check_start_from_initial_state
+from restart_helpers import check_start_from_initial_state, read_checkpoint_state
 
 from xfsi_solver.solvers.threeDfsi_simplified import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
@@ -106,6 +106,29 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
     )
 
 
+@pytest.mark.slow
+def test_threeDfsi_simplified_writes_snapshots(output_dirs, tmp_path):
+    # 0.005 is closest to step 1 (t = 0.004); the run starts from rest, so the initial state is step 0
+    dt_val = 0.004
+    snapshot_dir = tmp_path / "snapshots"
+    solve(
+        mesh_path=MESH,
+        T=2 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "snapshots.bp"),
+        output_path_p=str(output_dirs["pv"] / "snapshots_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "snapshots.txt"),
+        solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS,
+        snapshot_dir=snapshot_dir,
+        snapshot_times=(0.0, 0.005),
+    )
+    assert sorted(path.name for path in snapshot_dir.iterdir()) == ["t0.0000", "t0.0040"]
+    t, step, state = read_checkpoint_state(MESH, snapshot_dir / "t0.0040", dt_val, ELEMENTS)
+    assert step == 1
+    assert t == pytest.approx(dt_val)
+    assert state["v"].x.array.any()
+
+
 @pytest.mark.parametrize(
     "kwargs, match",
     [
@@ -113,8 +136,9 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
         ({"nu_s": 0.4, "lambda_s": 8.0e6}, "nu_s and lambda_s"),
         ({"max_quadrature_degree": None}, "quadrature cap,"),
         ({"mesh_motion_max_quadrature_degree": None}, "quadrature cap on the mesh motion"),
+        ({"snapshot_times": (0.004,)}, "snapshot_times requires snapshot_dir"),
     ],
-    ids=["theta_shift", "nu_s_lambda_s", "quadrature_cap", "mesh_motion_quadrature_cap"],
+    ids=["theta_shift", "nu_s_lambda_s", "quadrature_cap", "mesh_motion_quadrature_cap", "snapshot_without_dir"],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):
     # Raised before the mesh is read

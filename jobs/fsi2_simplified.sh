@@ -24,9 +24,18 @@
 #   sbatch --export=ALL,RUN_NAME=fsi2_simplified_from16,INITIAL_STATE_RUN=fsi2_simplified,T=18.0 jobs/fsi2_simplified.sh
 # Such a run that stopped is resumed with RESTART=True, without INITIAL_STATE_RUN.
 #
+# SNAPSHOT_TIMES keeps the state at the time steps closest to these times, each in
+# RUN_DIR/snapshots/t<t>, named by the time reached (see xfsi_solver.tools.checkpoint.SnapshotWriter),
+# besides the restart checkpoints every CHECKPOINT_EVERY steps. Separate the times by spaces, since
+# sbatch ends a variable of --export at a comma:
+#   sbatch --export=ALL,SNAPSHOT_TIMES="0.2 0.4 0.6" jobs/fsi2_simplified.sh
+# A restart needs the same SNAPSHOT_TIMES to write the snapshots after its checkpoint. With
+# INITIAL_STATE_SNAPSHOT, e.g. t0.4000, a new run starts from that snapshot of INITIAL_STATE_RUN
+# instead of its latest checkpoint.
+#
 # Each run gets its own directory, RUN_DIR, which holds the QoIs, the Newton log (one row per
-# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, VTX output, QoI plots and
-# a record of the code version and arguments.
+# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, snapshots, VTX output, QoI plots
+# and a record of the code version and arguments.
 #SBATCH -J fsi2-simplified
 #SBATCH -p defq
 #SBATCH -N 1
@@ -42,6 +51,8 @@ RUNS=/home/hellanottar/xfsi/runs
 RUN_NAME=${RUN_NAME:-fsi2_simplified}
 RUN_DIR=$RUNS/$RUN_NAME
 INITIAL_STATE_RUN=${INITIAL_STATE_RUN:-}
+INITIAL_STATE_SNAPSHOT=${INITIAL_STATE_SNAPSHOT:-}
+SNAPSHOT_TIMES=${SNAPSHOT_TIMES:-}
 
 # Arguments of solve()
 MESH=${MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
@@ -75,11 +86,32 @@ esac
 
 INITIAL_STATE_DIR=None
 if [[ -n $INITIAL_STATE_RUN ]]; then
-    if [[ ! -d $RUNS/$INITIAL_STATE_RUN/checkpoints ]]; then
-        echo "No checkpoints in $RUNS/$INITIAL_STATE_RUN to start from" >&2
+    initial_state_path=$RUNS/$INITIAL_STATE_RUN/checkpoints
+    if [[ -n $INITIAL_STATE_SNAPSHOT ]]; then
+        initial_state_path=$RUNS/$INITIAL_STATE_RUN/snapshots/$INITIAL_STATE_SNAPSHOT
+    fi
+    if [[ ! -d $initial_state_path ]]; then
+        echo "No checkpoints in $initial_state_path to start from" >&2
         exit 1
     fi
-    INITIAL_STATE_DIR="\"$RUNS/$INITIAL_STATE_RUN/checkpoints\""
+    INITIAL_STATE_DIR="\"$initial_state_path\""
+elif [[ -n $INITIAL_STATE_SNAPSHOT ]]; then
+    echo "INITIAL_STATE_SNAPSHOT needs INITIAL_STATE_RUN, the run whose snapshot to start from" >&2
+    exit 1
+fi
+
+SNAPSHOT_DIR=None
+SNAPSHOT_TIMES_TUPLE="()"
+if [[ -n $SNAPSHOT_TIMES ]]; then
+    for time in $SNAPSHOT_TIMES; do
+        if [[ ! $time =~ ^[0-9.eE+-]+$ ]]; then
+            echo "SNAPSHOT_TIMES must be numbers separated by spaces, not \"$SNAPSHOT_TIMES\"" >&2
+            exit 1
+        fi
+    done
+    SNAPSHOT_DIR="\"$RUN_DIR/snapshots\""
+    # "0.2 0.4" -> (0.2,0.4,)
+    SNAPSHOT_TIMES_TUPLE="($(echo $SNAPSHOT_TIMES | tr ' ' ','),)"
 fi
 
 # A fresh run must not overwrite an earlier one; a restart needs its checkpoints.
@@ -113,6 +145,8 @@ solve(
     vtx_save_every=$VTX_SAVE_EVERY,
     restart=$RESTART,
     initial_state_dir=$INITIAL_STATE_DIR,
+    snapshot_dir=$SNAPSHOT_DIR,
+    snapshot_times=$SNAPSHOT_TIMES_TUPLE,
     gamma_reassemble=$GAMMA_REASSEMBLE,
     max_quadrature_degree=$MAX_QUADRATURE_DEGREE,
     solver_options=$SOLVER_OPTIONS,

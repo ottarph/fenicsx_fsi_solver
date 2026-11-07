@@ -172,6 +172,99 @@ def test_fsi2_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_p
     check_initial_state_rejects_T_not_after_it(solve, MESH, output_dirs, tmp_path)
 
 
+def _snapshot_names(snapshot_dir):
+    return sorted(path.name for path in snapshot_dir.iterdir())
+
+
+def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
+    """Snapshots are written at the steps closest to the requested times, also at the step of a restart
+    checkpoint and at the initial state, and a run started from one continues the run that wrote it."""
+    dt_val = 0.0025
+
+    def run(name, **kwargs):
+        solve(
+            mesh_path=MESH,
+            T=6 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            **kwargs,
+        )
+        return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2)
+
+    # 0.006 is closest to step 2 (t = 0.005), 0.0101 to step 4 (t = 0.01), with the restart checkpoint
+    # there, and 0.0124 to step 5 (t = 0.0125)
+    snapshot_dir = tmp_path / "snapshots"
+    source = run(
+        "source",
+        snapshot_dir=snapshot_dir,
+        snapshot_times=(0.0, 0.006, 0.0101, 0.0124),
+        checkpoint_dir=tmp_path / "checkpoints",
+        checkpoint_every=4,
+    )
+    assert _snapshot_names(snapshot_dir) == ["t0.0000", "t0.0050", "t0.0100", "t0.0125"]
+
+    t, step, state = read_checkpoint_state(MESH, snapshot_dir / "t0.0000", dt_val, ELEMENTS)
+    assert (t, step) == (0.0, 0)
+    assert not any(f.x.array.any() for f in state.values())
+    t_snapshot, step, snapshot = read_checkpoint_state(MESH, snapshot_dir / "t0.0100", dt_val, ELEMENTS)
+    t_checkpoint, _, checkpoint = read_checkpoint_state(MESH, tmp_path / "checkpoints", dt_val, ELEMENTS)
+    assert step == 4
+    assert t_snapshot == t_checkpoint == pytest.approx(4 * dt_val)
+    for name in ELEMENTS:
+        np.testing.assert_array_equal(snapshot[name].x.array, checkpoint[name].x.array)
+
+    # The started run has the QoI rows of the source from t = 0.005 on, within the Newton tolerance
+    started = run("started", initial_state_dir=snapshot_dir / "t0.0050")
+    assert started.shape == (5, 5)
+    np.testing.assert_allclose(started[:, 0], source[2:, 0], rtol=1e-12)
+    for column in range(1, source.shape[1]):
+        np.testing.assert_allclose(
+            started[:, column], source[2:, column], rtol=0, atol=1e-6 * np.abs(source[:, column]).max()
+        )
+
+
+def test_fsi2_simplified_restart_keeps_earlier_snapshots(output_dirs, tmp_path):
+    """A restart from the checkpoint at step 4 keeps the snapshot of step 2, and writes those of steps 5
+    and 7; a new run in the same snapshot directory removes them all."""
+    dt_val = 0.0025
+    snapshot_dir = tmp_path / "snapshots"
+    kwargs = dict(
+        mesh_path=MESH,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / "snapshots.bp"),
+        output_path_p=str(output_dirs["pv"] / "snapshots_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / "snapshots.txt"),
+        checkpoint_dir=tmp_path / "checkpoints",
+        checkpoint_every=4,
+        snapshot_dir=snapshot_dir,
+    )
+    solve(T=6 * dt_val, snapshot_times=(2 * dt_val, 5 * dt_val), **kwargs)
+    assert _snapshot_names(snapshot_dir) == ["t0.0050", "t0.0125"]
+    solve(T=8 * dt_val, restart=True, snapshot_times=(2 * dt_val, 5 * dt_val, 7 * dt_val), **kwargs)
+    assert _snapshot_names(snapshot_dir) == ["t0.0050", "t0.0125", "t0.0175"]
+    for name, k in [("t0.0050", 2), ("t0.0125", 5), ("t0.0175", 7)]:
+        assert read_checkpoint_state(MESH, snapshot_dir / name, dt_val, ELEMENTS)[1] == k
+
+    solve(T=dt_val, snapshot_times=(dt_val,), **kwargs)
+    assert _snapshot_names(snapshot_dir) == ["t0.0025"]
+
+
+def test_fsi2_simplified_rejects_snapshot_after_T(output_dirs, tmp_path):
+    with pytest.raises(ValueError, match="after the end of the run"):
+        solve(
+            mesh_path=MESH,
+            T=0.005,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "late.bp"),
+            output_path_p=str(output_dirs["pv"] / "late_p.bp"),
+            qoi_path=str(output_dirs["qoi"] / "late.txt"),
+            snapshot_dir=tmp_path / "snapshots",
+            snapshot_times=(0.01,),
+        )
+
+
 def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp_path):
     # Without the prediction of the displacements, the two solvers compute the same iterates, up to
     # the quadrature of the mesh motion, and their checkpoints have the same layout, so their states

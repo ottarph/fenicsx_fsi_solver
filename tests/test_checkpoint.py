@@ -7,7 +7,15 @@ import pytest
 from mpi4py import MPI
 from restart_helpers import run_mpi_python
 
-from xfsi_solver.tools.checkpoint import Checkpointer, check_start_options, load_start_state, restart_output_path
+from xfsi_solver.tools.checkpoint import (
+    Checkpointer,
+    SnapshotWriter,
+    check_start_options,
+    load_start_state,
+    restart_output_path,
+    snapshot_name,
+    snapshot_steps,
+)
 
 DT = 0.1
 
@@ -192,6 +200,24 @@ def test_check_start_options_accepts(tmp_path):
     check_start_options(False, None, None, tmp_path / "other")
 
 
+def test_check_start_options_rejects_snapshot_times_without_snapshot_dir():
+    with pytest.raises(ValueError, match="snapshot_times requires snapshot_dir"):
+        check_start_options(False, None, None, None, snapshot_times=(0.2,))
+
+
+@pytest.mark.parametrize("initial_state", ["snapshots", "snapshots/t0.2000"])
+def test_check_start_options_rejects_initial_state_in_snapshot_dir(tmp_path, initial_state):
+    with pytest.raises(ValueError, match="must not be in snapshot_dir"):
+        check_start_options(False, None, None, tmp_path / initial_state, tmp_path / "snapshots", (0.4,))
+
+
+def test_check_start_options_accepts_snapshots(tmp_path):
+    check_start_options(False, None, None, None, tmp_path / "snapshots", (0.2, 0.4))
+    check_start_options(False, None, None, None, tmp_path / "snapshots", ())
+    check_start_options(True, tmp_path / "run", 1, None, tmp_path / "snapshots", (0.2,))
+    check_start_options(False, None, None, tmp_path / "other/snapshots/t0.2000", tmp_path / "snapshots", (0.4,))
+
+
 def _load_start_state(
     directory=None, restart=False, checkpoint_every=None, initial_state_dir=None, t0=0.0, num_steps=5
 ):
@@ -323,6 +349,125 @@ def test_rejects_facet_submesh(mesh_kind, tmp_path):
     facet_submesh, entity_map, _, _ = dolfinx.mesh.create_submesh(mesh, 1, np.arange(3, dtype=np.int32))
     with pytest.raises(NotImplementedError):
         Checkpointer(tmp_path, mesh, [(facet_submesh, entity_map)])
+
+
+def test_snapshot_steps_rounds_to_the_closest_step():
+    # Steps of 0.1 from t0 = 0.5: 0.74 is closest to step 2 (0.7), 0.76 to step 3 (0.8), and t0 itself is step 0
+    assert snapshot_steps([0.76, 0.5, 0.74, 1.5], 0.5, 0.1, 10) == {0: 0.5, 2: 0.74, 3: 0.76, 10: 1.5}
+    assert snapshot_steps([], 0.0, 0.1, 10) == {}
+
+
+def test_snapshot_steps_rejects_time_after_the_end():
+    with pytest.raises(ValueError, match="after the end of the run"):
+        snapshot_steps([0.2, 1.06], 0.0, 0.1, 10)
+    # Closer to step 10 than to step 11, so still in the run
+    assert snapshot_steps([1.04], 0.0, 0.1, 10) == {10: 1.04}
+
+
+def test_snapshot_steps_rejects_times_with_the_same_step():
+    with pytest.raises(ValueError, match="both closest to step 2"):
+        snapshot_steps([0.19, 0.21], 0.0, 0.1, 10)
+
+
+def test_snapshot_steps_rejects_steps_with_the_same_name():
+    with pytest.raises(ValueError, match="same snapshot name"):
+        snapshot_steps([0.0, 0.00002], 0.0, 0.00002, 10)
+
+
+def test_snapshot_steps_skips_time_before_the_start():
+    with pytest.warns(UserWarning, match="before the start"):
+        assert snapshot_steps([0.2, 0.6], 0.5, 0.1, 10) == {1: 0.6}
+
+
+def _snapshot_writer(mesh_kind, directory, times, step=0, restart=False, num_steps=10):
+    """A SnapshotWriter of a run from t0 = 0 with ``num_steps`` steps of DT, and the functions it writes."""
+    mesh, submeshes, functions = _setup(mesh_kind)
+    writer = SnapshotWriter(
+        directory, mesh, submeshes, times, t0=0.0, dt=DT, num_steps=num_steps, step=step, restart=restart
+    )
+    return writer, functions
+
+
+def _write_snapshots(writer, functions, num_steps=10, first_step=0):
+    """Fill ``functions`` with the state of each step and write the snapshots ``writer`` holds."""
+    written = []
+    for step in range(first_step, num_steps + 1):
+        if writer.due(step):
+            _fill(functions, step * DT)
+            writer.write(functions, step * DT, step, DT, 0.0)
+            written.append(step)
+    return written
+
+
+def test_snapshots_are_checkpoint_directories(mesh_kind, tmp_path):
+    """Each snapshot is a directory with one checkpoint, of the state at the closest step, which a run
+    reads as from any checkpoint directory, also with another dt; the other snapshots are kept."""
+    writer, functions = _snapshot_writer(mesh_kind, tmp_path, [0.0, 0.33, 0.7])
+    assert _write_snapshots(writer, functions) == [0, 3, 7]
+    names = [snapshot_name(k * DT) for k in (0, 3, 7)]
+    assert names == ["t0.0000", "t0.3000", "t0.7000"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == names
+    mesh, submeshes, functions = _setup(mesh_kind)
+    for k, name in zip((0, 3, 7), names, strict=True):
+        assert sorted(path.name for path in (tmp_path / name).iterdir()) == ["checkpoint_0.bp"]
+        t, step = Checkpointer(tmp_path / name, mesh, submeshes).read(functions, None)
+        assert step == k
+        np.testing.assert_allclose(t, k * DT, rtol=1e-12)
+        _assert_state(functions, t)
+        assert Checkpointer(tmp_path / name, mesh, submeshes).latest_times()[1] == 0.0
+
+
+def test_snapshot_writer_new_run_clears_only_snapshots(tmp_path):
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.5])
+    _write_snapshots(writer, functions)
+    (tmp_path / "notes.txt").write_text("kept")
+    (tmp_path / "t0.5000" / "extra.txt").write_text("kept")
+
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.3])
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["notes.txt", "t0.5000"]
+    assert [path.name for path in (tmp_path / "t0.5000").iterdir()] == ["extra.txt"]
+    _write_snapshots(writer, functions)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["notes.txt", "t0.3000", "t0.5000"]
+
+
+def test_snapshot_writer_restart_keeps_earlier_snapshots(tmp_path):
+    """A run restarted after step 4 keeps the snapshot of step 2 and writes those of steps 5 and 8 again,
+    replacing the one of step 5 that the stopped run wrote after its last restart checkpoint. A requested
+    snapshot at step 3, which the stopped run did not write, cannot be written, and is warned about."""
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.5])
+    _write_snapshots(writer, functions, num_steps=6)
+    _fill(functions, 99.0)
+    writer.write(functions, 0.5, 5, DT, 0.0)  # a state that the restarted run must replace
+
+    with pytest.warns(UserWarning, match=r"t = \[0.3\].*restart at step 4"):
+        writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.3, 0.5, 0.8], step=4, restart=True)
+    assert not writer.due(2) and not writer.due(3)
+    assert _write_snapshots(writer, functions, first_step=5) == [5, 8]
+
+    mesh, submeshes, functions = _setup("unit_square")
+    for k in (2, 5, 8):
+        t, step = Checkpointer(tmp_path / snapshot_name(k * DT), mesh, submeshes).read(functions, DT)
+        assert step == k
+        _assert_state(functions, t)
+
+
+def test_snapshot_writer_prints_its_snapshots(tmp_path, capsys):
+    """The snapshots still to write when the writer is created, and each snapshot as it is written."""
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.52])
+    _write_snapshots(writer, functions)
+    _snapshot_writer("unit_square", tmp_path, [0.2, 0.52, 0.8], step=3, restart=True)
+    if MPI.COMM_WORLD.rank == 0:
+        assert capsys.readouterr().out == (
+            f"Writing snapshots at t = 0.2000, 0.5000 (steps 2, 5) to {tmp_path}\n"
+            f"Wrote the snapshot for t = 0.2 at t = 0.2000 (step = 2) to {tmp_path / 't0.2000'}\n"
+            f"Wrote the snapshot for t = 0.52 at t = 0.5000 (step = 5) to {tmp_path / 't0.5000'}\n"
+            f"Writing snapshots at t = 0.5000, 0.8000 (steps 5, 8) to {tmp_path}\n"
+        )
+
+
+def test_snapshot_writer_without_directory_writes_nothing(tmp_path):
+    writer, _ = _snapshot_writer("unit_square", None, ())
+    assert not any(writer.due(step) for step in range(11))
 
 
 _MPI_SCRIPT = """
