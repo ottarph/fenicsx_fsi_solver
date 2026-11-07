@@ -338,6 +338,9 @@ class SnapshotWriter:
     them. Solvers write a snapshot before the restart checkpoint of the same step, so every snapshot
     up to the step of a restart checkpoint is complete. With ``directory=None`` no snapshot is
     written.
+
+    For following a run in its log, rank 0 prints the snapshots still to write when it is created,
+    and a line for each snapshot as it is written, both flushed at once.
     """
 
     def __init__(
@@ -375,6 +378,10 @@ class SnapshotWriter:
                 del self._steps[k]
         else:
             self.clear()
+        if self._steps and self._comm.rank == 0:
+            times = ", ".join(f"{t0 + k * dt:.4f}" for k in self._steps)
+            steps = ", ".join(str(k) for k in self._steps)
+            print(f"Writing snapshots at t = {times} (steps {steps}) to {self.directory}", flush=True)
 
     def path(self, t: float) -> Path:
         """The checkpoint file of the snapshot at time ``t``."""
@@ -398,7 +405,9 @@ class SnapshotWriter:
         path = self.path(t)
         self._checkpointer._write_file(path, functions, t, step, dt, t0)
         if self._comm.rank == 0:
-            print(f"Wrote the snapshot for t = {self._steps[step]} at {t = :.4f} ({step = }) to {path.parent}")
+            print(
+                f"Wrote the snapshot for t = {self._steps[step]} at {t = :.4f} ({step = }) to {path.parent}", flush=True
+            )
 
 
 class StartState(NamedTuple):

@@ -451,6 +451,20 @@ def test_snapshot_writer_restart_keeps_earlier_snapshots(tmp_path):
         _assert_state(functions, t)
 
 
+def test_snapshot_writer_prints_its_snapshots(tmp_path, capsys):
+    """The snapshots still to write when the writer is created, and each snapshot as it is written."""
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.52])
+    _write_snapshots(writer, functions)
+    _snapshot_writer("unit_square", tmp_path, [0.2, 0.52, 0.8], step=3, restart=True)
+    if MPI.COMM_WORLD.rank == 0:
+        assert capsys.readouterr().out == (
+            f"Writing snapshots at t = 0.2000, 0.5000 (steps 2, 5) to {tmp_path}\n"
+            f"Wrote the snapshot for t = 0.2 at t = 0.2000 (step = 2) to {tmp_path / 't0.2000'}\n"
+            f"Wrote the snapshot for t = 0.52 at t = 0.5000 (step = 5) to {tmp_path / 't0.5000'}\n"
+            f"Writing snapshots at t = 0.5000, 0.8000 (steps 5, 8) to {tmp_path}\n"
+        )
+
+
 def test_snapshot_writer_without_directory_writes_nothing(tmp_path):
     writer, _ = _snapshot_writer("unit_square", None, ())
     assert not any(writer.due(step) for step in range(11))
