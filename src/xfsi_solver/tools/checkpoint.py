@@ -34,9 +34,16 @@ step. A new run can also start from the state in a checkpoint of another run
 checkpoint, counts its steps from there, and only reads from the other run's
 directory. The start time ``t0`` of the run is stored with each checkpoint,
 so that such a run can be resumed too.
+
+Snapshots (:class:`SnapshotWriter`) are checkpoints of the state at chosen
+times, kept for the whole run, unlike the restart checkpoints, which are
+overwritten. Each snapshot is a directory with a single checkpoint file in it,
+so a run can start from it with ``initial_state_dir``, as from any other
+checkpoint directory.
 """
 
 import shutil
+import warnings
 from collections.abc import Collection
 from pathlib import Path
 from typing import NamedTuple
@@ -55,6 +62,22 @@ _NUM_FILES = 2
 
 def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
+
+
+def _checkpoint_file(directory: Path, i: int) -> Path:
+    return directory / f"checkpoint_{i}.bp"
+
+
+def _read_complete_attributes(path: Path, comm) -> dict[str, np.ndarray] | None:
+    """Attributes of the checkpoint file ``path``, or None if it is missing or incomplete."""
+    if not path.exists():
+        return None
+    # An incomplete file, from a run killed while writing it, has no attributes
+    try:
+        attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES)
+    except Exception:  # noqa: BLE001
+        return None
+    return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
 
 
 def _submesh_rank_count(V: dolfinx.fem.FunctionSpace, parent_cells: np.ndarray) -> np.ndarray:
@@ -124,7 +147,7 @@ class Checkpointer:
         g.x.scatter_forward()
 
     def _file(self, i: int) -> Path:
-        return self.directory / f"checkpoint_{i}.bp"
+        return _checkpoint_file(self.directory, i)
 
     def clear(self) -> None:
         """Remove checkpoints from an earlier run, which a restart could otherwise pick up as the latest."""
@@ -136,9 +159,15 @@ class Checkpointer:
 
     def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float, t0: float = 0.0) -> None:
         """Save ``functions`` at time ``t``, after completing time step ``step`` of a run starting at ``t0``."""
-        path = self._file(self._next_file)
+        self._write_file(self._file(self._next_file), functions, t, step, dt, t0)
+        self._next_file = (self._next_file + 1) % _NUM_FILES
+
+    def _write_file(
+        self, path: Path, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float, t0: float
+    ) -> None:
+        """Write ``functions`` and the attributes of time ``t`` to the checkpoint file ``path``, replacing it."""
         if self.mesh.comm.rank == 0:
-            self.directory.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
         self.mesh.comm.Barrier()
         io4dolfinx.write_mesh_input_order(path, self.mesh)
         for f in functions:
@@ -155,18 +184,9 @@ class Checkpointer:
         }
         assert _ATTRIBUTE_KEYS <= attrs.keys()
         io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
-        self._next_file = (self._next_file + 1) % _NUM_FILES
 
     def _read_attributes(self, i: int) -> dict[str, np.ndarray] | None:
-        path = self._file(i)
-        if not path.exists():
-            return None
-        # An incomplete file, from a run killed while writing it, has no attributes
-        try:
-            attrs = io4dolfinx.read_attributes(path, self.mesh.comm, _ATTRIBUTES)
-        except Exception:  # noqa: BLE001
-            return None
-        return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
+        return _read_complete_attributes(self._file(i), self.mesh.comm)
 
     def _latest(self) -> tuple[dict[str, np.ndarray], int]:
         """Attributes and file index of the latest complete checkpoint."""
@@ -219,8 +239,21 @@ class Checkpointer:
         return t, step
 
 
-def check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir) -> None:
+def check_start_options(
+    restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir=None, snapshot_times=()
+) -> None:
     """Raise ``ValueError`` for combinations of the checkpoint arguments of a solver that do not fit together."""
+    if len(snapshot_times) > 0 and snapshot_dir is None:
+        raise ValueError("snapshot_times requires snapshot_dir")
+    if (
+        snapshot_dir is not None
+        and initial_state_dir is not None
+        and Path(initial_state_dir).resolve().is_relative_to(Path(snapshot_dir).resolve())
+    ):
+        raise ValueError(
+            "initial_state_dir must not be in snapshot_dir, whose snapshots a new run clears; "
+            "start from a snapshot of another run, or copy it out of snapshot_dir first"
+        )
     if restart and checkpoint_dir is None:
         raise ValueError("restart=True requires checkpoint_dir")
     if checkpoint_every is not None and checkpoint_dir is None:
@@ -250,6 +283,122 @@ def start_time(mesh: dolfinx.mesh.Mesh, restart: bool, checkpoint_dir, initial_s
     if initial_state_dir is not None:
         return Checkpointer(initial_state_dir, mesh).latest_times()[0]
     return 0.0
+
+
+def snapshot_name(t: float) -> str:
+    """Name of the directory of the snapshot at time ``t`` in a snapshot directory, ``t<t:.4f>``."""
+    return f"t{t:.4f}"
+
+
+def snapshot_steps(times: Collection[float], t0: float, dt: float, num_steps: int) -> dict[int, float]:
+    """The time steps closest to ``times``, as ``{step: requested time}``.
+
+    Step ``k`` of a run starting at ``t0`` ends at ``t0 + k * dt``, and the closest one to a time
+    ``tau`` is ``k = round((tau - t0) / dt)``, rounded as the solvers round the number of time steps
+    ``num_steps`` up to ``T``, so it is at most ``dt / 2`` from ``tau``. Step 0 is the initial state.
+    A time closer to a step after ``num_steps`` raises ``ValueError``, as does a time whose step, or
+    whose snapshot name, is that of another time. A time closer to a step before the start is
+    skipped with a warning: a run started from the state of another run at ``t0`` holds no earlier
+    state.
+    """
+    steps = {}
+    for tau in sorted(times):
+        k = round((tau - t0) / dt)
+        if k > num_steps:
+            raise ValueError(
+                f"Snapshot time {tau} is after the end of the run at T = {t0 + num_steps * dt:.4f} ({num_steps = })"
+            )
+        if k < 0:
+            warnings.warn(f"Snapshot time {tau} is before the start of the run at {t0 = }; skipping it", stacklevel=3)
+            continue
+        if k in steps:
+            raise ValueError(
+                f"Snapshot times {steps[k]} and {tau} are both closest to step {k}, at t = {t0 + k * dt:.4f}"
+            )
+        steps[k] = tau
+    names = [snapshot_name(t0 + k * dt) for k in steps]
+    if len(set(names)) < len(names):
+        raise ValueError(f"Snapshot times {sorted(times)} give steps with the same snapshot name, in {names}")
+    return steps
+
+
+class SnapshotWriter:
+    """Write snapshots, checkpoints of the state at the time steps closest to chosen times.
+
+    The snapshot at time ``t`` goes to ``directory / snapshot_name(t)``, a checkpoint directory with
+    one complete checkpoint, from which a run starts with ``initial_state_dir``. ``t`` is the time of
+    the step closest to the requested time, by :func:`snapshot_steps`; the requested times ``times``
+    are those of a run starting at ``t0`` with ``num_steps`` steps of ``dt``, and ``mesh`` and
+    ``submeshes`` are those of :class:`Checkpointer`.
+
+    A new run (``restart=False``) removes the snapshots of an earlier run in ``directory``, which
+    would otherwise mix with its own, and nothing else there. A run restarted after step ``step``
+    keeps the snapshots up to that step, written by the run it resumes, and warns about the ones
+    missing among them, which it cannot write; the later ones are written again as the run reaches
+    them. Solvers write a snapshot before the restart checkpoint of the same step, so every snapshot
+    up to the step of a restart checkpoint is complete. With ``directory=None`` no snapshot is
+    written.
+    """
+
+    def __init__(
+        self,
+        directory: str | Path | None,
+        mesh: dolfinx.mesh.Mesh,
+        submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = (),
+        times: Collection[float] = (),
+        *,
+        t0: float,
+        dt: float,
+        num_steps: int,
+        step: int = 0,
+        restart: bool = False,
+    ):
+        self.directory = None if directory is None else Path(directory)
+        self._steps = {}
+        if self.directory is None:
+            return
+        self._comm = mesh.comm
+        self._checkpointer = Checkpointer(self.directory, mesh, submeshes)
+        self._steps = snapshot_steps(times, t0, dt, num_steps)
+        if restart:
+            done = [k for k in self._steps if k <= step]
+            missing = [
+                self._steps[k] for k in done if _read_complete_attributes(self.path(t0 + k * dt), self._comm) is None
+            ]
+            if missing:
+                warnings.warn(
+                    f"The snapshots for t = {missing} in {self.directory} are missing or incomplete, and are before "
+                    f"the restart at step {step}, so they cannot be written",
+                    stacklevel=2,
+                )
+            for k in done:
+                del self._steps[k]
+        else:
+            self.clear()
+
+    def path(self, t: float) -> Path:
+        """The checkpoint file of the snapshot at time ``t``."""
+        return _checkpoint_file(self.directory / snapshot_name(t), 0)
+
+    def clear(self) -> None:
+        """Remove the snapshots of an earlier run, and nothing else in the directory."""
+        if self._comm.rank == 0 and self.directory.is_dir():
+            for path in self.directory.glob(f"t*/{_checkpoint_file(Path(), 0)}"):
+                shutil.rmtree(path, ignore_errors=True)
+                if not any(path.parent.iterdir()):
+                    path.parent.rmdir()
+        self._comm.Barrier()
+
+    def due(self, step: int) -> bool:
+        """Whether the state after time step ``step`` is a snapshot."""
+        return step in self._steps
+
+    def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float, t0: float) -> None:
+        """Write ``functions``, the state at time ``t`` after time step ``step``, as its snapshot."""
+        path = self.path(t)
+        self._checkpointer._write_file(path, functions, t, step, dt, t0)
+        if self._comm.rank == 0:
+            print(f"Wrote the snapshot for t = {self._steps[step]} at {t = :.4f} ({step = }) to {path.parent}")
 
 
 class StartState(NamedTuple):
