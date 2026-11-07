@@ -17,7 +17,7 @@ from petsc4py import PETSc
 
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_motion_solver_options
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
-from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
+from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
@@ -201,6 +201,8 @@ def solve(
     vtx_save_every=None,
     restart=False,
     initial_state_dir=None,
+    snapshot_dir=None,
+    snapshot_times=(),
     gamma_reassemble=0.1,
     max_quadrature_degree=8,
     mesh_motion_options=None,
@@ -278,6 +280,12 @@ def solve(
     mesh motion, which each solve computes again, so a run can also start from the state of a run with
     another mesh motion.
 
+    With ``snapshot_dir``, the state at the time steps closest to the times ``snapshot_times`` is
+    also kept, each in a checkpoint directory ``snapshot_dir/t<t:.4f>`` of its own, from which a run
+    starts with ``initial_state_dir``, by ``xfsi_solver.tools.checkpoint.SnapshotWriter``: a time
+    after ``T`` raises ``ValueError``, and a new run removes the snapshots of an earlier run in
+    ``snapshot_dir``, while a restart keeps those up to the step it resumes from.
+
     The quadrature degree of the residual, and so of its Jacobian, and of the drag and lift is capped
     at ``max_quadrature_degree``, by default 8, as in threeDfsi_c0ip: integrals for which UFL estimates
     a higher degree are integrated inexactly at that degree, and the others keep their estimate. The
@@ -295,7 +303,7 @@ def solve(
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
     test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
     """
-    check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir)
+    check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     if max_quadrature_degree is None:
         raise ValueError(
             "the 3d solver needs a quadrature cap, so max_quadrature_degree cannot be None: the degrees that "
@@ -454,6 +462,17 @@ def solve(
         write_vtx=vtx_save_every is not None,
     )
     displacement.scatter()  # u_s, u_f <- u, which is 0 on a new run from rest
+    snapshots = SnapshotWriter(
+        snapshot_dir,
+        mesh,
+        [(fluid_mesh, fluid_cell_map)],
+        snapshot_times,
+        t0=t0,
+        dt=dt_val,
+        num_steps=num_steps,
+        step=step,
+        restart=restart,
+    )
 
     writers = []
     if vtx_save_every is not None:
@@ -913,6 +932,8 @@ def solve(
 
     if not restart:
         write_output(t, step)
+        if snapshots.due(step):
+            snapshots.write(checkpoint_fields, t, step, dt_val, t0)  # u holds the start state
 
     PETSc.Sys.Print()
     mesh.comm.barrier()
@@ -961,8 +982,13 @@ def solve(
         step += 1
         write_output(t, step)
 
-        if checkpoint_every is not None and step % checkpoint_every == 0:
+        restart_checkpoint_due = checkpoint_every is not None and step % checkpoint_every == 0
+        if snapshots.due(step) or restart_checkpoint_due:
             displacement.gather()
+        # The snapshot goes first, so that every snapshot up to the step of a restart checkpoint is complete
+        if snapshots.due(step):
+            snapshots.write(checkpoint_fields, t, step, dt_val, t0)
+        if restart_checkpoint_due:
             checkpointer.write(checkpoint_fields, t, step, dt_val, t0)
 
     end = timer()
@@ -1026,6 +1052,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
+    parser.add_argument(
+        "--snapshot-times", type=float, nargs="*", default=[], help="keep the state at the steps closest to these times"
+    )
     args = parser.parse_args()
 
     mesh_path = "data/meshes/fsi3d/mesh_sec_medium.xdmf"
@@ -1037,6 +1066,10 @@ def main():
     qoi_path = f"output/qoi/{run_name}.txt"
     newton_log_path = f"output/qoi/{run_name}_newton.txt"
     checkpoint_dir = f"output/checkpoints/{run_name}"
+    # Only with --snapshot-times, since a new run clears the snapshots of an earlier one; a restart
+    # needs the same times again to write the snapshots after its checkpoint
+    snapshot_times = args.snapshot_times
+    snapshot_dir = f"output/snapshots/{run_name}" if snapshot_times else None
     checkpoint_every = 250
     vtx_save_every = None
     gamma_reassemble = 0.1  # Default 0.1.
@@ -1060,6 +1093,8 @@ def main():
         newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
+        snapshot_dir=snapshot_dir,
+        snapshot_times=snapshot_times,
         vtx_save_every=vtx_save_every,
         gamma_reassemble=gamma_reassemble,
         max_quadrature_degree=max_quadrature_degree,
