@@ -382,3 +382,38 @@ with the same `dt`, and still rejects any other.
   interface values from u_s, so it does not matter which part the owner of an interface dof copies
   from: the two differ by round-off at most. Its docstring now says that the parts must cover the mesh
   and agree on their shared dofs.
+
+## Snapshots at chosen times (2026-11-07)
+
+Restart checkpoints alternate between two files, so they only ever hold the latest state. Snapshots keep
+the state at chosen times for the whole run, e.g. to start runs on a refined mesh
+(`scripts/transfer_fsi2_checkpoint.py`) from a given phase of the oscillation. So far only in
+`fsi2_simplified` and `threeDfsi_simplified`.
+
+- `solve(..., snapshot_dir=..., snapshot_times=(0.2, 0.4, 0.6))`, and `--snapshot-times` in `main()`, which
+  only then sets `snapshot_dir = output/snapshots/<run_name>`.
+- The snapshot for a requested time `tau` is the state after step `k = round((tau - t0) / dt)`, at most
+  `dt / 2` from `tau`, rounded as `num_steps` is (`snapshot_steps`). `k = 0` is the start state. A
+  time after `T`, two times with the same step, or two steps with the same name raise `ValueError`;
+  a time before `t0` (a run started from another run's state) is skipped with a warning.
+- Each snapshot is `snapshot_dir/t<t:.4f>/checkpoint_0.bp`, named by the time reached, not the
+  requested one. It is an ordinary checkpoint directory with one complete checkpoint, written by
+  `Checkpointer._write_file`, split out of `Checkpointer.write` for this. So `initial_state_dir` and the
+  transfer script take a snapshot as it is, with any `dt`. The attributes are the same as those of a
+  restart checkpoint (`t`, `step`, `dt`, `num_cells`, `t0`), written last.
+- `SnapshotWriter`: a new run removes `t*/checkpoint_0.bp` in `snapshot_dir`, and the directories
+  that leaves empty, and nothing else. A restart after step `s` keeps the snapshots of steps `<= s` and
+  warns about the missing ones, which it cannot write; the later ones are written again as it reaches
+  them, replacing those that the stopped run wrote after its last restart checkpoint. The requested
+  times are not stored, so a restart must be given them again.
+- The solvers write the snapshot of a step before its restart checkpoint, with one
+  `displacement.gather()` for both. The other order could lose a snapshot: a run killed between the
+  two writes would restart after that step and skip it.
+- `check_start_options` rejects `snapshot_times` without `snapshot_dir`, and an `initial_state_dir` in
+  `snapshot_dir`, which a new run clears.
+- Tests: the step mapping, round trips on the unit square and the FSI2 meshes, clearing and restarts
+  in `tests/test_checkpoint.py`; in `tests/test_fsi2_simplified.py`, a run whose snapshot at the step
+  of its restart checkpoint equals that checkpoint, a run started from a snapshot that reproduces the
+  QoIs of the source (to 1e-6), and a restart that keeps the earlier snapshots. In
+  `tests/test_threeDfsi_simplified.py`, a 2-step run with snapshots (`slow`), and the rejected
+  `snapshot_times` without `snapshot_dir`.
