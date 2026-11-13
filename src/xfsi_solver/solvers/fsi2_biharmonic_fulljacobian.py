@@ -100,7 +100,7 @@ def solve(
     MUMPS factorizes it. With restricted test functions these rows are decoupled
     from the interface, so the scaling does not change the Newton step, but it
     reduces the pivoting in MUMPS, see
-    notes/restricted-test-functions/solver-time.md. The residual and Jacobian
+    32bd021:notes/restricted-test-functions/solver-time.md. The residual and Jacobian
     seen by SNES stay unscaled, so the convergence tests see the unscaled
     residual. With ``None``, the Jacobian is factorized as it is.
 

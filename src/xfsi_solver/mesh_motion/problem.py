@@ -103,7 +103,7 @@ class MeshMotion:
         # form without the Dirichlet conditions, so the residual is a product with A, assembled once
         # here, instead of an assembly of F in every solve. For the C0IP form, with its interior-facet
         # integrals, that assembly took more than 20 times as long as the solve with the factorization on
-        # the 3d medium mesh (notes/fsi3d/implementation-log.md). A is kept alongside the Jacobian. The product
+        # the 3d medium mesh (32bd021:notes/fsi3d/implementation-log.md). A is kept alongside the Jacobian. The product
         # integrates each block of A at its own quadrature degree; the assembly integrated the terms of
         # a residual block of a mixed form together, at the highest degree of any of them, so the
         # Jacobian is now the exact derivative of the residual, and one Newton step solves exactly.

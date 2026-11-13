@@ -849,7 +849,7 @@ def solve(
     # instead of twice.
     # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky, which was
     # about 30 times faster per solve than CG with GAMG or a Laplacian-squared preconditioner
-    # (notes/c0ip-mesh-motion/implementation-log.md).
+    # (32bd021:notes/c0ip-mesh-motion/implementation-log.md).
     mesh_motion_solve_options = {
         "ksp_type": "preonly",
         "ksp_reuse_preconditioner": True,
