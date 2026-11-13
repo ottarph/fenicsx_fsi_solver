@@ -24,14 +24,15 @@ progress on long-running commands (e.g. the test suite) until they finish.
 What is known about this code (results, decisions, runs, pitfalls) is kept in a separate, private library at
 `~/fsi-library`, not in this repository. Look things up there first: start at its `index.md`, and search its
 `inbox/` as well. The design logs that used to be in `notes/` are summarised there, and the originals can be read
-from git history (`git show 32bd021:notes/<path>`).
+from git history (`git show 32bd021:notes/<path>`). Two user-level skills hold the procedures: `fsi-lookup` for
+looking things up, and `fsi-record-finding` for writing an inbox entry.
 
 - A `notes/` folder may be used sparingly on a feature branch, as a working log for a long task. It must never be
   merged into `restricted` or `main`: before the branch is merged, move its conclusions to the library's inbox (cite
   the log by commit if needed) and delete the folder in a commit on the branch.
 - When you learn something a future session would need (a result with its numbers, a decision and why, an approach
   that failed, a pitfall, a run worth finding again), commit the code under test, then write one file per finding
-  to `~/fsi-library/inbox/` as described in `~/fsi-library/inbox/README.md`.
+  to `~/fsi-library/inbox/` as described in `~/fsi-library/inbox/README.md` (use the `fsi-record-finding` skill).
 - Don't edit the library's pages and don't commit there; a librarian merges the inbox.
 - Code comments and docstrings in this repository must stay self-contained, since this repository is public and the
   library is not. Don't cite the library from them.
