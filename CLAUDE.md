@@ -19,6 +19,21 @@ progress on long-running commands (e.g. the test suite) until they finish.
   for the restart and initial-state paths of the 3D solvers, ask first.
 - Pass this rule on in the brief of any session or subagent that may run tests.
 
+# Knowledge library
+
+What is known about this code (results, decisions, runs, pitfalls) is kept in a separate, private library at
+`~/fsi-library`, not in this repository. Look things up there first: start at its `index.md`, and search its
+`inbox/` as well. The design logs that used to be in `notes/` are summarised there, and the originals can be read
+from git history (`git show 32bd021:notes/<path>`).
+
+- Don't add a `notes/` folder or other design logs to this repository.
+- When you learn something a future session would need (a result with its numbers, a decision and why, an approach
+  that failed, a pitfall, a run worth finding again), commit the code under test, then write one file per finding
+  to `~/fsi-library/inbox/` as described in `~/fsi-library/inbox/README.md`.
+- Don't edit the library's pages and don't commit there; a librarian merges the inbox.
+- Code comments and docstrings in this repository must stay self-contained, since this repository is public and the
+  library is not. Don't cite the library from them.
+
 # Code
 Use FEniCSx to solve fluid-structure interaction problems using the finite element method in monolithic arbitrary Lagrangian-Eulerian formulation. 
 
