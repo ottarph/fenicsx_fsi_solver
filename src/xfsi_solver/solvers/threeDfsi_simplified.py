@@ -79,7 +79,7 @@ DEFAULT_V_OPTIONS = {
     # across a rank boundary is strong, such as in the thin, stiff beam: with omega = 1, GAMG
     # diverged for some partitions of the 3d mesh in threeDfsi_c0ip. There, on the fine mesh with
     # 64 ranks, three steps took a third fewer FGMRES iterations than PETSc's two, and omega = 0.4
-    # fewer than 0.3, 0.5 and 0.6 (notes/fsi3d/implementation-log.md).
+    # fewer than 0.3, 0.5 and 0.6 (32bd021:notes/fsi3d/implementation-log.md).
     "mg_levels_ksp_type": "richardson",
     "mg_levels_ksp_max_it": 3,
     "mg_levels_pc_type": "sor",
@@ -102,7 +102,7 @@ DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
         "ksp_converged_reason": None,
         "ksp_type": "fgmres",
         # On the medium mesh, rtol 1e-4 kept the Newton iterations of 1e-5 with a fifth fewer FGMRES
-        # iterations (notes/fsi3d/implementation-log.md).
+        # iterations (32bd021:notes/fsi3d/implementation-log.md).
         "ksp_rtol": 1e-4,
         "ksp_atol": 1e-8,
         "ksp_max_it": 200,
@@ -132,7 +132,7 @@ DEFAULT_V_S_OPTIONS = {
 # the mass, rho_f / dt M, and couple only neighbouring dofs, so they need no coarse grid: on the medium
 # and the fine mesh with dt = 0.004, block Jacobi took twice the FGMRES iterations of one GAMG V-cycle
 # (DEFAULT_V_OPTIONS, with the block size attached to is_v_f), but 17% and 22% less time per step
-# (notes/fsi3d/implementation-log.md). Where the viscous term, nu dt / h^2, or the convection, U dt / h,
+# (32bd021:notes/fsi3d/implementation-log.md). Where the viscous term, nu dt / h^2, or the convection, U dt / h,
 # outgrows the mass, at larger dt or on finer meshes, use DEFAULT_V_OPTIONS here instead.
 DEFAULT_V_F_OPTIONS = {
     "ksp_type": "preonly",
@@ -265,7 +265,7 @@ def solve(
     Newton step, whose Jacobian has no derivative through the mesh motion, is followed by a mesh update
     by the displacement of a whole time step. In fsi2_simplified on mesh_sec, the prediction cut the
     first-iteration contraction from 0.16 to 3e-3, and the time per step by 11% with the default
-    Jacobian reuse and by 27% without (notes/newton-convergence/report.md).
+    Jacobian reuse and by 27% without (32bd021:notes/newton-convergence/report.md).
 
     The Jacobian is reassembled when the residual norm decreased by less than a factor
     ``gamma_reassemble`` in the last Newton iteration, and otherwise reused, also across time steps;

@@ -746,7 +746,7 @@ def solve(
     #   and the time per step by 7%. A fourth gains no iterations.
     # - With three steps, omega = 0.4 takes 14% fewer iterations and 15% less time per step than
     #   0.5. 0.3 and 0.6 take more iterations, and 0.7 diverges.
-    # (notes/fsi3d/implementation-log.md)
+    # (32bd021:notes/fsi3d/implementation-log.md)
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
         "fieldsplit_v_mg_levels_ksp_max_it": 3,

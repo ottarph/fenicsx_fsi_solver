@@ -450,7 +450,7 @@ def solve(
     # u_f anyway, and its effect on the flow through the mesh velocity
     # (u_f - u_f_old) / dt is included in those < 1e-9 changes in v_f and p;
     # drag, lift and tip displacement QoIs are unchanged
-    # (notes/checkpointing/implementation-log.md).
+    # (32bd021:notes/checkpointing/implementation-log.md).
 
     checkpointed = [u_f, v_f, u_s, v_s, p]
     output_path_solid = output_path.replace(".bp", "_solid.bp")

@@ -380,7 +380,7 @@ def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(outp
     # The prediction only changes the initial guess of each Newton solve, so the runs agree within
     # the Newton tolerance. From rest, the structure hardly moves in the first steps, so the residual
     # of the initial guess hardly changes either; it is smaller with the prediction once the beam
-    # oscillates (notes/newton-convergence/implementation-log.md).
+    # oscillates (32bd021:notes/newton-convergence/implementation-log.md).
     dt_val = 0.0025
 
     def run(name, predict_displacements):

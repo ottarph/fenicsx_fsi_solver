@@ -235,7 +235,7 @@ def solve(
     derivative through the mesh motion, is followed by a mesh update by the displacement of a whole time
     step. On mesh_sec, with the beam oscillating, the prediction cuts the first-iteration contraction
     from 0.16 to 3e-3, and the time per step by 11% with the default Jacobian reuse and by 27% without
-    (notes/newton-convergence/report.md). With ``predict_displacements=False``, the mixed biharmonic
+    (32bd021:notes/newton-convergence/report.md). With ``predict_displacements=False``, the mixed biharmonic
     mesh motion and exact solves, the iterates are those of fsi2_biharmonic_mixed.
 
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the

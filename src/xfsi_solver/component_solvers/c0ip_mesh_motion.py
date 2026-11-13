@@ -55,7 +55,7 @@ TIP_POINTS = {2: np.array([0.6, 0.2, 0.0]), 3: np.array([0.9, 0.2, 0.3])}
 # "cg_laplacian_squared": CG on each component, preconditioned by LaplacianSquaredPC, set up on the
 #   x component and reused for the others.
 # The study also tried MUMPS LU on the whole vector system and the C0IP multigrid of Brenner and Sung
-# (notes/c0ip-mesh-motion/implementation-log.md); both were dropped.
+# (32bd021:notes/c0ip-mesh-motion/implementation-log.md); both were dropped.
 SOLVERS = ("direct_component", "cg_gamg", "cg_laplacian_squared")
 
 CASES = {

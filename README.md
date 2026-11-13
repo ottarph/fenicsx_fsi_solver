@@ -123,8 +123,9 @@ biharmonic mesh motion) on a submesh of the fluid domain, with dolfinx's mixed-m
 | ``threeDfsi_c0ip`` | as ``fsi2_biharmonic_c0ip``, for the 3d benchmark | as ``fsi2_biharmonic_mixed`` |
 
 The restricted-test-function formulation and the iterative solver of ``fsi2_biharmonic_mixed`` are described
-in ``docs/restricted-iterative-solver.md``. The design decisions and measurements behind the solvers are
-logged under ``notes/``.
+in ``docs/restricted-iterative-solver.md``. The design decisions and measurements behind the solvers were
+logged under ``notes/``, which has since been removed. Comments and docs cite those logs as
+``32bd021:notes/<path>``; read one with ``git show 32bd021:notes/<path>``.
 
 ### Output
 
@@ -156,7 +157,7 @@ conda run --no-capture-output -n xfsi_solver mpiexec -n 24 python -m xfsi_solver
 A restart can use a different number of MPI ranks than the original run. It drops QoI rows written after the
 checkpoint and appends new ones to the same file. VTX output goes to new ``*_from_t<time>.bp`` files, since VTX
 files can't be appended to. ``fsi2_harmonic_lagrange`` doesn't checkpoint its interface Lagrange multipliers, which
-restart from zero. See ``notes/checkpointing/implementation-log.md`` for design details.
+restart from zero. See ``32bd021:notes/checkpointing/implementation-log.md`` for design details.
 
 ## Reference data
 
@@ -200,4 +201,4 @@ mesh motion (``harmonic``, ``biharmonic``) and how they differ from each other:
 
 All of them define the pressure on a submesh of the fluid domain. Earlier versions of the solvers had a
 ``diffmesh`` suffix for this, which was dropped when it became the only variant
-(``notes/restricted-cleanup/implementation-log.md`` lists the old and new names).
+(``32bd021:notes/restricted-cleanup/implementation-log.md`` lists the old and new names).

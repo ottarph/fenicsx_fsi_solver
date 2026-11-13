@@ -895,7 +895,7 @@ def solve(
     #   and the time per step by 7%. A fourth gains no iterations.
     # - With three steps, omega = 0.4 takes 14% fewer iterations and 15% less time per step than
     #   0.5. 0.3 and 0.6 take more iterations, and 0.7 diverges.
-    # (notes/fsi3d/implementation-log.md)
+    # (32bd021:notes/fsi3d/implementation-log.md)
     sor_smoothing_options = {
         "fieldsplit_v_mg_levels_ksp_type": "richardson",
         "fieldsplit_v_mg_levels_ksp_max_it": 3,
@@ -968,7 +968,7 @@ def solve(
     # mixed K_m as a whole and 7 GB for one component. IdenticalBlocksPC solves for the three
     # components at once with MatMatSolve, which reads the factor once instead of three times.
     # The C0IP K_m is symmetric positive definite, so it is factorized by Cholesky
-    # (notes/c0ip-mesh-motion/implementation-log.md). The context is attached below.
+    # (32bd021:notes/c0ip-mesh-motion/implementation-log.md). The context is attached below.
     mesh_motion_factor_options = {
         "block_pc_type": "cholesky",
         "block_pc_factor_mat_solver_type": "mumps",

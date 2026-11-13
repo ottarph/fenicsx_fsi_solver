@@ -16,7 +16,7 @@
 # by GAMG; run with requires_v_sub_IS=True).
 #
 # MAX_QUADRATURE_DEGREE is 6 by default: down to that cap the QoIs did not change in the 7 printed
-# digits from the uncapped run, at 22% less time per step (notes/restricted-cleanup,
+# digits from the uncapped run, at 22% less time per step (32bd021:notes/restricted-cleanup,
 # "Quadrature cap in the twice simplified solver"). None runs without a cap.
 #
 # With INITIAL_STATE_RUN, a new run starts from the latest checkpoint of that earlier run, with
