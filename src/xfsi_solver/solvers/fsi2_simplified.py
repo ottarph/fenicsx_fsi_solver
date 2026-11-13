@@ -600,17 +600,18 @@ def solve(
 
         return residual
 
-    residual = A_T(v, v_old, u_f, u_f_old)
-    residual += A_I(v, u_f)
-    residual += A_P(p, u_f)
-    residual += theta * A_E_fluid(v, u_f)
-    residual += (1.0 - theta) * A_E_fluid(v_old, u_f_old)
+    residual = dt * A_T(v, v_old, u_f, u_f_old)
+    residual += dt * A_I(v, u_f)
+    residual += dt * A_P(p, u_f)
+    residual += dt * theta * A_E_fluid(v, u_f)
+    residual += dt * (1.0 - theta) * A_E_fluid(v_old, u_f_old)
 
     u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
-    residual += theta * A_E_solid(u_s_condensed)
-    residual += (1.0 - theta) * A_E_solid(u_s_old)
+    residual += dt * theta * A_E_solid(u_s_condensed)
+    residual += dt * (1.0 - theta) * A_E_solid(u_s_old)
 
     residual_blocks = ufl.extract_blocks(residual)
+
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
     residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
@@ -981,6 +982,11 @@ def main():
     initial_state_dir = args.initial_state_dir
     restart = args.restart
     # restart = True
+
+    # opts = PETSc.Options()
+    # opts["solver_snes_monitor"] = None
+    # opts["solver_ksp_converged_reason"] = None
+    # opts["solver_ksp_monitor"] = None
     solve(
         mesh_path=mesh_path,
         T=T,
@@ -1001,6 +1007,7 @@ def main():
         restart=restart,
         initial_state_dir=initial_state_dir,
     )
+    # opts.view()
 
     if MPI.COMM_WORLD.rank == 0:
         plot_run_qois(qoi_path, T)
