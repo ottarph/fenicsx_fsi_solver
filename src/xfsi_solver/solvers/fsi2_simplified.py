@@ -601,7 +601,7 @@ def solve(
         return residual
 
     residual = dt * A_T(v, v_old, u_f, u_f_old)
-    residual += dt * A_I(v, u_f)
+    residual += A_I(v, u_f)
     residual += dt * A_P(p, u_f)
     residual += dt * theta * A_E_fluid(v, u_f)
     residual += dt * (1.0 - theta) * A_E_fluid(v_old, u_f_old)
