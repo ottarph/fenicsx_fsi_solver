@@ -26,7 +26,9 @@ What is known about this code (results, decisions, runs, pitfalls) is kept in a 
 `inbox/` as well. The design logs that used to be in `notes/` are summarised there, and the originals can be read
 from git history (`git show 32bd021:notes/<path>`).
 
-- Don't add a `notes/` folder or other design logs to this repository.
+- A `notes/` folder may be used sparingly on a feature branch, as a working log for a long task. It must never be
+  merged into `restricted` or `main`: before the branch is merged, move its conclusions to the library's inbox (cite
+  the log by commit if needed) and delete the folder in a commit on the branch.
 - When you learn something a future session would need (a result with its numbers, a decision and why, an approach
   that failed, a pitfall, a run worth finding again), commit the code under test, then write one file per finding
   to `~/fsi-library/inbox/` as described in `~/fsi-library/inbox/README.md`.
