@@ -409,3 +409,35 @@ def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(outp
     initial = log["residual"][log["it"] == 0]
     initial_predicted = log_predicted["residual"][log_predicted["it"] == 0]
     assert np.all(initial_predicted <= initial * (1 + 1e-6))
+
+
+@pytest.mark.parametrize("solver_options", ["direct", "iterative"])
+def test_fsi2_simplified_held_dirichlet_values_give_the_lifted_qois(output_dirs, solver_options):
+    # During the ramp of the inflow, its values change in every step, so the initial guess departs from
+    # them, and the lifted and held Newton iterates differ in the first step of each.
+    dt_val = 0.0025
+    options = {"direct": DEFAULT_DIRECT_SOLVER_OPTIONS, "iterative": DEFAULT_ITERATIVE_SOLVER_OPTIONS}[solver_options]
+
+    def run(hold):
+        name = f"held_{solver_options}_{hold}"
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        stats = solve(
+            mesh_path=MESH,
+            T=4 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            solver_options=options,
+            hold_dirichlet_values=hold,
+        )
+        return np.loadtxt(qoi_path, ndmin=2), stats
+
+    lifted, lifted_stats = run(False)
+    held, held_stats = run(True)
+    assert held_stats["iterations_per_step"] == lifted_stats["iterations_per_step"]
+    # On this mesh the QoIs differ by up to 7e-6 of the largest value of their column with the
+    # iterative solver, and 3e-8 with the direct one (on 4 ranks): the Newton tolerance, well below 1e-4.
+    scale = np.abs(lifted[1:, 1:]).max(axis=0)
+    np.testing.assert_array_less(np.abs(held[1:, 1:] - lifted[1:, 1:]) / scale, 1e-4)
+    np.testing.assert_array_equal(held[:, 0], lifted[:, 0])
