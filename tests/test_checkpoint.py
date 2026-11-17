@@ -7,6 +7,7 @@ import pytest
 from mpi4py import MPI
 from restart_helpers import run_mpi_python
 
+from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.checkpoint import (
     Checkpointer,
     SnapshotWriter,
@@ -25,9 +26,21 @@ FSI_MESHES = {"fsi_tri": "data/meshes/fsi2/mesh_sec_coarse.xdmf", "fsi_quad": "d
 FSI3D_MESH = "data/meshes/fsi3d/mesh_sec_coarse.xdmf"
 FLUID, SOLID = 2, 1  # cell tags in the FSI meshes
 
+# A bp checkpoint holds the dofs, and reads them back exactly. A VTKHDF one holds the values at the
+# nodes, and the read evaluates them there, through the pull-back of the cell, which is a Newton
+# iteration on non-affine cells: on the quadrilaterals of fsi_quad, P2 values of size 1 come back
+# within 1.5e-14.
+ATOL = {"bp": 1e-14, "vtkhdf": 1e-13}
+SUFFIX = {"bp": ".bp", "vtkhdf": ".vtkhdf"}
+
 
 @pytest.fixture(params=["unit_square", *FSI_MESHES])
 def mesh_kind(request):
+    return request.param
+
+
+@pytest.fixture(params=["bp", "vtkhdf"])
+def file_format(request):
     return request.param
 
 
@@ -68,16 +81,16 @@ def _fill(functions, t):
             f.interpolate(lambda x, i=i: np.exp(x[0] * x[1]) * np.sin(5 * x[1] - t + i) + t)
 
 
-def _assert_state(functions, t):
+def _assert_state(functions, t, atol=1e-14):
     expected = [dolfinx.fem.Function(f.function_space) for f in functions]
     _fill(expected, t)
     for f, f_ex in zip(functions, expected, strict=True):
-        np.testing.assert_allclose(f.x.array, f_ex.x.array, atol=1e-14)
+        np.testing.assert_allclose(f.x.array, f_ex.x.array, atol=atol, err_msg=f.name)
 
 
-def _write_steps(mesh_kind, directory, steps, clear=True):
+def _write_steps(mesh_kind, directory, steps, clear=True, file_format="bp"):
     mesh, submeshes, functions = _setup(mesh_kind)
-    checkpointer = Checkpointer(directory, mesh, submeshes)
+    checkpointer = Checkpointer(directory, mesh, submeshes, file_format)
     if clear:
         checkpointer.clear()
     for step in steps:
@@ -85,71 +98,91 @@ def _write_steps(mesh_kind, directory, steps, clear=True):
         checkpointer.write(functions, (step + 1) * DT, step, DT)
 
 
-def _read(mesh_kind, directory):
+def _read(mesh_kind, directory, file_format="bp"):
     mesh, submeshes, functions = _setup(mesh_kind)
-    t, step = Checkpointer(directory, mesh, submeshes).read(functions, DT)
+    t, step = Checkpointer(directory, mesh, submeshes, file_format).read(functions, DT)
     return t, step, functions
 
 
-def test_reads_latest_checkpoint(mesh_kind, tmp_path):
-    _write_steps(mesh_kind, tmp_path, [0, 1, 2])
+def test_reads_latest_checkpoint(mesh_kind, file_format, tmp_path):
+    _write_steps(mesh_kind, tmp_path, [0, 1, 2], file_format=file_format)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [f"checkpoint_{i}{SUFFIX[file_format]}" for i in (0, 1)]
     t, step, functions = _read(mesh_kind, tmp_path)
     assert step == 2
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[file_format])
 
 
-def test_skips_incomplete_checkpoint(mesh_kind, tmp_path):
+def _write_incomplete(mesh_kind, path, functions, t, file_format):
+    """The file of a run killed while writing it: the mesh and only the first function, and no attributes."""
+    mesh, submeshes, _ = _setup(mesh_kind)
+    if file_format == "bp":
+        io4dolfinx.write_mesh_input_order(path, functions[0].function_space.mesh)
+        io4dolfinx.write_function_on_input_mesh(path, functions[0], time=t)
+    else:
+        layout = vtkhdf.PointDataLayout(functions[0].function_space.mesh)
+        layout.write_mesh(path, t)
+        layout.write_functions(path, functions[:1], t)
+
+
+def test_skips_incomplete_checkpoint(mesh_kind, file_format, tmp_path):
     """A run killed while writing a checkpoint restarts from the previous, complete one.
 
-    Checkpointer alternates between checkpoint_0.bp and checkpoint_1.bp, and
+    Checkpointer alternates between checkpoint_0 and checkpoint_1, and
     writes the attributes (t, step, dt, num_cells) last, as the marker that a
     file is complete. Here a crash halfway through a write is simulated by
     writing a file by hand without that marker.
     """
-    # Complete checkpoints of step 0 (in checkpoint_0.bp, t = DT) and step 1 (in checkpoint_1.bp, t = 2 DT)
-    _write_steps(mesh_kind, tmp_path, [0, 1])
+    # Complete checkpoints of step 0 (in checkpoint_0, t = DT) and step 1 (in checkpoint_1, t = 2 DT)
+    _write_steps(mesh_kind, tmp_path, [0, 1], file_format=file_format)
 
-    # The next write, of step 2 at t = 3 DT, goes to checkpoint_0.bp. Simulate a run killed during it:
+    # The next write, of step 2 at t = 3 DT, goes to checkpoint_0. Simulate a run killed during it:
     # writing the mesh recreates the file (so the step-0 checkpoint is gone), then only the first
     # function (u) is written before the "crash", and the attributes never are. The values are
     # those of t = 3 DT, so the state check below would fail if they were read back.
-    mesh, _, functions = _setup(mesh_kind)
+    _, _, functions = _setup(mesh_kind)
     _fill(functions, 3 * DT)
-    io4dolfinx.write_mesh_input_order(tmp_path / "checkpoint_0.bp", mesh)
-    io4dolfinx.write_function_on_input_mesh(tmp_path / "checkpoint_0.bp", functions[0], time=3 * DT)
+    _write_incomplete(mesh_kind, tmp_path / f"checkpoint_0{SUFFIX[file_format]}", functions, 3 * DT, file_format)
 
-    # A restart must ignore checkpoint_0.bp, which has no attributes, and read step 1 from
-    # checkpoint_1.bp: every function (also those on the submesh) with its values at t = 2 DT
-    t, step, functions = _read(mesh_kind, tmp_path)
+    # A restart must ignore checkpoint_0, which has no attributes, and read step 1 from
+    # checkpoint_1: every function (also those on the submesh) with its values at t = 2 DT
+    t, step, functions = _read(mesh_kind, tmp_path, file_format)
     assert step == 1
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[file_format])
 
 
-def test_clear_removes_checkpoints_of_earlier_run(mesh_kind, tmp_path):
-    _write_steps(mesh_kind, tmp_path, [0, 1, 2, 3])
-    _write_steps(mesh_kind, tmp_path, [0])
+def test_clear_removes_checkpoints_of_earlier_run(mesh_kind, file_format, tmp_path):
+    _write_steps(mesh_kind, tmp_path, [0, 1, 2, 3], file_format=file_format)
+    _write_steps(mesh_kind, tmp_path, [0], file_format=file_format)
     assert _read(mesh_kind, tmp_path)[1] == 0
 
 
-def test_rejects_different_dt(mesh_kind, tmp_path):
-    _write_steps(mesh_kind, tmp_path, [0])
+def test_clear_removes_checkpoints_of_the_other_format(tmp_path):
+    """A new run removes the checkpoints of an earlier run in either format, which could have later steps."""
+    _write_steps("unit_square", tmp_path, [0, 1, 2, 3], file_format="bp")
+    _write_steps("unit_square", tmp_path, [0], file_format="vtkhdf")
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["checkpoint_0.vtkhdf"]
+    assert _read("unit_square", tmp_path)[1] == 0
+
+
+def test_rejects_different_dt(mesh_kind, file_format, tmp_path):
+    _write_steps(mesh_kind, tmp_path, [0], file_format=file_format)
     mesh, submeshes, functions = _setup(mesh_kind)
     with pytest.raises(ValueError, match="dt"):
         Checkpointer(tmp_path, mesh, submeshes).read(functions, 2 * DT)
 
 
-def test_reads_any_dt_without_dt(mesh_kind, tmp_path):
+def test_reads_any_dt_without_dt(mesh_kind, file_format, tmp_path):
     """With dt=None, as for the initial state of a new run, a checkpoint with any time step is read."""
-    _write_steps(mesh_kind, tmp_path, [0, 1])
+    _write_steps(mesh_kind, tmp_path, [0, 1], file_format=file_format)
     mesh, submeshes, functions = _setup(mesh_kind)
     t, step = Checkpointer(tmp_path, mesh, submeshes).read(functions, None)
     assert step == 1
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[file_format])
 
 
-def test_latest_times(mesh_kind, tmp_path):
+def test_latest_times(mesh_kind, file_format, tmp_path):
     mesh, submeshes, functions = _setup(mesh_kind)
-    checkpointer = Checkpointer(tmp_path, mesh, submeshes)
+    checkpointer = Checkpointer(tmp_path, mesh, submeshes, file_format)
     _fill(functions, 0.5 + DT)
     checkpointer.write(functions, 0.5 + DT, 0, DT, 0.5)
     _fill(functions, 0.5 + 2 * DT)
@@ -174,6 +207,29 @@ def test_latest_times_without_stored_t0(mesh_kind, tmp_path):
     }
     io4dolfinx.write_attributes(path, mesh.comm, "checkpoint", attrs)
     assert Checkpointer(tmp_path, mesh).latest_times() == (DT, 0.0)
+
+
+@pytest.mark.parametrize("formats", [("bp", "vtkhdf"), ("vtkhdf", "bp")], ids=["bp_to_vtkhdf", "vtkhdf_to_bp"])
+def test_restart_switches_file_format(mesh_kind, formats, tmp_path):
+    """A run restarted from the checkpoints of a run that wrote the other format reads the latest one,
+    and writes its own next to them, which are then the latest, and the first one does not replace the
+    checkpoint read."""
+    first, second = formats
+    _write_steps(mesh_kind, tmp_path, [0, 1], file_format=first)
+    mesh, submeshes, functions = _setup(mesh_kind)
+    checkpointer = Checkpointer(tmp_path, mesh, submeshes, second)
+    t, step = checkpointer.read(functions, DT)
+    assert step == 1
+    _assert_state(functions, t, ATOL[first])
+
+    _fill(functions, 3 * DT)
+    checkpointer.write(functions, 3 * DT, 2, DT)
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        [f"checkpoint_0{SUFFIX[first]}", f"checkpoint_1{SUFFIX[first]}", f"checkpoint_0{SUFFIX[second]}"]
+    )
+    t, step, functions = _read(mesh_kind, tmp_path, first)
+    assert step == 2
+    _assert_state(functions, t, ATOL[second])
 
 
 @pytest.mark.parametrize(
@@ -218,8 +274,14 @@ def test_check_start_options_accepts_snapshots(tmp_path):
     check_start_options(False, None, None, tmp_path / "other/snapshots/t0.2000", tmp_path / "snapshots", (0.4,))
 
 
+def test_rejects_unknown_file_format(tmp_path):
+    mesh, submeshes, _ = _setup("unit_square")
+    with pytest.raises(ValueError, match="file_format"):
+        Checkpointer(tmp_path, mesh, submeshes, "xdmf")
+
+
 def _load_start_state(
-    directory=None, restart=False, checkpoint_every=None, initial_state_dir=None, t0=0.0, num_steps=5
+    directory=None, restart=False, checkpoint_every=None, initial_state_dir=None, t0=0.0, num_steps=5, file_format="bp"
 ):
     """load_start_state on the unit square, as a solver with output paths a.bp and b.bp calls it."""
     mesh, submeshes, functions = _setup("unit_square")
@@ -237,6 +299,7 @@ def _load_start_state(
         submeshes=submeshes,
         output_paths=["out/a.bp", "out/b.bp"],
         write_vtx=True,
+        file_format=file_format,
     )
     return state, functions
 
@@ -251,12 +314,15 @@ def test_load_start_state_from_rest_clears_earlier_checkpoints(tmp_path):
         assert not f.x.array.any()
 
 
-def test_load_start_state_restart_reads_latest_checkpoint(tmp_path):
-    _write_steps("unit_square", tmp_path, [0, 1])
-    (t, step, checkpointer, output_paths), functions = _load_start_state(tmp_path, restart=True, checkpoint_every=1)
+def test_load_start_state_restart_reads_latest_checkpoint(file_format, tmp_path):
+    _write_steps("unit_square", tmp_path, [0, 1], file_format=file_format)
+    (t, step, checkpointer, output_paths), functions = _load_start_state(
+        tmp_path, restart=True, checkpoint_every=1, file_format=file_format
+    )
     assert (t, step) == (2 * DT, 1)
+    assert checkpointer.file_format == file_format
     assert output_paths == [restart_output_path("out/a.bp", t), restart_output_path("out/b.bp", t)]
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[file_format])
     # The checkpoint read is kept: the next write goes to the other file
     checkpointer.write(functions, 3 * DT, 2, DT)
     assert len(list(tmp_path.iterdir())) == 2
@@ -289,17 +355,19 @@ def test_load_start_state_restart_message_lists_output_paths(tmp_path, capsys):
     a, b, c = (restart_output_path(f"out/{name}.bp", t) for name in "abc")
     if mesh.comm.rank == 0:
         assert capsys.readouterr().out == (
-            f"Restarting from {tmp_path} at t = {t:.4f} (step = 1), writing VTX output to {a}, {b} and {c}\n"
+            f"Restarting from {tmp_path} at t = {t:.4f} (step = 1), writing output to {a}, {b} and {c}\n"
         )
 
 
-def test_load_start_state_from_initial_state(tmp_path):
-    _write_steps("unit_square", tmp_path / "other", [0, 1])
+def test_load_start_state_from_initial_state(file_format, tmp_path):
+    """A run starts from the state in a checkpoint of either format, whatever format it writes."""
+    other = {"bp": "vtkhdf", "vtkhdf": "bp"}[file_format]
+    _write_steps("unit_square", tmp_path / "other", [0, 1], file_format=other)
     (t, step, checkpointer, output_paths), functions = _load_start_state(
-        initial_state_dir=tmp_path / "other", t0=2 * DT
+        initial_state_dir=tmp_path / "other", t0=2 * DT, file_format=file_format
     )
     assert (t, step, checkpointer, output_paths) == (2 * DT, 0, None, ["out/a.bp", "out/b.bp"])
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[other])
 
 
 def test_load_start_state_rejects_changed_initial_state(tmp_path):
@@ -314,17 +382,18 @@ def test_load_start_state_rejects_initial_state_with_no_step_left(tmp_path):
         _load_start_state(initial_state_dir=tmp_path, t0=2 * DT, num_steps=0)
 
 
-def test_read_leaves_missing_optional_function(mesh_kind, tmp_path):
+def test_read_leaves_missing_optional_function(mesh_kind, file_format, tmp_path):
     """A function named in optional that the checkpoint does not hold is left as it is, and one that it
     holds is read; a missing function that is not optional still fails the read."""
     mesh, submeshes, functions = _setup(mesh_kind)
     _fill(functions, DT)
-    Checkpointer(tmp_path, mesh, submeshes).write(functions[:-1], DT, 0, DT)  # without the last, on a submesh
+    # without the last function, which is on a submesh
+    Checkpointer(tmp_path, mesh, submeshes, file_format).write(functions[:-1], DT, 0, DT)
 
     mesh, submeshes, functions = _setup(mesh_kind)
     functions[-1].x.array[:] = 7.0
     t, _ = Checkpointer(tmp_path, mesh, submeshes).read(functions, DT, optional=[functions[0].name, functions[-1].name])
-    _assert_state(functions[:-1], t)
+    _assert_state(functions[:-1], t, ATOL[file_format])
     np.testing.assert_array_equal(functions[-1].x.array, 7.0)
 
     with pytest.raises(KeyError):
@@ -337,10 +406,10 @@ def test_missing_checkpoint(mesh_kind, tmp_path):
         Checkpointer(tmp_path, mesh, submeshes).read(functions, DT)
 
 
-def test_rejects_function_on_unlisted_submesh(mesh_kind, tmp_path):
+def test_rejects_function_on_unlisted_submesh(mesh_kind, file_format, tmp_path):
     mesh, _, functions = _setup(mesh_kind)
     with pytest.raises(ValueError, match="submeshes"):
-        Checkpointer(tmp_path, mesh).write(functions, DT, 0, DT)
+        Checkpointer(tmp_path, mesh, file_format=file_format).write(functions, DT, 0, DT)
 
 
 def test_rejects_facet_submesh(mesh_kind, tmp_path):
@@ -379,11 +448,20 @@ def test_snapshot_steps_skips_time_before_the_start():
         assert snapshot_steps([0.2, 0.6], 0.5, 0.1, 10) == {1: 0.6}
 
 
-def _snapshot_writer(mesh_kind, directory, times, step=0, restart=False, num_steps=10):
+def _snapshot_writer(mesh_kind, directory, times, step=0, restart=False, num_steps=10, file_format="bp"):
     """A SnapshotWriter of a run from t0 = 0 with ``num_steps`` steps of DT, and the functions it writes."""
     mesh, submeshes, functions = _setup(mesh_kind)
     writer = SnapshotWriter(
-        directory, mesh, submeshes, times, t0=0.0, dt=DT, num_steps=num_steps, step=step, restart=restart
+        directory,
+        mesh,
+        submeshes,
+        times,
+        t0=0.0,
+        dt=DT,
+        num_steps=num_steps,
+        step=step,
+        restart=restart,
+        file_format=file_format,
     )
     return writer, functions
 
@@ -399,21 +477,21 @@ def _write_snapshots(writer, functions, num_steps=10, first_step=0):
     return written
 
 
-def test_snapshots_are_checkpoint_directories(mesh_kind, tmp_path):
+def test_snapshots_are_checkpoint_directories(mesh_kind, file_format, tmp_path):
     """Each snapshot is a directory with one checkpoint, of the state at the closest step, which a run
     reads as from any checkpoint directory, also with another dt; the other snapshots are kept."""
-    writer, functions = _snapshot_writer(mesh_kind, tmp_path, [0.0, 0.33, 0.7])
+    writer, functions = _snapshot_writer(mesh_kind, tmp_path, [0.0, 0.33, 0.7], file_format=file_format)
     assert _write_snapshots(writer, functions) == [0, 3, 7]
     names = [snapshot_name(k * DT) for k in (0, 3, 7)]
     assert names == ["t0.0000", "t0.3000", "t0.7000"]
     assert sorted(path.name for path in tmp_path.iterdir()) == names
     mesh, submeshes, functions = _setup(mesh_kind)
     for k, name in zip((0, 3, 7), names, strict=True):
-        assert sorted(path.name for path in (tmp_path / name).iterdir()) == ["checkpoint_0.bp"]
+        assert sorted(path.name for path in (tmp_path / name).iterdir()) == [f"checkpoint_0{SUFFIX[file_format]}"]
         t, step = Checkpointer(tmp_path / name, mesh, submeshes).read(functions, None)
         assert step == k
         np.testing.assert_allclose(t, k * DT, rtol=1e-12)
-        _assert_state(functions, t)
+        _assert_state(functions, t, ATOL[file_format])
         assert Checkpointer(tmp_path / name, mesh, submeshes).latest_times()[1] == 0.0
 
 
@@ -430,25 +508,42 @@ def test_snapshot_writer_new_run_clears_only_snapshots(tmp_path):
     assert sorted(path.name for path in tmp_path.iterdir()) == ["notes.txt", "t0.3000", "t0.5000"]
 
 
-def test_snapshot_writer_restart_keeps_earlier_snapshots(tmp_path):
+def test_snapshot_writer_new_run_clears_snapshots_of_the_other_format(tmp_path):
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.5], file_format="bp")
+    _write_snapshots(writer, functions)
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.3], file_format="vtkhdf")
+    assert not any(tmp_path.iterdir())
+    _write_snapshots(writer, functions)
+    assert [path.name for path in (tmp_path / "t0.3000").iterdir()] == ["checkpoint_0.vtkhdf"]
+
+
+@pytest.mark.parametrize("formats", [("bp", "bp"), ("bp", "vtkhdf")], ids=["bp", "bp_then_vtkhdf"])
+def test_snapshot_writer_restart_keeps_earlier_snapshots(tmp_path, formats):
     """A run restarted after step 4 keeps the snapshot of step 2 and writes those of steps 5 and 8 again,
     replacing the one of step 5 that the stopped run wrote after its last restart checkpoint. A requested
-    snapshot at step 3, which the stopped run did not write, cannot be written, and is warned about."""
-    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.5])
+    snapshot at step 3, which the stopped run did not write, cannot be written, and is warned about. The
+    snapshots of the stopped run count also if it wrote the other format."""
+    first, second = formats
+    writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.5], file_format=first)
     _write_snapshots(writer, functions, num_steps=6)
-    _fill(functions, 99.0)
-    writer.write(functions, 0.5, 5, DT, 0.0)  # a state that the restarted run must replace
+    if first == second:
+        _fill(functions, 99.0)
+        writer.write(functions, 0.5, 5, DT, 0.0)  # a state that the restarted run must replace
 
     with pytest.warns(UserWarning, match=r"t = \[0.3\].*restart at step 4"):
-        writer, functions = _snapshot_writer("unit_square", tmp_path, [0.2, 0.3, 0.5, 0.8], step=4, restart=True)
+        writer, functions = _snapshot_writer(
+            "unit_square", tmp_path, [0.2, 0.3, 0.5, 0.8], step=4, restart=True, file_format=second
+        )
     assert not writer.due(2) and not writer.due(3)
     assert _write_snapshots(writer, functions, first_step=5) == [5, 8]
 
     mesh, submeshes, functions = _setup("unit_square")
-    for k in (2, 5, 8):
-        t, step = Checkpointer(tmp_path / snapshot_name(k * DT), mesh, submeshes).read(functions, DT)
+    for k, file_format in [(2, first), (5, second), (8, second)]:
+        directory = tmp_path / snapshot_name(k * DT)
+        assert [path.name for path in directory.iterdir()] == [f"checkpoint_0{SUFFIX[file_format]}"]
+        t, step = Checkpointer(directory, mesh, submeshes).read(functions, DT)
         assert step == k
-        _assert_state(functions, t)
+        _assert_state(functions, t, ATOL[file_format])
 
 
 def test_snapshot_writer_prints_its_snapshots(tmp_path, capsys):
@@ -473,19 +568,19 @@ def test_snapshot_writer_without_directory_writes_nothing(tmp_path):
 _MPI_SCRIPT = """
 import sys
 sys.path.insert(0, {tests!r})
-from test_checkpoint import Checkpointer, DT, _assert_state, _fill, _setup
+from test_checkpoint import ATOL, Checkpointer, DT, _assert_state, _fill, _setup
 mesh, submeshes, functions = _setup({mesh_kind!r})
-checkpointer = Checkpointer({directory!r}, mesh, submeshes)
+checkpointer = Checkpointer({directory!r}, mesh, submeshes, {file_format!r})
 t, step = checkpointer.read(functions, DT)
 assert step == {expected_step}, step
-_assert_state(functions, t)
+_assert_state(functions, t, ATOL[{file_format!r}])
 for step in {steps!r}:
     _fill(functions, (step + 1) * DT)
     checkpointer.write(functions, (step + 1) * DT, step, DT)
 """
 
 
-def test_restart_on_different_number_of_ranks(mesh_kind, tmp_path):
+def test_restart_on_different_number_of_ranks(mesh_kind, file_format, tmp_path):
     """Restart a run repeatedly on other numbers of ranks: 1 -> 2 -> 3 -> 1.
 
     Each run reads the latest checkpoint, checks every field exactly, and
@@ -493,7 +588,7 @@ def test_restart_on_different_number_of_ranks(mesh_kind, tmp_path):
     After the 2-rank run, both checkpoint files were written on 2 ranks, so
     the 3-rank run also reads a checkpoint partitioned differently from its own.
     """
-    _write_steps(mesh_kind, tmp_path, [0, 1])
+    _write_steps(mesh_kind, tmp_path, [0, 1], file_format=file_format)
     last_step = 1
     for ranks in [2, 3]:
         steps = [last_step + 1, last_step + 2]
@@ -501,25 +596,26 @@ def test_restart_on_different_number_of_ranks(mesh_kind, tmp_path):
             tests=str(Path(__file__).parent),
             mesh_kind=mesh_kind,
             directory=str(tmp_path),
+            file_format=file_format,
             expected_step=last_step,
             steps=steps,
         )
         run_mpi_python(script, ranks)
         last_step = steps[-1]
-    t, step, functions = _read(mesh_kind, tmp_path)
+    t, step, functions = _read(mesh_kind, tmp_path, file_format)
     assert step == last_step == 5
-    _assert_state(functions, t)
+    _assert_state(functions, t, ATOL[file_format])
 
 
 _MPI_SUBMESH_OWNERS_SCRIPT = """
 import sys
 sys.path.insert(0, {tests!r})
 from test_checkpoint import check_submesh_round_trip
-check_submesh_round_trip({directory!r})
+check_submesh_round_trip({directory!r}, {file_format!r})
 """
 
 
-def check_submesh_round_trip(directory):
+def check_submesh_round_trip(directory, file_format="bp"):
     """Write p (P1, fluid) and v_s (P2 vector, solid) on the 3d FSI mesh twice and read them back exactly.
 
     Runs with both the solvers' ghost mode and without ghost cells, where more owners of interface dofs hold
@@ -538,7 +634,7 @@ def check_submesh_round_trip(directory):
             "v_s": dolfinx.fem.functionspace(solid_mesh, ("Lagrange", 2, (3,))),
         }
         written = [dolfinx.fem.Function(V, name=name) for name, V in spaces.items()]
-        checkpointer = Checkpointer(directory, mesh, submeshes)
+        checkpointer = Checkpointer(directory, mesh, submeshes, file_format)
         checkpointer.clear()
         for step, c in enumerate([1.0, 5.0]):
             written[0].interpolate(lambda x, c=c: c + x[0] + 2 * x[1] + 3 * x[2])
@@ -548,11 +644,13 @@ def check_submesh_round_trip(directory):
         read = [dolfinx.fem.Function(V, name=name) for name, V in spaces.items()]
         Checkpointer(directory, mesh, submeshes).read(read, DT)
         for f, f_written in zip(read, written, strict=True):
-            np.testing.assert_allclose(f.x.array, f_written.x.array, atol=1e-13, err_msg=f"{f.name}, {ghost_mode}")
+            np.testing.assert_allclose(
+                f.x.array, f_written.x.array, atol=10 * ATOL[file_format], err_msg=f"{f.name}, {ghost_mode}"
+            )
 
 
 @pytest.mark.parametrize("ranks", [1, 2, 3])
-def test_submesh_dofs_owned_by_ranks_without_submesh_cells(ranks, tmp_path):
+def test_submesh_dofs_owned_by_ranks_without_submesh_cells(ranks, file_format, tmp_path):
     """Functions on submeshes round-trip exactly also where the owner of a dof on the boundary of the
     submesh holds no submesh cell with that dof, so only other ranks can give its value.
 
@@ -560,7 +658,9 @@ def test_submesh_dofs_owned_by_ranks_without_submesh_cells(ranks, tmp_path):
     shared_facet ghost mode, and of p and v_s on 2 ranks without ghost cells.
     """
     if ranks == 1:
-        check_submesh_round_trip(tmp_path)
+        check_submesh_round_trip(tmp_path, file_format)
         return
-    script = _MPI_SUBMESH_OWNERS_SCRIPT.format(tests=str(Path(__file__).parent), directory=str(tmp_path))
+    script = _MPI_SUBMESH_OWNERS_SCRIPT.format(
+        tests=str(Path(__file__).parent), directory=str(tmp_path), file_format=file_format
+    )
     run_mpi_python(script, ranks, timeout=300)
