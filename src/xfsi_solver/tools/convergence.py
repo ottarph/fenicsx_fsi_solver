@@ -40,12 +40,18 @@ class KSPConvCheck:
     the first solve, so each KSP attaches to its sub-KSPs when it solves. The KSPs
     inside AMG preconditioners (level smoothers) are not checked: they run a fixed
     number of iterations.
+
+    A KSP has one post-solve hook, which this class takes. ``post_solve``, if given, is called
+    with the same arguments (ksp, b, x) at the end of each solve of ``ksp`` itself, after the
+    solve is recorded, in place of a post-solve hook of its own.
     """
 
-    def __init__(self, ksp: PETSc.KSP):
+    def __init__(self, ksp: PETSc.KSP, post_solve=None):
         self.failures: list[tuple[str, int]] = []  # (options prefix, converged reason) since the last clear()
         self.iterations: dict[str, list[int]] = {}  # options prefix -> iterations of each solve since the last clear()
         self._attached: set[int] = set()
+        self._top = ksp.handle
+        self._post_solve = post_solve
         self._attach(ksp)
 
     def clear(self) -> None:
@@ -72,6 +78,8 @@ class KSPConvCheck:
         reason = ksp.getConvergedReason()
         if reason < 0:
             self.failures.append((ksp.getOptionsPrefix(), reason))
+        if self._post_solve is not None and ksp.handle == self._top:
+            self._post_solve(ksp, b, x)
 
 
 def check_converged(
