@@ -21,6 +21,9 @@ by cell. The owner of a node on the boundary of a submesh need not hold a submes
 cells may touch the submesh only at a vertex or an edge), so the ranks that do add their values into
 the owner, which divides by their number.
 
+Vectors of 2 components, on 2D meshes, are written with a third, zero component, as VTK takes vectors
+with 3 components (otherwise ParaView's Warp By Vector offers none), and read back without it.
+
 With the mesh go the cell tags (0 where a cell has none) and the rank that owns each cell, as cell
 data. A function need not be written at every time: at a time where it is not, the file, and so
 ParaView and the reading here, gives its value from the last time it was written, without warning;
@@ -186,9 +189,30 @@ class PointDataLayout:
                 g.x.scatter_reverse(dolfinx.la.InsertMode.add)
                 g.x.array[: len(rank_count)] /= rank_count
             g.x.scatter_forward()
-            io4dolfinx.write_point_data(
-                path, g, time=float(t), mode=io4dolfinx.FileMode.append, backend=BACKEND, backend_args=_BACKEND_ARGS
-            )
+            self._write_point_data(path, g, t)
+
+    def _write_point_data(self, path: Path, g: dolfinx.fem.Function, t: float) -> None:
+        """Write the owned values of ``g``, on the output mesh's nodes, as point data at time ``t``.
+
+        As ``io4dolfinx.write_point_data``, except that a vector of 2 components is written with a third,
+        zero one: VTK takes vectors with 3 components, so ParaView's Warp By Vector, Glyph and the like
+        offer no array of 2 components, as dolfinx's VTX writer pads them too.
+        """
+        imap = g.function_space.dofmap.index_map
+        bs = g.function_space.dofmap.index_map_bs
+        values = g.x.array.reshape(-1, bs)[: imap.size_local]
+        if bs == 2:
+            values = np.hstack([values, np.zeros((len(values), 1), dtype=values.dtype)])
+        data = io4dolfinx.structures.ArrayData(
+            name=g.name,
+            values=np.ascontiguousarray(values),
+            global_shape=(imap.size_global, values.shape[1]),
+            local_range=(int(imap.local_range[0]), int(imap.local_range[1])),
+            type="Point",
+        )
+        io4dolfinx.get_backend(BACKEND).write_data(
+            path, data, self.mesh.comm, float(t), io4dolfinx.FileMode.append, _BACKEND_ARGS
+        )
 
 
 class VTKHDFWriter:
@@ -298,6 +322,15 @@ def read_functions(
                 raise ValueError(f"Function {f.name!r} is neither on the mesh nor on one of its listed submeshes")
             cells = cell_maps[f_mesh].sub_topology_to_topology(cells, inverse=False)
         g = io4dolfinx.read_point_data(path, f.name, file_mesh, time=float(t), backend=BACKEND)
+        num_components = int(np.prod(f.ufl_shape))
+        stored_components = g.function_space.dofmap.index_map_bs
+        if stored_components != num_components:
+            if (num_components, stored_components) != (2, 3):
+                raise ValueError(f"{path} holds {f.name!r} with {stored_components} components, not {num_components}")
+            # A vector of 2 components, written with a third, zero one for VTK
+            g2 = dolfinx.fem.Function(io4dolfinx.readers.create_geometry_function_space(file_mesh, 2), name=f.name)
+            g2.x.array.reshape(-1, 2)[:] = g.x.array.reshape(-1, 3)[:, :2]
+            g = g2
         io4dolfinx.transfer_submesh_function(g, f, original_cell_index[cells])
 
 

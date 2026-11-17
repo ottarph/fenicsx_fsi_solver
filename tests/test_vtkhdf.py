@@ -60,7 +60,66 @@ def test_writer_stores_each_cell_and_node_once(tmp_path):
             assert grid["NumberOfPoints"][0] == len(grid["Points"]) == num_nodes
             points = grid["Points"][:]
             assert len(np.unique(points.round(12), axis=0)) == num_nodes
-            assert grid["PointData/u"].shape == (num_nodes, 2)
+            assert grid["PointData/u"].shape == (num_nodes, 3)  # padded for VTK
+
+
+def test_2d_vectors_are_written_with_3_components_for_vtk(tmp_path):
+    """VTK takes vectors with 3 components, so a vector on a 2D mesh is written with a third, zero one,
+    and VTK's vtkWarpVector, which ParaView's Warp By Vector runs, moves each node by it."""
+    vtk = pytest.importorskip("vtk")
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    path = tmp_path / "out.vtkhdf"
+    mesh, submeshes, functions = _setup("fsi_tri")
+    writer = vtkhdf.VTKHDFWriter(path, mesh, functions, submeshes)
+    _fill(functions, 0.5)
+    writer.write(0.5)
+    if mesh.comm.rank != 0:
+        return
+    with h5py.File(path, "r") as h5file:
+        point_data = h5file["VTKHDF/mesh/PointData"]
+        assert point_data["u"].shape[1] == point_data["v_s"].shape[1] == 3
+        assert point_data["p"].shape[1] == 1
+        assert not point_data["u"][:, 2].any()
+
+    reader = vtk.vtkHDFReader()
+    reader.SetFileName(str(path))
+    reader.Update()
+    blocks = reader.GetOutputDataObject(0).NewIterator()
+    blocks.InitTraversal()
+    grid = blocks.GetCurrentDataObject()
+    warp = vtk.vtkWarpVector()
+    warp.SetInputData(grid)
+    warp.SetInputArrayToProcess(0, 0, 0, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS, "u")
+    warp.SetScaleFactor(1.0)
+    warp.Update()
+    points = vtk_to_numpy(grid.GetPoints().GetData())
+    warped = vtk_to_numpy(warp.GetOutput().GetPoints().GetData())
+    u = vtk_to_numpy(grid.GetPointData().GetArray("u"))
+    assert np.abs(u).max() > 0.1
+    np.testing.assert_allclose(warped, points + u, atol=1e-12)
+
+
+def test_reads_vectors_written_with_2_components(tmp_path):
+    """Files written before vectors were padded to 3 components hold 2D vectors with 2, as
+    io4dolfinx.write_point_data writes them; they read back as well."""
+    path = tmp_path / "out.vtkhdf"
+    mesh, submeshes, functions = _setup("fsi_tri")
+    _fill(functions, 0.5)
+    layout = vtkhdf.PointDataLayout(mesh, submeshes)
+    layout.write_mesh(path, 0.5)
+    layout.write_functions(path, functions[1:], 0.5)
+    u = functions[0]
+    g = layout._out_function(u)
+    cells = np.arange(mesh.topology.index_map(2).size_local + mesh.topology.index_map(2).num_ghosts, dtype=np.int32)
+    g.interpolate(u, cells0=cells, cells1=cells)
+    io4dolfinx.write_point_data(
+        path, g, time=0.5, mode=io4dolfinx.FileMode.append, backend_args=None, backend=vtkhdf.BACKEND
+    )
+
+    mesh, submeshes, functions = _setup("fsi_tri")
+    vtkhdf.read_functions(path, functions, 0.5, mesh, submeshes)
+    _assert_state(functions, 0.5, ATOL["vtkhdf"])
 
 
 @pytest.mark.parametrize("mesh_kind", FSI_MESHES)
