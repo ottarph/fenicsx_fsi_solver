@@ -923,7 +923,7 @@ def solve(
         if lifting_hooks is not None:
             # Zero the update on the Dirichlet dofs before v is updated with it: the line-search pre-check
             # that does so comes after this hook.
-            lifting_hooks["setLineSearchPreCheck"](solver.getSolution(), x)
+            lifting_hooks["set_dirichlet_update"](solver.getSolution(), x)
         # The owned v rows come first in x, or are its first block if x is a nest vector.
         x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
         v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
@@ -937,15 +937,15 @@ def solve(
 
     lifting_hooks = dirichlet_lifting.skip_dirichlet_lifting(problem) if skip_dirichlet_lifting else None
     if lifting_hooks is not None:
-        solver.setFunction(lifting_hooks["setFunction"], problem.b)
-        solver.setLineSearchPreCheck(lifting_hooks["setLineSearchPreCheck"])
+        solver.setFunction(lifting_hooks["residual"], problem.b)
+        solver.setLineSearchPreCheck(lifting_hooks["set_dirichlet_update"])
 
     def initial_guess(snes: PETSc.SNES, x: PETSc.Vec) -> None:
         """SNES calls this once per solve, before it evaluates the residual of the initial guess x, when v
         is still v_old."""
         if lifting_hooks is not None:
             # The Dirichlet values of v of the new step, in x.
-            lifting_hooks["setInitialGuess"](snes, x)
+            lifting_hooks["set_dirichlet_values"](snes, x)
         if predict_displacements:
             # The displacements become u_s_old + dt * v_old, and the same on the interface.
             update_displacements()

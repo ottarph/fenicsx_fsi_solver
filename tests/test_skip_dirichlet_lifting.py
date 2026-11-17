@@ -125,9 +125,9 @@ KINDS = ["single", "block", "nest"]
 
 def set_hooks(problem: dolfinx.fem.petsc.NonlinearProblem, hooks: dict) -> None:
     """Set the hooks of ``skip_dirichlet_lifting`` on the SNES of ``problem``."""
-    problem.solver.setFunction(hooks["setFunction"], problem.b)
-    problem.solver.setInitialGuess(hooks["setInitialGuess"])
-    problem.solver.setLineSearchPreCheck(hooks["setLineSearchPreCheck"])
+    problem.solver.setFunction(hooks["residual"], problem.b)
+    problem.solver.setInitialGuess(hooks["set_dirichlet_values"])
+    problem.solver.setLineSearchPreCheck(hooks["set_dirichlet_update"])
 
 
 def random_state(setup: Setup, seed: int, with_dirichlet_values: bool) -> list[np.ndarray]:
@@ -176,7 +176,7 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
 
     def initial_guess(snes, x):
         # An initial-guess hook of the caller's own, which calls the one of skip_dirichlet_lifting.
-        hooks["setInitialGuess"](snes, x)
+        hooks["set_dirichlet_values"](snes, x)
         guesses.append(unlifted.departure(x))
 
     unlifted.problem.solver.setInitialGuess(initial_guess)
@@ -201,9 +201,9 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_zero_boundary_update_makes_the_next_iterate_hold_g(kind):
+def test_set_dirichlet_update_makes_the_next_iterate_hold_g(kind):
     setup = Setup(kind, f"hold_{kind}_")
-    zero_boundary_update = skip_dirichlet_lifting(setup.problem)["setLineSearchPreCheck"]
+    set_dirichlet_update = skip_dirichlet_lifting(setup.problem)["set_dirichlet_update"]
     x = setup.problem.x
     random_state(setup, 3, with_dirichlet_values=False)
     dolfinx.fem.petsc.assign(setup.unknowns, x)
@@ -213,7 +213,7 @@ def test_zero_boundary_update_makes_the_next_iterate_hold_g(kind):
     y = x.duplicate()
     for y_sub in y.getNestSubVecs() if kind == "nest" else [y]:
         y_sub.setRandom()
-    zero_boundary_update(x, y)
+    set_dirichlet_update(x, y)
     x_next = x.copy()
     x_next.axpy(-1.0, y)
     # x - (x - g) is g up to the rounding of the two subtractions.
@@ -222,7 +222,7 @@ def test_zero_boundary_update_makes_the_next_iterate_hold_g(kind):
     # Where x holds g, the update is exactly zero on the Dirichlet dofs, and so the next iterate is g.
     dolfinx.fem.petsc.set_bc(x, setup.bcs_by_block() if kind != "single" else setup.bcs)
     assert setup.departure(x) == 0.0
-    zero_boundary_update(x, y)
+    set_dirichlet_update(x, y)
     x.axpy(-1.0, y)
     assert setup.departure(x) == 0.0
 
