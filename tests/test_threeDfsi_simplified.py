@@ -92,6 +92,37 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
 
 
 @pytest.mark.slow
+def test_threeDfsi_simplified_held_dirichlet_values_give_the_lifted_qois(output_dirs):
+    # With the iterative solver, a nest Jacobian whose velocity block gets one GAMG V-cycle, which need
+    # not leave the update zero on the Dirichlet dofs. The inflow changes in every step, so the lifted and
+    # held iterates differ in the first Newton step of each, and the QoIs agree to the Newton tolerance.
+    dt_val = 0.004
+
+    def run(name, hold):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        stats = solve(
+            mesh_path=MESH,
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.bp"),
+            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            qoi_path=str(qoi_path),
+            solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS,
+            hold_dirichlet_values=hold,
+        )
+        return np.loadtxt(qoi_path, ndmin=2), stats
+
+    lifted, lifted_stats = run("lifted", False)
+    held, held_stats = run("held", True)
+    assert held.shape == lifted.shape == (3, 6)
+    assert held_stats["iterations_per_step"] == lifted_stats["iterations_per_step"]
+    for column in range(1, lifted.shape[1]):
+        np.testing.assert_allclose(
+            held[:, column], lifted[:, column], rtol=0, atol=1e-4 * np.abs(lifted[:, column]).max()
+        )
+
+
+@pytest.mark.slow
 def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
     check_start_from_initial_state(
         solve,
