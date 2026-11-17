@@ -11,8 +11,8 @@ costs about as much as assembling the Jacobian on those cells, in every residual
 is what makes a Newton step from an iterate with x != g on those dofs move them to g consistently with the
 other dofs. Where x = g, it is exactly zero.
 
-``skip_dirichlet_lifting`` keeps x = g on the Dirichlet dofs of every iterate, so that the residual
-needs no lifting:
+The three hooks of the SNES that ``skip_dirichlet_lifting`` returns keep x = g on the Dirichlet dofs of
+every iterate, so that the residual needs no lifting:
 
 - an initial-guess hook of the SNES sets the Dirichlet values in the initial guess of every solve, after
   their values have been updated, for example to the inflow of a new time step;
@@ -29,9 +29,10 @@ to the tolerance of the Newton solve. The converged solution is the same, since 
 where x = g, and the Dirichlet rows of the residual still hold x - g, so a convergence test on the
 residual norm sees any departure from g.
 
-Updating the solution, or anything computed from it, in the Newton update before the line search, as
-a post-solve hook of the KSP may do, needs the update zeroed on the Dirichlet dofs first: call there the
-function that ``skip_dirichlet_lifting`` returns.
+The caller sets the hooks, and combines them with any of its own: an initial-guess hook of its own calls
+the one here before anything that should see g in the guess, and updating the solution, or anything
+computed from it, in the Newton update before the line search, as a post-solve hook of the KSP may do,
+needs the pre-check called there first.
 """
 
 from collections.abc import Callable, Sequence
@@ -75,28 +76,33 @@ def assemble_residual_without_lifting(
     _ghost_update_forward(b)
 
 
-def skip_dirichlet_lifting(problem: dolfinx.fem.petsc.NonlinearProblem) -> Callable[[PETSc.Vec, PETSc.Vec], None]:
-    """Keep the Dirichlet values of ``problem`` exactly in every Newton iterate, and assemble its residual
-    without lifting them (see the module docstring), by setting hooks on ``problem.solver``.
+def skip_dirichlet_lifting(problem: dolfinx.fem.petsc.NonlinearProblem) -> dict[str, Callable]:
+    """The hooks of the SNES of ``problem`` that keep its Dirichlet values exactly in every Newton iterate
+    and assemble its residual without lifting them (see the module docstring), by the name of the method
+    of ``PETSc.SNES`` that sets each. Nothing is set here; the caller sets all three:
 
-    Call it after any initial-guess hook has been set on ``problem.solver``: the new hook calls that one
-    after setting the Dirichlet values in the initial guess, and a hook set later replaces the new one.
-    The residual of ``problem`` must still be dolfinx's ``assemble_residual``; the replacement takes the
-    same arguments, so a wrapper set later, which calls the function and arguments of ``getFunction()``,
-    keeps working. The line-search pre-check of the SNES is taken.
+    - ``"setFunction"``: the residual, ``(snes, x, b)``, to be set with the residual vector of the problem,
+      ``snes.setFunction(hooks["setFunction"], problem.b)``. It is dolfinx's ``assemble_residual``, with
+      the arguments that ``problem`` set on the SNES, without the lifting; a wrapper of it, which calls it
+      with these, keeps working.
+    - ``"setInitialGuess"``: ``(snes, x)``, which sets the Dirichlet values g in the initial guess. A caller
+      with an initial-guess hook of its own calls this from that hook, before anything that should see g.
+    - ``"setLineSearchPreCheck"``: ``(x, y)``, which sets the Newton update ``y`` at the iterate ``x`` to
+      x - g on the owned Dirichlet dofs, so that x - y holds g there: exactly where x holds g already, as
+      every iterate does, since y is then zero there, and otherwise up to rounding. A caller that uses the
+      update before the line search, in a post-solve hook of the KSP, calls this there first.
 
-    Returns ``zero_boundary_update(x, y)``, the line-search pre-check, which sets the Newton update ``y``
-    at the iterate ``x`` to x - g on the owned Dirichlet dofs, so that x - y holds g there: exactly where
-    x holds g already, as every iterate does, since y is then zero there, and otherwise up to rounding.
-    Only code that uses the update before the line search needs it.
+    Setting only some of them breaks the solve: without the initial guess or the pre-check, the iterates
+    can depart from g, and the residual without lifting is then not that of Newton's method.
+
+    The residual of ``problem`` must still be dolfinx's ``assemble_residual``, whose arguments are taken
+    from the SNES.
     """
-    snes = problem.solver
-    b, (function, args, kargs) = snes.getFunction()
+    b, (function, args, kargs) = problem.solver.getFunction()
     if function is not dolfinx.fem.petsc.assemble_residual:
         raise ValueError(f"The residual of the problem must be dolfinx's assemble_residual, not {function}")
     bcs = _bcs_for(kargs["residual"], kargs["bcs"])
     blocks = kargs.get("_blocks")
-    previous_initial_guess = snes.getInitialGuess()
 
     def with_blocks(vec: PETSc.Vec) -> PETSc.Vec:
         # The block offsets that set_bc needs for a block vector. The work vectors of the SNES,
@@ -105,16 +111,17 @@ def skip_dirichlet_lifting(problem: dolfinx.fem.petsc.NonlinearProblem) -> Calla
             vec.setAttr("_blocks", blocks)
         return vec
 
+    def residual(snes: PETSc.SNES, x: PETSc.Vec, b: PETSc.Vec) -> None:
+        assemble_residual_without_lifting(snes, x, b, *args, **kargs)
+
+    def set_dirichlet_values(snes: PETSc.SNES, x: PETSc.Vec) -> None:
+        dolfinx.fem.petsc.set_bc(with_blocks(x), bcs)
+
     def zero_boundary_update(x: PETSc.Vec, y: PETSc.Vec) -> None:
         dolfinx.fem.petsc.set_bc(with_blocks(y), bcs, x0=x, alpha=-1.0)
 
-    def initial_guess(snes: PETSc.SNES, x: PETSc.Vec) -> None:
-        dolfinx.fem.petsc.set_bc(with_blocks(x), bcs)
-        if previous_initial_guess is not None:
-            previous_function, previous_args, previous_kargs = previous_initial_guess
-            previous_function(snes, x, *previous_args, **previous_kargs)
-
-    snes.setFunction(assemble_residual_without_lifting, b, args=args, kargs=kargs)
-    snes.setInitialGuess(initial_guess)
-    snes.setLineSearchPreCheck(zero_boundary_update)
-    return zero_boundary_update
+    return {
+        "setFunction": residual,
+        "setInitialGuess": set_dirichlet_values,
+        "setLineSearchPreCheck": zero_boundary_update,
+    }

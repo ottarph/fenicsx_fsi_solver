@@ -920,10 +920,10 @@ def solve(
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
         where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
         sets the next iterate to v - Y and evaluates the residual there."""
-        if zero_boundary_update is not None:
+        if lifting_hooks is not None:
             # Zero the update on the Dirichlet dofs before v is updated with it: the line-search pre-check
             # that does so comes after this hook.
-            zero_boundary_update(solver.getSolution(), x)
+            lifting_hooks["setLineSearchPreCheck"](solver.getSolution(), x)
         # The owned v rows come first in x, or are its first block if x is a nest vector.
         x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
         v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
@@ -935,14 +935,23 @@ def solve(
     # check_converged reports.
     solver.getKSP().setPostSolve(post_velocity_solve_update)
 
-    if predict_displacements:
-        # SNES calls this once per solve, before it evaluates the residual of the initial guess, when v is
-        # still v_old, so the displacements become u_s_old + dt * v_old and the same on the interface.
-        solver.setInitialGuess(lambda snes, x: update_displacements())
+    lifting_hooks = dirichlet_lifting.skip_dirichlet_lifting(problem) if skip_dirichlet_lifting else None
+    if lifting_hooks is not None:
+        solver.setFunction(lifting_hooks["setFunction"], problem.b)
+        solver.setLineSearchPreCheck(lifting_hooks["setLineSearchPreCheck"])
 
-    # Set after the initial-guess hook of the prediction, which the new hook calls after setting the
-    # Dirichlet values in the guess.
-    zero_boundary_update = dirichlet_lifting.skip_dirichlet_lifting(problem) if skip_dirichlet_lifting else None
+    def initial_guess(snes: PETSc.SNES, x: PETSc.Vec) -> None:
+        """SNES calls this once per solve, before it evaluates the residual of the initial guess x, when v
+        is still v_old."""
+        if lifting_hooks is not None:
+            # The Dirichlet values of v of the new step, in x.
+            lifting_hooks["setInitialGuess"](snes, x)
+        if predict_displacements:
+            # The displacements become u_s_old + dt * v_old, and the same on the interface.
+            update_displacements()
+
+    if lifting_hooks is not None or predict_displacements:
+        solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val, header=QOI_HEADER_3D)

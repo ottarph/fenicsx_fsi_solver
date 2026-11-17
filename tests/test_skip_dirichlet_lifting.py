@@ -123,6 +123,13 @@ class Setup:
 KINDS = ["single", "block", "nest"]
 
 
+def set_hooks(problem: dolfinx.fem.petsc.NonlinearProblem, hooks: dict) -> None:
+    """Set the hooks of ``skip_dirichlet_lifting`` on the SNES of ``problem``."""
+    problem.solver.setFunction(hooks["setFunction"], problem.b)
+    problem.solver.setInitialGuess(hooks["setInitialGuess"])
+    problem.solver.setLineSearchPreCheck(hooks["setLineSearchPreCheck"])
+
+
 def random_state(setup: Setup, seed: int, with_dirichlet_values: bool) -> list[np.ndarray]:
     rng = np.random.default_rng(seed)
     values = []
@@ -142,7 +149,7 @@ def random_state(setup: Setup, seed: int, with_dirichlet_values: bool) -> list[n
 def test_residual_without_lifting_equals_dolfinx_where_x_holds_g(kind):
     lifted = Setup(kind, f"lifted_{kind}_")
     unlifted = Setup(kind, f"unlifted_{kind}_")
-    skip_dirichlet_lifting(unlifted.problem)
+    set_hooks(unlifted.problem, skip_dirichlet_lifting(unlifted.problem))
 
     held = random_state(lifted, 1, with_dirichlet_values=True)
     norm, b_lifted = lifted.residual(held)
@@ -164,9 +171,15 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
     lifted = Setup(kind, f"lifted_solve_{kind}_")
     unlifted = Setup(kind, f"unlifted_solve_{kind}_")
     guesses = []
-    # An initial-guess hook set before, which the new hook calls after setting g in the guess.
-    unlifted.problem.solver.setInitialGuess(lambda snes, x: guesses.append(unlifted.departure(x)))
-    skip_dirichlet_lifting(unlifted.problem)
+    hooks = skip_dirichlet_lifting(unlifted.problem)
+    set_hooks(unlifted.problem, hooks)
+
+    def initial_guess(snes, x):
+        # An initial-guess hook of the caller's own, which calls the one of skip_dirichlet_lifting.
+        hooks["setInitialGuess"](snes, x)
+        guesses.append(unlifted.departure(x))
+
+    unlifted.problem.solver.setInitialGuess(initial_guess)
     departures = []
     unlifted.problem.solver.setMonitor(
         lambda snes, its, norm: departures.append(unlifted.departure(snes.getSolution()))
@@ -190,7 +203,7 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
 @pytest.mark.parametrize("kind", KINDS)
 def test_zero_boundary_update_makes_the_next_iterate_hold_g(kind):
     setup = Setup(kind, f"hold_{kind}_")
-    zero_boundary_update = skip_dirichlet_lifting(setup.problem)
+    zero_boundary_update = skip_dirichlet_lifting(setup.problem)["setLineSearchPreCheck"]
     x = setup.problem.x
     random_state(setup, 3, with_dirichlet_values=False)
     dolfinx.fem.petsc.assign(setup.unknowns, x)
