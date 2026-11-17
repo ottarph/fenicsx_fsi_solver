@@ -39,7 +39,6 @@ solve(
     T=$T,
     dt_val=0.0025,
     output_path=None,
-    output_path_p=None,
     qoi_path='$OUT_DIR/qoi_$cap.txt',
     initial_state_dir='$INITIAL_STATE',
     max_quadrature_degree=$degree,

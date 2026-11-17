@@ -1,6 +1,7 @@
 """Shared checks of solver restarts from checkpoints, and of runs started from another run's checkpoint."""
 
 import hashlib
+import inspect
 import os
 import shutil
 import subprocess
@@ -45,6 +46,20 @@ def _run(solve, ranks, **kwargs):
         return
     kwargs = {k: str(v) if isinstance(v, Path) else v for k, v in kwargs.items()}
     run_mpi_python(_MPI_SOLVE_SCRIPT.format(module=solve.__module__, kwargs=kwargs), ranks)
+
+
+def output_path_kwargs(solve, pv_dir, name):
+    """The output path arguments of ``solve`` for the run ``name`` in ``pv_dir``: VTX files of u, v and of p
+    for a solver with ``output_path_p``, otherwise one VTKHDF file."""
+    if "output_path_p" in inspect.signature(solve).parameters:
+        return {"output_path": str(pv_dir / f"{name}.bp"), "output_path_p": str(pv_dir / f"{name}_p.bp")}
+    return {"output_path": str(pv_dir / f"{name}.vtkhdf")}
+
+
+def output_every_kwargs(solve, every):
+    """The argument of ``solve`` that writes the output every ``every`` steps."""
+    name = "vtx_save_every" if "vtx_save_every" in inspect.signature(solve).parameters else "output_every"
+    return {name: every}
 
 
 def _read_qoi(path):
@@ -103,12 +118,11 @@ def check_restart_reproduces_continuous_run(
             mesh_path=mesh_path,
             T=n_steps * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            **output_path_kwargs(solve, output_dirs["pv"], name),
             qoi_path=str(output_dirs["qoi"] / f"{name}_qoi.txt"),
             checkpoint_dir=tmp_path / name,
             checkpoint_every=4,
-            vtx_save_every=4,
+            **output_every_kwargs(solve, 4),
             restart=restart,
             **(solve_kwargs or {}),
         )
@@ -125,7 +139,8 @@ def check_restart_reproduces_continuous_run(
     for name, values in qoi_continuous.items():
         tol = (qoi_column_rtol or {}).get(name, qoi_rtol) * np.max(np.abs(values))
         np.testing.assert_allclose(qoi_restarted[name], values, rtol=0, atol=tol, err_msg=f"QoI {name}")
-    assert (output_dirs["pv"] / "restarted_from_t0.0100.bp").exists()
+    suffix = Path(output_path_kwargs(solve, output_dirs["pv"], "restarted")["output_path"]).suffix
+    assert (output_dirs["pv"] / f"restarted_from_t0.0100{suffix}").exists()
 
     t_c, step_c, state_c = read_checkpoint_state(mesh_path, tmp_path / "continuous", dt_val, elements)
     t_r, step_r, state_r = read_checkpoint_state(mesh_path, tmp_path / "restarted", dt_val, elements)
@@ -138,8 +153,7 @@ def check_restart_reproduces_continuous_run(
 def check_restart_rejects_different_dt(solve, mesh_path, output_dirs, tmp_path, dt_val=0.0025):
     kwargs = dict(
         mesh_path=mesh_path,
-        output_path=str(output_dirs["pv"] / "dt.bp"),
-        output_path_p=str(output_dirs["pv"] / "dt_p.bp"),
+        **output_path_kwargs(solve, output_dirs["pv"], "dt"),
         qoi_path=str(output_dirs["qoi"] / "dt_qoi.txt"),
         checkpoint_dir=tmp_path / "dt",
     )
@@ -152,8 +166,7 @@ def check_restart_rejects_T_not_after_checkpoint(solve, mesh_path, output_dirs, 
     kwargs = dict(
         mesh_path=mesh_path,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "T.bp"),
-        output_path_p=str(output_dirs["pv"] / "T_p.bp"),
+        **output_path_kwargs(solve, output_dirs["pv"], "T"),
         qoi_path=str(output_dirs["qoi"] / "T_qoi.txt"),
         checkpoint_dir=tmp_path / "T",
     )
@@ -206,8 +219,7 @@ def check_start_from_initial_state(
             mesh_path=mesh_path,
             T=T,
             dt_val=dt,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            **output_path_kwargs(solve, output_dirs["pv"], name),
             qoi_path=str(output_dirs["qoi"] / f"{name}_qoi.txt"),
             checkpoint_dir=tmp_path / name,
             checkpoint_every=1,
@@ -254,8 +266,7 @@ def check_initial_state_rejects_T_not_after_it(solve, mesh_path, output_dirs, tm
     kwargs = dict(
         mesh_path=mesh_path,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "T.bp"),
-        output_path_p=str(output_dirs["pv"] / "T_p.bp"),
+        **output_path_kwargs(solve, output_dirs["pv"], "T"),
         qoi_path=str(output_dirs["qoi"] / "T_qoi.txt"),
     )
     solve(T=2 * dt_val, checkpoint_dir=tmp_path / "source", checkpoint_every=1, **kwargs)

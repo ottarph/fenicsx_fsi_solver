@@ -34,8 +34,9 @@
 # instead of its latest checkpoint.
 #
 # Each run gets its own directory, RUN_DIR, which holds the QoIs, the Newton log (one row per
-# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, snapshots, VTX output, QoI plots
-# and a record of the code version and arguments.
+# Newton iterate, see xfsi_solver.tools.newton_log), checkpoints, snapshots, the VTKHDF output for
+# ParaView (every OUTPUT_EVERY steps; None for none), QoI plots and a record of the code version and
+# arguments.
 #SBATCH -J fsi2-simplified
 #SBATCH -p defq
 #SBATCH -N 1
@@ -59,7 +60,7 @@ MESH=${MESH:-$REPO/data/meshes/fsi2/mesh_sec.xdmf}
 T=${T:-15.0}
 DT=${DT:-0.0025}
 CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-400}
-VTX_SAVE_EVERY=${VTX_SAVE_EVERY:-None}
+OUTPUT_EVERY=${OUTPUT_EVERY:-None}
 GAMMA_REASSEMBLE=${GAMMA_REASSEMBLE:-0.2}
 MAX_QUADRATURE_DEGREE=${MAX_QUADRATURE_DEGREE:-6}
 SOLVER=${SOLVER:-direct}
@@ -136,13 +137,12 @@ solve(
     mesh_path="$MESH",
     T=$T,
     dt_val=$DT,
-    output_path="$RUN_DIR/pv/$RUN_NAME.bp",
-    output_path_p="$RUN_DIR/pv/${RUN_NAME}_p.bp",
+    output_path="$RUN_DIR/pv/$RUN_NAME.vtkhdf",
     qoi_path="$RUN_DIR/qoi/$RUN_NAME.txt",
     newton_log_path="$RUN_DIR/qoi/${RUN_NAME}_newton.txt",
     checkpoint_dir="$RUN_DIR/checkpoints",
     checkpoint_every=$CHECKPOINT_EVERY,
-    vtx_save_every=$VTX_SAVE_EVERY,
+    output_every=$OUTPUT_EVERY,
     restart=$RESTART,
     initial_state_dir=$INITIAL_STATE_DIR,
     snapshot_dir=$SNAPSHOT_DIR,
