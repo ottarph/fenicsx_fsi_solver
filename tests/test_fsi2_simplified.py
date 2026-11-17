@@ -26,6 +26,15 @@ ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagra
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 
+# The residual of fsi2_simplified is multiplied by dt (except the continuity term), so the default
+# snes_atol = 1e-7 is 1e-7 / dt = 4e-5 on the unscaled momentum rows at dt = 0.0025. On this mesh, from
+# rest, Newton then stops after one iteration per step, and two runs that take different paths to the
+# same state (a restart, which assembles a fresh Jacobian, a start from a snapshot, or another initial
+# guess) differ by up to 1e-5 of a QoI's largest value. The tests comparing such runs converge Newton to
+# snes_atol = 1e-7 * dt instead, the tolerance of the unscaled residual, at which their QoIs agree within
+# 1e-7, a tenth of what the tests allow.
+CONVERGED_SOLVER_OPTIONS = DEFAULT_DIRECT_SOLVER_OPTIONS | {"snes_atol": 1e-7 * 0.0025}
+
 
 def test_fsi2_simplified_solve(output_dirs):
     dt_val = 0.0025
@@ -95,13 +104,17 @@ def test_fsi2_simplified_iterative_solve_matches_direct(output_dirs):
         )
         return np.loadtxt(qoi_path, ndmin=2)
 
-    direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS)
+    # Since the residual is multiplied by dt, the default snes_atol = 1e-7 and ksp_atol = 1e-8 stop Newton
+    # after one iteration per step and FGMRES on its absolute tolerance, so the default iterative solve
+    # differs from the direct one by 2% in the small lift of the first step (9.5e-4). Both solves are
+    # converged tightly here, so that the test compares the solutions, not where each solver stops.
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+    direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS | converged)
     # Fails with DIVERGED_LINEAR_SOLVE if the fieldsplit does not get the v and p splits or their options.
-    iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS)
-    # Newton stops at the same absolute residual tolerance with either linear solver, but at different
-    # iterates. The QoIs differ by up to 1.3e-5 relative, in the small lift of the first step (9.5e-4),
-    # so rtol = 1e-4 leaves a margin of more than 7. The initial row of zeros is the same in both.
-    np.testing.assert_allclose(iterative, direct, rtol=1e-4, atol=0)
+    iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS | converged)
+    # The QoIs agree to all 7 written digits; rtol = 1e-6 allows for the rounding of the last one. The
+    # initial row of zeros is the same in both.
+    np.testing.assert_allclose(iterative, direct, rtol=1e-6, atol=0)
 
 
 @pytest.mark.parametrize(
@@ -153,6 +166,7 @@ def test_fsi2_simplified_restart_reproduces_continuous_run(output_dirs, tmp_path
         qoi_rtol=1e-6,
         first_ranks=ranks[0],
         restart_ranks=ranks[1],
+        solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
     )
 
 
@@ -165,7 +179,16 @@ def test_fsi2_simplified_restart_rejects_T_not_after_checkpoint(output_dirs, tmp
 
 
 def test_fsi2_simplified_starts_from_initial_state(output_dirs, tmp_path):
-    check_start_from_initial_state(solve, MESH, ELEMENTS, output_dirs, tmp_path, rtol=1e-6, qoi_rtol=1e-6)
+    check_start_from_initial_state(
+        solve,
+        MESH,
+        ELEMENTS,
+        output_dirs,
+        tmp_path,
+        rtol=1e-6,
+        qoi_rtol=1e-6,
+        solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
+    )
 
 
 def test_fsi2_simplified_initial_state_rejects_T_not_after_it(output_dirs, tmp_path):
@@ -189,6 +212,7 @@ def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
             output_path=str(output_dirs["pv"] / f"{name}.bp"),
             output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+            solver_options=CONVERGED_SOLVER_OPTIONS,
             **kwargs,
         )
         return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2)
@@ -288,7 +312,10 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
         )
 
     mixed = fsi2_biharmonic_mixed.solve
-    run(solve, "simplified", 4 * dt_val, predict_displacements=False)
+    # fsi2_biharmonic_mixed does not scale its residual by dt, so its default snes_atol = 1e-7 is
+    # the same stopping test as CONVERGED_SOLVER_OPTIONS for fsi2_simplified.
+    simplified_kwargs = dict(predict_displacements=False, solver_options=CONVERGED_SOLVER_OPTIONS)
+    run(solve, "simplified", 4 * dt_val, **simplified_kwargs)
     run(mixed, "mixed", 4 * dt_val, direct_k_c_solve=True)
     _, _, state_simplified = read_checkpoint_state(MESH, tmp_path / "simplified", dt_val, ELEMENTS)
     _, _, state_mixed = read_checkpoint_state(MESH, tmp_path / "mixed", dt_val, ELEMENTS)
@@ -303,9 +330,9 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
         "simplified_from_simplified",
         8 * dt_val,
         initial_state_dir=tmp_path / "simplified",
-        predict_displacements=False,
+        **simplified_kwargs,
     )
-    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed", predict_displacements=False)
+    run(solve, "simplified_from_mixed", 8 * dt_val, initial_state_dir=tmp_path / "mixed", **simplified_kwargs)
     run(
         mixed,
         "mixed_from_simplified",
@@ -393,6 +420,7 @@ def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(outp
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
             predict_displacements=predict_displacements,
+            solver_options=CONVERGED_SOLVER_OPTIONS,
         )
         return np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2), read_newton_log(
             output_dirs["qoi"] / f"{name}_newton.txt"
