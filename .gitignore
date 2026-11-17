@@ -4,6 +4,7 @@ __pycache__/
 *.h5
 *.xdmf
 *.bp
+*.vtkhdf
 
 output/
 data/
