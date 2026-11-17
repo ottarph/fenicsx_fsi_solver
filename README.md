@@ -135,6 +135,18 @@ A solver's ``main()`` writes its QoIs (time, drag, lift and the tip displacement
 VTX output is optional: ``solve(..., vtx_save_every=n)`` writes a snapshot every ``n`` time steps, and with
 the default ``vtx_save_every=None`` no VTX files are written.
 
+``fsi2_simplified`` and ``threeDfsi_simplified`` write VTKHDF files instead (``xfsi_solver.tools.vtkhdf``):
+their output, ``output/pv/<script>.vtkhdf`` with u, v and p and the cell tags, every ``output_every`` time
+steps, and their checkpoints and snapshots, ``checkpoint_<i>.vtkhdf``. Each of them opens in ParaView, and
+a run can restart or start from any of them; the ``.bp`` checkpoints of earlier runs are read as well.
+To convert the ``.bp`` output and checkpoints of earlier runs to VTKHDF, with the cell tags of the mesh
+file they were run on:
+
+    mpirun -n 4 python -m xfsi_solver.scripts.convert_to_vtkhdf data/meshes/fsi2/mesh_sec.xdmf output/pv/fsi2_harmonic.bp output/checkpoints/<run>
+
+The converted files are written next to the old ones (or under ``--output-dir``); ``<name>.bp`` and
+``<name>_p.bp`` are merged into ``<name>.vtkhdf``. See the script's docstring for the details.
+
 ``python -m xfsi_solver.scripts.plot_qois`` plots the QoI files, each on its own and in comparisons, into
 ``output/figures/qoi/<script>/``. ``python -m xfsi_solver.scripts.plot_fsi3d_time_steps`` compares runs of
 the 3d benchmark with different time steps over [9, 10] with the values of Failer & Richter, as figures in
