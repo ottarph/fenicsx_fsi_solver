@@ -412,7 +412,7 @@ def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(outp
 
 
 @pytest.mark.parametrize("solver_options", ["direct", "iterative"])
-def test_fsi2_simplified_held_dirichlet_values_give_the_lifted_qois(output_dirs, solver_options):
+def test_fsi2_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(output_dirs, solver_options):
     # During the ramp of the inflow, its values change in every step, so the initial guess departs from
     # them, and the lifted and held Newton iterates differ in the first step of each.
     dt_val = 0.0025
@@ -429,7 +429,7 @@ def test_fsi2_simplified_held_dirichlet_values_give_the_lifted_qois(output_dirs,
             output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
             qoi_path=str(qoi_path),
             solver_options=options,
-            hold_dirichlet_values=hold,
+            skip_dirichlet_lifting=hold,
         )
         return np.loadtxt(qoi_path, ndmin=2), stats
 

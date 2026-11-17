@@ -17,9 +17,9 @@ from petsc4py import PETSc
 
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_motion_solver_options
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
+from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
-from xfsi_solver.tools.dirichlet_without_lifting import DirichletWithoutLifting
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
@@ -210,7 +210,7 @@ def solve(
     mesh_motion_max_quadrature_degree=8,
     requires_v_sub_IS=False,
     predict_displacements=True,
-    hold_dirichlet_values=False,
+    skip_dirichlet_lifting=False,
     newton_log_path=None,
     snes_converged_reason_on=True,
 ):
@@ -300,9 +300,9 @@ def solve(
     ``linear_iterations_per_step`` and the wall time ``step_times``. The counts are the same on every
     rank; the wall times are those of each rank.
 
-    With ``hold_dirichlet_values=True``, every Newton iterate holds the Dirichlet values of v exactly,
-    and the residual is assembled without lifting them, by
-    ``xfsi_solver.tools.dirichlet_without_lifting.DirichletWithoutLifting``: the values are set in the
+    With ``skip_dirichlet_lifting=True``, the residual is assembled without lifting the Dirichlet
+    conditions of v, and every Newton iterate holds their values exactly, by
+    ``xfsi_solver.tools.skip_dirichlet_lifting.skip_dirichlet_lifting``: the values are set in the
     initial guess, before the displacement prediction, and the Newton update is held at zero on the
     Dirichlet dofs, in the post-solve hook before v is updated with it. dolfinx's residual lifts every
     condition, J (g - x), which is zero where x = g but runs the Jacobian kernels on every cell with a
@@ -920,10 +920,10 @@ def solve(
         """Update the displacements to the next Newton iterate. Called at the end of the linear solve,
         where x is the Newton update Y of (v, p) and v still holds the current iterate, before SNES
         sets the next iterate to v - Y and evaluates the residual there."""
-        if dirichlet is not None:
-            # Hold the Dirichlet values before v is updated: the line-search pre-check that does so
-            # comes after this hook.
-            dirichlet.hold_update(solver.getSolution(), x)
+        if zero_boundary_update is not None:
+            # Zero the update on the Dirichlet dofs before v is updated with it: the line-search pre-check
+            # that does so comes after this hook.
+            zero_boundary_update(solver.getSolution(), x)
         # The owned v rows come first in x, or are its first block if x is a nest vector.
         x_v = x.getNestSubVecs()[0] if x.getType() == PETSc.Vec.Type.NEST else x
         v.x.array[:num_v] -= x_v.getArray(readonly=True)[:num_v]
@@ -940,9 +940,9 @@ def solve(
         # still v_old, so the displacements become u_s_old + dt * v_old and the same on the interface.
         solver.setInitialGuess(lambda snes, x: update_displacements())
 
-    # Created after the initial-guess hook of the prediction, which it calls after setting the Dirichlet
-    # values in the guess.
-    dirichlet = DirichletWithoutLifting(problem) if hold_dirichlet_values else None
+    # Set after the initial-guess hook of the prediction, which the new hook calls after setting the
+    # Dirichlet values in the guess.
+    zero_boundary_update = dirichlet_lifting.skip_dirichlet_lifting(problem) if skip_dirichlet_lifting else None
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val, header=QOI_HEADER_3D)
@@ -1020,11 +1020,11 @@ def solve(
         initial_guess_description = "the previous step, with the displacements predicted from dt * v_old"
     else:
         initial_guess_description = "the previous step"
-    if hold_dirichlet_values:
+    if skip_dirichlet_lifting:
         initial_guess_description += ", with the Dirichlet values of the step set in it"
-        dirichlet_description = "held exactly by every Newton iterate, so the residual is not lifted"
+        dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
-        dirichlet_description = "lifted in every residual evaluation (dolfinx's assemble_residual)"
+        dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -1044,7 +1044,7 @@ def solve(
             f"  Mesh motion: {mesh_motion_description}\n"
             f"  Mesh motion quadrature degree: {quadrature_description(mesh_motion_max_quadrature_degree)}\n"
             f"  Initial guess: {initial_guess_description}\n"
-            f"  Dirichlet values of v: {dirichlet_description}\n"
+            f"  Lifting of the Dirichlet conditions of v: {dirichlet_description}\n"
             f"  Jacobian reuse: {reuse_description}\n"
             f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"

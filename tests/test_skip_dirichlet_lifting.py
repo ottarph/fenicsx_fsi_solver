@@ -6,7 +6,7 @@ import ufl
 from mpi4py import MPI
 from petsc4py import PETSc
 
-from xfsi_solver.tools.dirichlet_without_lifting import DirichletWithoutLifting
+from xfsi_solver.tools.skip_dirichlet_lifting import skip_dirichlet_lifting
 
 COMM = MPI.COMM_WORLD
 
@@ -142,7 +142,7 @@ def random_state(setup: Setup, seed: int, with_dirichlet_values: bool) -> list[n
 def test_residual_without_lifting_equals_dolfinx_where_x_holds_g(kind):
     lifted = Setup(kind, f"lifted_{kind}_")
     unlifted = Setup(kind, f"unlifted_{kind}_")
-    DirichletWithoutLifting(unlifted.problem)
+    skip_dirichlet_lifting(unlifted.problem)
 
     held = random_state(lifted, 1, with_dirichlet_values=True)
     norm, b_lifted = lifted.residual(held)
@@ -164,9 +164,9 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
     lifted = Setup(kind, f"lifted_solve_{kind}_")
     unlifted = Setup(kind, f"unlifted_solve_{kind}_")
     guesses = []
-    # An initial-guess hook set before, which DirichletWithoutLifting calls after setting g in the guess.
+    # An initial-guess hook set before, which the new hook calls after setting g in the guess.
     unlifted.problem.solver.setInitialGuess(lambda snes, x: guesses.append(unlifted.departure(x)))
-    DirichletWithoutLifting(unlifted.problem)
+    skip_dirichlet_lifting(unlifted.problem)
     departures = []
     unlifted.problem.solver.setMonitor(
         lambda snes, its, norm: departures.append(unlifted.departure(snes.getSolution()))
@@ -188,9 +188,9 @@ def test_iterates_hold_g_and_converge_to_the_lifted_solution(kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_hold_update_makes_the_next_iterate_hold_g(kind):
+def test_zero_boundary_update_makes_the_next_iterate_hold_g(kind):
     setup = Setup(kind, f"hold_{kind}_")
-    dirichlet = DirichletWithoutLifting(setup.problem)
+    zero_boundary_update = skip_dirichlet_lifting(setup.problem)
     x = setup.problem.x
     random_state(setup, 3, with_dirichlet_values=False)
     dolfinx.fem.petsc.assign(setup.unknowns, x)
@@ -200,16 +200,16 @@ def test_hold_update_makes_the_next_iterate_hold_g(kind):
     y = x.duplicate()
     for y_sub in y.getNestSubVecs() if kind == "nest" else [y]:
         y_sub.setRandom()
-    dirichlet.hold_update(x, y)
+    zero_boundary_update(x, y)
     x_next = x.copy()
     x_next.axpy(-1.0, y)
     # x - (x - g) is g up to the rounding of the two subtractions.
     assert setup.departure(x_next) <= 4 * np.finfo(float).eps * setup.g.x.array.max()
 
     # Where x holds g, the update is exactly zero on the Dirichlet dofs, and so the next iterate is g.
-    dirichlet.set_values(x)
+    dolfinx.fem.petsc.set_bc(x, setup.bcs_by_block() if kind != "single" else setup.bcs)
     assert setup.departure(x) == 0.0
-    dirichlet.hold_update(x, y)
+    zero_boundary_update(x, y)
     x.axpy(-1.0, y)
     assert setup.departure(x) == 0.0
 
@@ -219,4 +219,4 @@ def test_rejects_a_residual_that_is_not_dolfinx():
     b, (function, args, kargs) = setup.problem.solver.getFunction()
     setup.problem.solver.setFunction(lambda snes, x, b: function(snes, x, b, *args, **kargs), b)
     with pytest.raises(ValueError, match="assemble_residual"):
-        DirichletWithoutLifting(setup.problem)
+        skip_dirichlet_lifting(setup.problem)

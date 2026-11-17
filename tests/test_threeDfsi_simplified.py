@@ -92,7 +92,7 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
 
 
 @pytest.mark.slow
-def test_threeDfsi_simplified_held_dirichlet_values_give_the_lifted_qois(output_dirs):
+def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(output_dirs):
     # With the iterative solver, a nest Jacobian whose velocity block gets one GAMG V-cycle, which need
     # not leave the update zero on the Dirichlet dofs. The inflow changes in every step, so the lifted and
     # held iterates differ in the first Newton step of each, and the QoIs agree to the Newton tolerance.
@@ -108,7 +108,7 @@ def test_threeDfsi_simplified_held_dirichlet_values_give_the_lifted_qois(output_
             output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
             qoi_path=str(qoi_path),
             solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS,
-            hold_dirichlet_values=hold,
+            skip_dirichlet_lifting=hold,
         )
         return np.loadtxt(qoi_path, ndmin=2), stats
 
