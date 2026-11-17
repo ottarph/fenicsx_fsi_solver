@@ -28,8 +28,7 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
             mesh_path=MESH,
             T=2 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
             solver_options=solver_options,
         )
@@ -60,8 +59,7 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
             mesh_path=MESH,
             T=2 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS,
             newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
@@ -115,14 +113,14 @@ def test_threeDfsi_simplified_writes_snapshots(output_dirs, tmp_path):
         mesh_path=MESH,
         T=2 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "snapshots.bp"),
-        output_path_p=str(output_dirs["pv"] / "snapshots_p.bp"),
+        output_path=str(output_dirs["pv"] / "snapshots.vtkhdf"),
         qoi_path=str(output_dirs["qoi"] / "snapshots.txt"),
         solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS,
         snapshot_dir=snapshot_dir,
         snapshot_times=(0.0, 0.005),
     )
     assert sorted(path.name for path in snapshot_dir.iterdir()) == ["t0.0000", "t0.0040"]
+    assert sorted(path.name for path in (snapshot_dir / "t0.0040").iterdir()) == ["checkpoint_0.vtkhdf"]
     t, step, state = read_checkpoint_state(MESH, snapshot_dir / "t0.0040", dt_val, ELEMENTS)
     assert step == 1
     assert t == pytest.approx(dt_val)
@@ -147,8 +145,7 @@ def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match
             mesh_path="nonexistent.xdmf",
             T=0.004,
             dt_val=0.004,
-            output_path=str(output_dirs["pv"] / "invalid.bp"),
-            output_path_p=str(output_dirs["pv"] / "invalid_p.bp"),
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
             **kwargs,
         )

@@ -33,6 +33,7 @@ from xfsi_solver.tools.qoi import (
 from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
 from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
 from xfsi_solver.tools.submesh import SubmeshComposite, all_cells
+from xfsi_solver.tools.vtkhdf import VTKHDFWriter
 
 PHYSICAL_MARKERS = {
     "solid": 1,
@@ -177,7 +178,6 @@ def solve(
     T,
     dt_val,
     output_path,
-    output_path_p,
     qoi_path,
     elements={  # noqa: B006
         "U": ("P", 2, (3,)),
@@ -198,7 +198,7 @@ def solve(
     relative_theta_shift=None,
     checkpoint_dir=None,
     checkpoint_every=None,
-    vtx_save_every=None,
+    output_every=None,
     restart=False,
     initial_state_dir=None,
     snapshot_dir=None,
@@ -275,10 +275,20 @@ def solve(
     ``xfsi_solver.tools.newton_log.NewtonLog``, with the norms on the blocks v and p, as in
     fsi2_simplified.
 
+    The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
+    (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
+    mesh, with the cell tags and the owning rank of each cell. p, on the fluid submesh, is 0 on the
+    solid cells, so in ParaView its values there blend from the interface value to 0 across the
+    solid cells at the interface; a Threshold on ``cell_tags`` shows the fluid alone. With
+    ``output_every``, the state is written to ``output_path`` every ``output_every`` steps; a restart
+    writes a new file, ``output_path`` renamed by ``xfsi_solver.tools.checkpoint.restart_output_path``,
+    so the output before it is kept.
+
     Checkpoints store the displacement as one function u on the parent mesh, with v and p, as the 3d
-    solvers do, so runs can restart from or start from each other's states. They hold no field of the
-    mesh motion, which each solve computes again, so a run can also start from the state of a run with
-    another mesh motion.
+    solvers do, so runs can restart from or start from each other's states: the checkpoints of the
+    other 3d solvers, and those of this solver before it wrote VTKHDF, are io4dolfinx ``.bp`` files,
+    which are read as well. They hold no field of the mesh motion, which each solve computes again, so
+    a run can also start from the state of a run with another mesh motion.
 
     With ``snapshot_dir``, the state at the time steps closest to the times ``snapshot_times`` is
     also kept, each in a checkpoint directory ``snapshot_dir/t<t:.4f>`` of its own, from which a run
@@ -406,12 +416,11 @@ def solve(
     theta = dolfinx.fem.Constant(mesh, theta_val)
 
     num_steps = round((T - t0) / dt_val)
-    if vtx_save_every is not None and num_steps < vtx_save_every:
+    if output_every is not None and num_steps < output_every:
         warnings.warn(
-            f"vtx_save_every ({vtx_save_every}) is larger than the total number of time "
-            f"steps ({num_steps}); at most one VTX snapshot will be written to "
-            f"{output_path!r} or {output_path_p!r}, which is not a usable time "
-            f"series in ParaView.",
+            f"output_every ({output_every}) is larger than the total number of time "
+            f"steps ({num_steps}); at most one time will be written to "
+            f"{output_path!r}, which is not a usable time series in ParaView.",
             stacklevel=2,
         )
 
@@ -435,7 +444,7 @@ def solve(
     dv, dp = ufl.TestFunctions(W)
 
     # The displacement on the parent mesh, u_s on the solid cells and u_f on the fluid cells, which
-    # the checkpoints and the VTX output hold in place of u_s and u_f. The checkpoints hold no other
+    # the checkpoints and the output hold in place of u_s and u_f. The checkpoints hold no other
     # field of the mesh motion: every mesh motion solve computes those again from u_s, so the state
     # is (u, v, p) whichever mesh motion is used, as in the other 3d solvers.
     u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, elements["U"]), name="u")
@@ -446,7 +455,8 @@ def solve(
     # Set up output, checkpointing, and qoi tracking.
 
     # (t, step) are the time and number of completed steps of the current state
-    t, step, checkpointer, (output_path, output_path_p) = load_start_state(
+    submeshes = [(fluid_mesh, fluid_cell_map)]
+    t, step, checkpointer, (output_path,) = load_start_state(
         mesh,
         checkpoint_fields,
         t0=t0,
@@ -457,26 +467,30 @@ def solve(
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         initial_state_dir=initial_state_dir,
-        submeshes=[(fluid_mesh, fluid_cell_map)],
-        output_paths=[output_path, output_path_p],
-        write_vtx=vtx_save_every is not None,
+        submeshes=submeshes,
+        output_paths=[output_path],
+        write_vtx=output_every is not None,
+        file_format="vtkhdf",
+        cell_tags=cell_tags,
     )
     displacement.scatter()  # u_s, u_f <- u, which is 0 on a new run from rest
     snapshots = SnapshotWriter(
         snapshot_dir,
         mesh,
-        [(fluid_mesh, fluid_cell_map)],
+        submeshes,
         snapshot_times,
         t0=t0,
         dt=dt_val,
         num_steps=num_steps,
         step=step,
         restart=restart,
+        file_format="vtkhdf",
+        cell_tags=cell_tags,
     )
 
     writers = []
-    if vtx_save_every is not None:
-        writers = [dolfinx.io.VTXWriter(comm, output_path, [u, v]), dolfinx.io.VTXWriter(comm, output_path_p, [p])]
+    if output_every is not None:
+        writers = [VTKHDFWriter(output_path, mesh, checkpoint_fields, submeshes, cell_tags)]
 
     # Quantities of interest: the displacement at the point B on the back face of the beam, and
     # the drag and lift on the obstacle and on the fluid side of the solid-fluid interface.
@@ -494,8 +508,8 @@ def solve(
     )
 
     def write_output(t, step):
-        """Write the QoI row, and every vtx_save_every steps the VTX snapshot, of the state at time t."""
-        if vtx_save_every is not None and step % vtx_save_every == 0:
+        """Write the QoI row, and every output_every steps the output, of the state at time t."""
+        if output_every is not None and step % output_every == 0:
             displacement.gather()  # u is written with v
             for writer in writers:
                 writer.write(t)
@@ -1061,8 +1075,7 @@ def main():
     run_name = "threeDfsi_simplified_medium"
     dt_val = 0.004
     T = 10.0 + 8 * dt_val
-    output_path = f"output/pv/{run_name}.bp"
-    output_path_p = f"output/pv/{run_name}_p.bp"
+    output_path = f"output/pv/{run_name}.vtkhdf"
     qoi_path = f"output/qoi/{run_name}.txt"
     newton_log_path = f"output/qoi/{run_name}_newton.txt"
     checkpoint_dir = f"output/checkpoints/{run_name}"
@@ -1071,7 +1084,7 @@ def main():
     snapshot_times = args.snapshot_times
     snapshot_dir = f"output/snapshots/{run_name}" if snapshot_times else None
     checkpoint_every = 250
-    vtx_save_every = None
+    output_every = None
     gamma_reassemble = 0.1  # Default 0.1.
     max_quadrature_degree = 6  # Default 8.
     mesh_motion_max_quadrature_degree = 6  # Default 8.
@@ -1088,14 +1101,13 @@ def main():
         T=T,
         dt_val=dt_val,
         output_path=output_path,
-        output_path_p=output_path_p,
         qoi_path=qoi_path,
         newton_log_path=newton_log_path,
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         snapshot_dir=snapshot_dir,
         snapshot_times=snapshot_times,
-        vtx_save_every=vtx_save_every,
+        output_every=output_every,
         gamma_reassemble=gamma_reassemble,
         max_quadrature_degree=max_quadrature_degree,
         mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,

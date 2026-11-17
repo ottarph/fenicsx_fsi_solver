@@ -85,10 +85,6 @@ def main():
             setattr(args, name, value)
     if args.solver == "threeDfsi_simplified":
         solver_kwargs = {**solver_kwargs, "mesh_motion_max_quadrature_degree": args.max_quadrature_degree}
-        # VTX output, a file of u, v and one of p, which fsi2_simplified writes in one VTKHDF file
-        output_paths = {"output_path": str(args.run_dir / "u_v.bp"), "output_path_p": str(args.run_dir / "p.bp")}
-    else:
-        output_paths = {"output_path": str(args.run_dir / "output.vtkhdf")}
 
     comm = MPI.COMM_WORLD
     run_dir = args.run_dir
@@ -103,7 +99,7 @@ def main():
         mesh_path=args.mesh,
         T=args.T,
         dt_val=args.dt,
-        **output_paths,
+        output_path=str(run_dir / "output.vtkhdf"),
         qoi_path=str(run_dir / "qoi.txt"),
         newton_log_path=str(run_dir / "newton.txt"),
         checkpoint_dir=str(run_dir / "checkpoints"),
