@@ -28,6 +28,7 @@ from pathlib import Path
 from mpi4py import MPI
 from petsc4py import PETSc
 
+from xfsi_solver.petsc_options import fsi2d, fsi3d
 from xfsi_solver.solvers import fsi2_simplified, threeDfsi_simplified
 
 # The PETSc events of a Newton iteration: SNESJacobianEval assembles the Jacobian (and is also logged,
@@ -53,12 +54,12 @@ SOLVERS = {
     "fsi2_simplified": (
         fsi2_simplified.solve,
         {"mesh": "data/meshes/fsi2/mesh_sec.xdmf", "T": 15.0, "dt": 0.0025},
-        {"solver_options": fsi2_simplified.DEFAULT_DIRECT_SOLVER_OPTIONS},
+        {"solver_options": fsi2d.DEFAULT_DIRECT_SOLVER_OPTIONS},
     ),
     "threeDfsi_simplified": (
         threeDfsi_simplified.solve,
         {"mesh": "data/meshes/fsi3d/mesh_sec_medium.xdmf", "T": 10.352, "dt": 0.004},
-        {"solver_options": threeDfsi_simplified.MUMPS_ON_SOLID, "requires_v_sub_IS": True},
+        {"solver_options": fsi3d.MUMPS_ON_SOLID, "requires_v_sub_IS": True},
     ),
 }
 

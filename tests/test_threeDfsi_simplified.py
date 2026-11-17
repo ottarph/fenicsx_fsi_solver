@@ -3,11 +3,8 @@ import pytest
 from newton_log_helpers import check_solver_newton_log
 from restart_helpers import check_start_from_initial_state, read_checkpoint_state
 
-from xfsi_solver.solvers.threeDfsi_simplified import (
-    DEFAULT_DIRECT_SOLVER_OPTIONS,
-    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
-    solve,
-)
+from xfsi_solver.petsc_options.fsi3d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
+from xfsi_solver.solvers.threeDfsi_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
 
 VECTOR = ("Lagrange", 2, (3,))

@@ -9,11 +9,11 @@
 #   sbatch --export=ALL,RUN_NAME=fsi2_simplified_short,T=0.1 jobs/fsi2_simplified.sh
 # Values are inserted as Python expressions: True/False, None, numbers or arithmetic.
 #
-# SOLVER selects the (v, p) solve: "direct", DEFAULT_DIRECT_SOLVER_OPTIONS (MUMPS LU, the
-# solver's default), "iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS (FGMRES with a Schur
-# complement fieldsplit, GAMG on the velocity block), or "mumps_on_solid", MUMPS_ON_SOLID (the
-# same, with the velocity block split again into the solid dofs, by MUMPS LU, and the fluid dofs,
-# by GAMG; run with requires_v_sub_IS=True).
+# SOLVER selects the (v, p) solve, by options from xfsi_solver.petsc_options.fsi2d: "direct",
+# DEFAULT_DIRECT_SOLVER_OPTIONS (MUMPS LU, the solver's default), "iterative",
+# DEFAULT_ITERATIVE_SOLVER_OPTIONS (FGMRES with a Schur complement fieldsplit, GAMG on the velocity
+# block), or "mumps_on_solid", MUMPS_ON_SOLID (the same, with the velocity block split again into
+# the solid dofs, by MUMPS LU, and the fluid dofs, by GAMG; run with requires_v_sub_IS=True).
 #
 # MAX_QUADRATURE_DEGREE is 6 by default: down to that cap the QoIs did not change in the 7 printed
 # digits from the uncapped run, at 22% less time per step (32bd021:notes/restricted-cleanup,
@@ -130,7 +130,8 @@ cd "$RUN_DIR"
 
 # Every rank runs the call from -c; a script on stdin would only reach rank 0
 PY=$(cat <<EOF
-from xfsi_solver.solvers.fsi2_simplified import $SOLVER_OPTIONS, solve
+from xfsi_solver.petsc_options.fsi2d import $SOLVER_OPTIONS
+from xfsi_solver.solvers.fsi2_simplified import solve
 
 solve(
     mesh_path="$MESH",
