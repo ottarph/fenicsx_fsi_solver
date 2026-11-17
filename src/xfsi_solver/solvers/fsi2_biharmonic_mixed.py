@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import math
 import warnings
 from timeit import default_timer as timer
 
@@ -17,6 +18,7 @@ from petsc4py import PETSc
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import KSPConvCheck, check_converged
+from xfsi_solver.tools.dirichlet_without_lifting import DirichletWithoutLifting
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.petsc_reuse import IdenticalBlocksPC
@@ -72,7 +74,11 @@ def solve(
     restart=False,
     initial_state_dir=None,
     gamma_reassemble=0.2,
+    mesh_extrapolation_order=None,
     direct_k_c_solve=False,
+    kinematic_bc=False,
+    kinematic_bc_extension=True,
+    hold_dirichlet_values=False,
     max_quadrature_degree=None,
     newton_log_path=None,
     snes_converged_reason_on=True,
@@ -87,14 +93,46 @@ def solve(
     + (1 - theta) * v_old) (Failer & Richter, J. Sci. Comput. 82:28, 2020, eq. (5)). The
     momentum equation then no longer depends on the solid displacement u_S, and its
     derivative with respect to v contains the solid stiffness. The approximate Jacobian
-    J_0 drops the remaining derivatives of the momentum and continuity equations with
+    J_0 has none of the remaining derivatives of the momentum and continuity equations with
     respect to u, which are the fluid ALE derivatives, and is block lower triangular in
-    (v, p), u_S, (z, u_I). Each Newton step is solved by a multiplicative fieldsplit in
-    that order, with MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
+    (v, p), u_S, (z, u_I). It is the derivative of a residual in which the ALE terms of the
+    fluid, F = I + grad(u), J = det(F) and the mesh velocity (u - u_old) / dt, take a second
+    displacement u_f_pred, a coefficient, in place of the unknown u, while the mesh motion and
+    the kinematic relation of the solid keep u. These derivatives are therefore zero blocks of
+    the UFL Jacobian by construction. The residual itself has u_f_pred = u. Each Newton
+    step is solved by a multiplicative fieldsplit in the order (v, p), u_S, (z, u_I), with
+    MUMPS LU on K_m and CG with Jacobi on A_S. A_S (the solid mass) and
     K_m (the mesh motion) are constant, so their preconditioners are set up once for the
     whole run. K_m does not couple the x and y components, and the components have the
     same matrix, so only the x component is factorized, and both components are solved with
     that factorization at once, by one MatMatSolve with two right-hand sides.
+
+    With ``kinematic_bc=True``, the kinematic relation is imposed on the displacement of the
+    solid instead, interface included, node by node, by a Dirichlet condition on the u dofs of the
+    solid cells, with the value u_old + dt * (theta * v + (1 - theta) * v_old) from the current
+    iterate v. It replaces the restricted test functions: dolfinx replaces the rows of those dofs,
+    among them the mesh motion rows of the interface dofs, by identity rows, so the separate
+    assembly of the kinematic rows and the zeroing of the interface rows are not needed. The
+    discrete solution is the same, since the kinematic rows already hold the relation at every
+    solid node. As a Dirichlet condition does not see the v of the same linear solve, a post-solve
+    hook of the KSP sets the solid part of the Newton update so that the next iterate satisfies the
+    relation with the next v. With ``kinematic_bc_extension=True``, the default, the hook also adds the
+    response of the mesh motion to that change of the solid update, -K_m^{-1} A_mS delta u_S, where
+    A_mS is the coupling of the mesh motion to the solid displacement, which the Dirichlet condition
+    takes out of the matrix, solved by the sub-KSP of the mesh motion, with its factorization. With
+    ``kinematic_bc_extension=False``, the fluid interior follows the interface one Newton iteration
+    late.
+
+    With ``hold_dirichlet_values=True``, which needs ``kinematic_bc=True``, every Newton iterate holds
+    the values of all Dirichlet conditions exactly, and the residual is assembled without lifting them,
+    by ``xfsi_solver.tools.dirichlet_without_lifting.DirichletWithoutLifting``. dolfinx's residual lifts
+    every condition, J (g - x), which is zero where x = g but runs the Jacobian kernels on every cell with
+    a Dirichlet dof, here every solid cell, in every residual evaluation. The initial guess of each time
+    step takes the Dirichlet values, so the displacement of the solid becomes u_old + dt * v_old, a
+    prediction from the velocity of the previous step, which the first Newton step extends into the
+    fluid. The post-solve hook sets the value of the kinematic condition from the next v, so that the
+    held update is that of the kinematic relation. The converged solution is the same; the iterates
+    differ from those without it, which start from the displacement of the previous step.
 
     With ``direct_k_c_solve=True``, the velocity-pressure block K_c is solved with MUMPS
     LU. Otherwise, it is solved by FGMRES, preconditioned by the block upper triangular
@@ -110,6 +148,23 @@ def solve(
     ``gamma_reassemble=0``, it is reassembled in every Newton iteration except the
     first of each time step, and with ``gamma_reassemble=None`` in every Newton iteration,
     as the full Jacobian of fsi2_biharmonic_fulljacobian is.
+
+    With ``mesh_extrapolation_order=None``, the default, u_f_pred is the displacement u of the
+    Newton iterate at which J_0 is assembled. With an integer k >= 0, it is instead an
+    approximation of the mesh of the new time step, extrapolated from the deformation history by
+    a multistep scheme: the polynomial of degree k through the displacements of the last k + 1
+    time steps, evaluated at the new time,
+
+        u_f_pred = sum_{j=0}^{k} (-1)^j binom(k + 1, j + 1) u^{n-j},
+
+    so u^n for k = 0, 2 u^n - u^{n-1} for k = 1 and 3 u^n - 3 u^{n-1} + u^{n-2} for k = 2,
+    accurate to O(dt^{k+1}). The mesh velocity in J_0 is then (u_f_pred - u^n) / dt. u_f_pred is
+    fixed within a time step, so J_0 does not depend on the Newton iterate. The history is kept
+    in memory only, not in the checkpoints, so the first steps of a run, including a restart or a
+    run from an initial state, use the highest order the steps taken in that run allow; in the
+    first step, an order of 1 or more takes the displacement of the Newton iterate, as with
+    None, since with u_f_pred = u^n the mesh velocity would drop out of J_0. With k = 0 it does,
+    and from an oscillating state Newton then converges only linearly.
 
     With ``checkpoint_dir`` and ``checkpoint_every``, a restart checkpoint of
     the state is saved in ``checkpoint_dir`` every ``checkpoint_every`` time
@@ -260,6 +315,22 @@ def solve(
     )
     u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
 
+    # The displacement in the ALE terms of the fluid in J_0, and with mesh_extrapolation_order the
+    # deformation history u^n, u^{n-1}, ..., u^{n-k} it is extrapolated from.
+    if mesh_extrapolation_order is not None and (
+        not isinstance(mesh_extrapolation_order, (int, np.integer)) or mesh_extrapolation_order < 0
+    ):
+        raise ValueError(
+            f"mesh_extrapolation_order must be None or a non-negative integer, not {mesh_extrapolation_order!r}"
+        )
+    u_f_pred = dolfinx.fem.Function(U, name="u_f_pred")
+    u_history = [u_old] + [dolfinx.fem.Function(U) for _ in range(mesh_extrapolation_order or 0)]
+
+    def extrapolation_coefficients(order):
+        """The weights of u^n, ..., u^{n-order} in the polynomial extrapolation of degree ``order`` to the
+        next of equally spaced time steps."""
+        return [(-1) ** j * math.comb(order + 1, j + 1) for j in range(order + 1)]
+
     du, dv, dp, dz = ufl.TestFunctions(W)
 
     # create Dirichlet boundary condition
@@ -343,6 +414,22 @@ def solve(
 
     bcs = [u_f_bc, inflow_bc, noslip_bc]
 
+    # With kinematic_bc, the displacement of the solid, interface included, is given by the kinematic
+    # relation from the current v, node by node; the value is set before each residual evaluation.
+    if kinematic_bc:
+        # The kinematic relation is applied dof by dof between u and v, so they need the same dofs.
+        if not (
+            np.array_equal(U.dofmap.list, V.dofmap.list)
+            and U.dofmap.index_map.size_local == V.dofmap.index_map.size_local
+            and U.dofmap.index_map_bs == V.dofmap.index_map_bs
+        ):
+            raise ValueError("kinematic_bc needs the same element for U and V")
+        kinematic_bc_func = dolfinx.fem.Function(U)
+        solid_u_dofs = dolfinx.fem.locate_dofs_topological(
+            U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
+        )
+        bcs.append(dolfinx.fem.dirichletbc(kinematic_bc_func, solid_u_dofs))
+
     # DESCRIBE FSI PROBLEM
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
@@ -375,8 +462,9 @@ def solve(
     def A_T(u, u_old, v, v_old):
         return A_T_mass(u, u_old, v, v_old) + A_T_mesh_transport(u, u_old, v, v_old)
 
-    def A_I(u, v, z):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
+    def A_I(u, u_f_pred, v, z):
+        # The mesh motion takes u, the continuity equation u_f_pred.
+        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_pred)
         J = ufl.det(F)
 
         residual = ufl.inner(z, dz) * dx_fluid
@@ -425,27 +513,33 @@ def solve(
 
         return residual
 
-    residual = A_T(u, u_old, v, v_old)
-    residual += A_I(u, v, z)
-    residual += A_P(u, p)
-    residual += theta * A_E_fluid(u, v)
-    residual += (1.0 - theta) * A_E_fluid(u_old, v_old)
+    def build_residual(u, u_f_pred):
+        """The residual blocks, with the displacement ``u`` in the mesh motion and the kinematic relation of
+        the solid, and ``u_f_pred`` in the ALE terms of the fluid: F = I + grad(u_f_pred), J = det(F) and
+        the mesh velocity (u_f_pred - u_old) / dt."""
+        residual = A_T(u_f_pred, u_old, v, v_old)
+        residual += A_I(u, u_f_pred, v, z)
+        residual += A_P(u_f_pred, p)
+        residual += theta * A_E_fluid(u_f_pred, v)
+        residual += (1.0 - theta) * A_E_fluid(u_old, v_old)
 
-    u_condensed = u_old + dt * ((1.0 - theta) * v_old + theta * v)
-    residual += theta * A_E_solid(u_condensed)
-    residual += (1.0 - theta) * A_E_solid(u_old)
+        u_condensed = u_old + dt * ((1.0 - theta) * v_old + theta * v)
+        residual += theta * A_E_solid(u_condensed)
+        residual += (1.0 - theta) * A_E_solid(u_old)
 
-    # Add in u_s with zero constants for correct sparsity patterns
-    residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
-    residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
+        # Add in u_s with zero constants for correct sparsity patterns
+        residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
+        residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
+
+        # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
+        return [cap_quadrature_degree(form, max_quadrature_degree) for form in ufl.extract_blocks(residual)]
 
     # --------------------------------------------
 
     # Do-nothing condition
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
-    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
-    residual_base_ufl = [cap_quadrature_degree(form, max_quadrature_degree) for form in ufl.extract_blocks(residual)]
+    residual_base_ufl = build_residual(u, u)
     jacobian_full_base_ufl = dolfinx.fem.forms.derivative_block(residual_base_ufl, [u, v, p, z])
 
     # One block per unknown in [u, v, p, z], since blocked assembly places forms by
@@ -470,20 +564,10 @@ def solve(
     residual_post = dolfinx.fem.form(residual_post_ufl, entity_maps=entity_maps)
     jacobian_post = dolfinx.fem.form(jacobian_post_ufl, entity_maps=entity_maps)
 
-    jacobian_approximate_base_ufl = [
-        [jacobian_full_base_ufl[row][column] for column in range(len([u, v, p, z]))] for row in range(len([u, v, p, z]))
-    ]
-
-    # Neglect the terms depending on u_f in v and p.
-    # The neglecting is really in terms of fluid interior
-    # and fluid interface dofs of u, but we don't have that distinction here,
-    # so we do it by hand.
-
-    # Neglect the terms for v w.r.t. u. E_S is no longer dependent on u because of the condensation.
-    jacobian_approximate_base_ufl[1][0] = None
-
-    # Neglect terms for p w.r.t. u.
-    jacobian_approximate_base_ufl[2][0] = None
+    # J_0: with the ALE terms of the fluid on the coefficient u_f_pred, the momentum and continuity
+    # equations do not depend on u, so their blocks of derivatives with respect to u are empty. The
+    # solid stress does not either, because of the condensation.
+    jacobian_approximate_base_ufl = dolfinx.fem.forms.derivative_block(build_residual(u, u_f_pred), [u, v, p, z])
 
     # The approximate jacobian forms for the second assembly are the same as for non-approximate case.
     # Therefore, we make only the one jacobian_post-form.
@@ -576,6 +660,10 @@ def solve(
     # to account for test function restriction on the interface.
 
     solver = problem.solver
+    if hold_dirichlet_values and not kinematic_bc:
+        raise ValueError("hold_dirichlet_values needs kinematic_bc=True")
+    # Replaces the residual function, so it is created before the wrappers below take it.
+    dirichlet = DirichletWithoutLifting(problem) if hold_dirichlet_values else None
     b_vec, (fem_residual, res_args, res_kargs) = solver.getFunction()
     J_mat, P_mat, (fem_jacobian, jac_args, jac_kargs) = solver.getJacobian()
 
@@ -597,18 +685,35 @@ def solve(
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(residual_post), bcs_post)
     bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jacobian_post, 1), bcs_post)
 
+    # Whether J_0 takes the ALE terms of the fluid on the displacement of the Newton iterate: always with
+    # mesh_extrapolation_order=None, and in the first step of a run with an order of 1 or more, where
+    # there is no deformation history to extrapolate from yet.
+    jacobian_mesh_state = {"from_iterate": mesh_extrapolation_order is None}
+
     def pre_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
-        pass
+        # u holds the iterate x here, set by the residual evaluation at x that comes before.
+        if jacobian_mesh_state["from_iterate"]:
+            u_f_pred.x.array[:] = u.x.array
 
     def post_jacobian(x: PETSc.Vec, J: PETSc.Mat) -> None:
+        if kinematic_bc:
+            return  # The Dirichlet condition on the solid replaces the restricted rows.
         J.zeroRows(rows_d, diag=0.0)
         dolfinx.fem.petsc.assemble_matrix(J, jacobian_post, bcs=[u_s_bc, *bcs])
         J.assemble()
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
-        pass
+        if kinematic_bc:
+            # The Dirichlet value from the v of x, which the residual evaluation would assign only after.
+            x.ghostUpdate(PETSc.InsertMode.INSERT, PETSc.ScatterMode.FORWARD)
+            dolfinx.fem.petsc.assign(x, [u, v, p, z])
+            kinematic_bc_func.x.array[:] = u_old.x.array + dt_val * (
+                theta_val * v.x.array + (1.0 - theta_val) * v_old.x.array
+            )
 
     def post_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
+        if kinematic_bc:
+            return  # The Dirichlet condition on the solid replaces the restricted rows.
 
         dolfinx.fem.petsc.set_bc(b, [[bc_deactivate], [], [], []], alpha=0.0)  # zero restricted rows
 
@@ -727,7 +832,8 @@ def solve(
     # u_S with the right-hand side updated by C delta v, then K_m for (z, u_I) with the
     # right-hand side updated by L delta u_S.
     pc = solver.getKSP().getPC()
-    pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", make_is(rows_u_S)), ("m", make_is(rows_m)))
+    is_u_S, is_m = make_is(rows_u_S), make_is(rows_m)
+    pc.setFieldSplitIS(("q_c", make_is(rows_q_c)), ("u_S", is_u_S), ("m", is_m))
 
     if direct_k_c_solve:
         velocity_pressure_solve_options = {
@@ -823,7 +929,62 @@ def solve(
 
     # Records failed linear solves nested in the fieldsplits, such as a K_c FGMRES that reaches its
     # iteration limit, which neither PETSc nor the SNES converged reason report.
-    ksp_check = KSPConvCheck(solver.getKSP())
+    if kinematic_bc and kinematic_bc_extension:
+        # A_mS delta u_S: the mesh motion rows of z, -(grad u, grad dz) on the fluid, applied to a change
+        # delta u_S of the solid displacement, of which only the interface values reach the fluid cells.
+        delta_u_S = dolfinx.fem.Function(U)
+        dz_ = ufl.TestFunction(Z)
+        mesh_coupling_form = dolfinx.fem.form(
+            -ufl.inner(ufl.grad(delta_u_S), ufl.grad(dz_)) * dx_fluid, entity_maps=entity_maps
+        )
+        is_z = make_is(rows_z)
+        extension_rhs = b_vec.duplicate()
+        solid_owned_dofs = np.flatnonzero(u_solid)
+
+    def kinematic_update(ksp: PETSc.KSP, b: PETSc.Vec, y: PETSc.Vec) -> None:
+        """Set the solid part of the Newton update y, at the end of the linear solve, so that the next
+        iterate x - y has u = u_old + dt * (theta * v + (1 - theta) * v_old) with its own v on the solid
+        dofs, and with kinematic_bc_extension, extend the change into the fluid by the mesh motion. u and
+        v still hold the current iterate here."""
+        if dirichlet is not None:
+            # Hold the update of the other Dirichlet dofs before v_next is computed from it; the
+            # line-search pre-check that does so comes after this hook.
+            dirichlet.hold_update(solver.getSolution(), y)
+        n_u, n_v = offsets_owned[1] - offsets_owned[0], offsets_owned[2] - offsets_owned[1]
+        v_next = v.x.array[:n_v] - y.getArray(readonly=True)[offsets_owned[1] : offsets_owned[2]]
+        u_next = u_old.x.array[:n_u] + dt_val * (theta_val * v_next + (1.0 - theta_val) * v_old.x.array[:n_v])
+        if dirichlet is not None:
+            # The kinematic value of the next iterate, so that the pre-check holds the update set below.
+            kinematic_bc_func.x.array[:n_u] = u_next
+            kinematic_bc_func.x.scatter_forward()
+        # The rows of is_u_S are the owned solid u dofs in increasing order, those of solid_owned_dofs.
+        y_S = y.getSubVector(is_u_S)
+        y_S_before = y_S.getArray(readonly=True).copy()
+        y_S.setArray(u.x.array[:n_u][u_solid] - u_next[u_solid])
+        delta = y_S.getArray(readonly=True) - y_S_before
+        y.restoreSubVector(is_u_S, y_S)
+        if not kinematic_bc_extension:
+            return
+        # The update of the mesh motion block m = (z, u_I) changes by -K_m^{-1} A_mS delta.
+        delta_u_S.x.array[:] = 0.0
+        delta_u_S.x.array[solid_owned_dofs] = delta
+        delta_u_S.x.scatter_forward()
+        coupling = dolfinx.fem.assemble_vector(mesh_coupling_form)
+        coupling.scatter_reverse(dolfinx.la.InsertMode.add)
+        extension_rhs.zeroEntries()
+        rhs_z = extension_rhs.getSubVector(is_z)
+        rhs_z.setArray(coupling.array[: offsets_owned[4] - offsets_owned[3]])
+        extension_rhs.restoreSubVector(is_z, rhs_z)
+        rhs_m = extension_rhs.getSubVector(is_m)
+        y_m = y.getSubVector(is_m)
+        correction = rhs_m.duplicate()
+        ksp_m.solve(rhs_m, correction)
+        y_m.axpy(-1.0, correction)
+        y.restoreSubVector(is_m, y_m)
+        extension_rhs.restoreSubVector(is_m, rhs_m)
+        correction.destroy()
+
+    ksp_check = KSPConvCheck(solver.getKSP(), post_solve=kinematic_update if kinematic_bc else None)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
     init_qoi_file(qoi_path, comm, restart, t, dt_val)
@@ -846,8 +1007,21 @@ def solve(
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
 
+        # Shift the deformation history by one step; u_history[0] is u_old.
+        for i in range(len(u_history) - 1, 0, -1):
+            u_history[i].x.array[:] = u_history[i - 1].x.array
         u_old.x.array[:] = u.x.array[:]
         v_old.x.array[:] = v.x.array[:]
+        if kinematic_bc:
+            # The kinematic value at the initial guess v = v_old, which DirichletWithoutLifting sets in it.
+            kinematic_bc_func.x.array[:] = u_old.x.array + dt_val * v_old.x.array
+
+        if mesh_extrapolation_order is not None:
+            # Extrapolate the mesh to the new time step, with the highest order the steps of this run
+            # allow. The arrays hold the owned and ghost dofs, which a linear combination keeps consistent.
+            order = min(mesh_extrapolation_order, step - first_step)
+            jacobian_mesh_state["from_iterate"] = order == 0 < mesh_extrapolation_order
+            u_f_pred.x.array[:] = sum(c * u_history[j].x.array for j, c in enumerate(extrapolation_coefficients(order)))
 
         PETSc.Sys.Print(f"\n\n{t = :.3f}")
 
@@ -869,6 +1043,27 @@ def solve(
         reuse_description = "none, reassembled in every Newton iteration"
     else:
         reuse_description = f"reassembled when ||R_l|| > gamma_reassemble * ||R_(l-1)||, with {gamma_reassemble = }"
+    if kinematic_bc:
+        solid_displacement_description = (
+            "Dirichlet condition from the kinematic relation, set after each linear solve,\n"
+            + (
+                "    and extended into the fluid by the mesh motion"
+                if kinematic_bc_extension
+                else "    without extending the interface update into the fluid"
+            )
+        )
+    else:
+        solid_displacement_description = "kinematic rows, with restricted test functions"
+    if hold_dirichlet_values:
+        solid_displacement_description += (
+            ";\n    Dirichlet values held in every iterate, residual not lifted, solid predicted by dt * v_old"
+        )
+    if mesh_extrapolation_order is None:
+        jacobian_mesh_description = "the displacement of the Newton iterate"
+    else:
+        jacobian_mesh_description = (
+            f"extrapolated from the deformation history, polynomial of degree {mesh_extrapolation_order}"
+        )
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -893,8 +1088,10 @@ def solve(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
             "  Solid stress: in terms of v, via u = u_old + dt * (theta * v + (1 - theta) * v_old)\n"
+            f"  Solid and interface displacement: {solid_displacement_description}\n"
             "  Jacobian: approximate J_0, without the fluid ALE derivatives (eq. (3) of\n"
             "    docs/restricted-iterative-solver.md)\n"
+            f"  ALE terms of the fluid in J_0: {jacobian_mesh_description}\n"
             "  Linear solve: multiplicative fieldsplit over q_c = (v, p), u_S and m = (z, u_I),\n"
             "    MUMPS LU on the x component of K_m, for the whole run and for both components at once\n"
             "    by MatMatSolve,\n"
