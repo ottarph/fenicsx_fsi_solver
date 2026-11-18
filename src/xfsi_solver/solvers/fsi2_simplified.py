@@ -14,7 +14,13 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
+from xfsi_solver.petsc_options.fsi2d import (
+    DEFAULT_DIRECT_SOLVER_OPTIONS,
+    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
+    MUMPS_ON_SOLID,
+)
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
@@ -45,116 +51,6 @@ PHYSICAL_MARKERS = {
     "channel_side": 24,  # no-slip for fluid
     "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
-
-DEFAULT_SOLVER_OPTIONS = {
-    # SNES options
-    "snes_linesearch_type": "none",
-    "snes_max_it": 20,
-    "snes_atol": 1.0e-7,
-    "snes_rtol": 1.0e-12,
-    "snes_stol": 0.0,
-    # Turn off errors, catch manually instead.
-    "snes_error_if_not_converged": False,
-    "ksp_error_if_not_converged": False,
-    # Print to console.
-    # "snes_monitor": None,
-    "snes_converged_reason": None,
-}
-DEFAULT_DIRECT_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
-    # KSP options
-    "ksp_type": "preonly",
-    "pc_type": "lu",
-    "pc_factor_mat_solver_type": "mumps",
-    "mat_mumps_cntl_1": 1e-4,
-}
-DEFAULT_V_OPTIONS = {
-    # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "ksp_type": "preonly",
-    "pc_type": "gamg",
-    "pc_gamg_threshold": 0.01,
-    "pc_gamg_reuse_interpolation": True,
-    "mg_levels_ksp_type": "richardson",
-    "mg_levels_pc_type": "sor",
-    # "ksp_converged_reason": None,
-}
-DEFAULT_P_OPTIONS = {
-    # One BoomerAMG V-cycle on \hat S.
-    "ksp_type": "preonly",
-    "pc_type": "hypre",
-    "pc_hypre_type": "boomeramg",
-    # "ksp_converged_reason": None,
-}
-DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
-    DEFAULT_SOLVER_OPTIONS
-    | {
-        "ksp_converged_reason": None,
-        "ksp_type": "fgmres",
-        "ksp_rtol": 1e-5,
-        "ksp_atol": 1e-8,
-        "ksp_max_it": 200,
-        #
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "schur",
-        "pc_fieldsplit_schur_fact_type": "upper",
-        # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
-        # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
-        # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
-        # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
-        # inertia term rho_f / dt dominates diag(A) at small time steps.
-        "pc_fieldsplit_schur_precondition": "selfp",
-    }
-    | {f"fieldsplit_v_0_{k}": v for k, v in DEFAULT_V_OPTIONS.items()}
-    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
-)
-# The velocity block of MUMPS_ON_SOLID, split into the dofs on solid cells (with the interface), s, and
-# the fluid dofs, f.
-DEFAULT_V_S_OPTIONS = {
-    # MUMPS LU on v_s.
-    "ksp_type": "preonly",
-    "pc_type": "lu",
-    "pc_factor_mat_solver_type": "mumps",
-}
-DEFAULT_V_F_OPTIONS = {
-    # One GAMG V-cycle on v_f, with the block size attached to is_v_f.
-    "ksp_type": "preonly",
-    "pc_type": "gamg",
-    "pc_gamg_threshold": 0.01,
-    "pc_gamg_reuse_interpolation": True,
-    "mg_levels_ksp_type": "richardson",
-    "mg_levels_ksp_max_it": 2,
-    "mg_levels_pc_type": "sor",
-    "mg_levels_pc_sor_omega": 0.4,
-    # "ksp_converged_reason": None,
-}
-# The Schur factor of DEFAULT_ITERATIVE_SOLVER_OPTIONS, with the velocity block split again,
-# multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by one GAMG V-cycle. The
-# solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is Jacobi
-# between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated by the
-# mass. Needs requires_v_sub_IS=True in solve, which sets the inner ISes.
-MUMPS_ON_SOLID = (
-    DEFAULT_SOLVER_OPTIONS
-    | {
-        "ksp_converged_reason": None,
-        "ksp_type": "fgmres",
-        "ksp_rtol": 1e-5,
-        "ksp_atol": 1e-8,
-        "ksp_max_it": 200,
-        #
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "schur",
-        "pc_fieldsplit_schur_fact_type": "upper",
-        # The selfp approximation of the Schur complement, as in DEFAULT_ITERATIVE_SOLVER_OPTIONS.
-        "pc_fieldsplit_schur_precondition": "selfp",
-        #
-        # v split again, multiplicatively, into its solid (with the interface) and fluid dofs.
-        "fieldsplit_v_0_ksp_type": "preonly",
-        "fieldsplit_v_0_pc_type": "fieldsplit",
-        "fieldsplit_v_0_pc_fieldsplit_type": "multiplicative",
-    }
-    | {f"fieldsplit_v_0_fieldsplit_s_{k}": v for k, v in DEFAULT_V_S_OPTIONS.items()}
-    | {f"fieldsplit_v_0_fieldsplit_f_{k}": v for k, v in DEFAULT_V_F_OPTIONS.items()}
-    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
-)
 
 
 def solve(
@@ -542,87 +438,21 @@ def solve(
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
 
-    from xfsi_solver.fsi.materials import Fluid, Solid
-
     # create residual form with u condensed out.
-
-    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u_f - u_f_old) / dt), dv) * dx_fluid
-
-        return residual
-
-    def A_T_mass(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_old)
-        J_old = ufl.det(F_old)
-        J_mid = 0.5 * (J + J_old)
-
-        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
-
-        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
-
-        return residual
-
-    def A_T(v, v_old, u_f, u_f_old):
-        return A_T_mass(v, v_old, u_f, u_f_old) + A_T_mesh_transport(v, v_old, u_f, u_f_old)
-
-    def A_I(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
-
-        return residual
-
-    def A_E_fluid_viscous(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Fluid.NS_velocity(u_f, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    def A_E_fluid_transport(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
-
-        return residual
-
-    def A_E_fluid(v, u_f):
-
-        return A_E_fluid_viscous(v, u_f) + A_E_fluid_transport(v, u_f)
-
-    def A_E_solid(u_s):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Solid.STVK(u_s, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        return residual
-
-    def A_P(p, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    residual = dt * A_T(v, v_old, u_f, u_f_old)
-    residual += A_I(v, u_f)
-    residual += dt * A_P(p, u_f)
-    residual += dt * theta * A_E_fluid(v, u_f)
-    residual += dt * (1.0 - theta) * A_E_fluid(v_old, u_f_old)
-
-    u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
-    residual += dt * theta * A_E_solid(u_s_condensed)
-    residual += dt * (1.0 - theta) * A_E_solid(u_s_old)
+    forms = FSIForms(
+        dv=dv,
+        dp=dp,
+        dx_fluid=dx_fluid,
+        dx_solid=dx_solid,
+        rho_f=rho_f,
+        nu_f=nu_f,
+        rho_s=rho_s,
+        mu_s=mu_s,
+        lambda_s=lambda_s,
+        dt=dt,
+        theta=theta,
+    )
+    residual = forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
 
     residual_blocks = ufl.extract_blocks(residual)
 

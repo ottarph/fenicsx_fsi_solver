@@ -3,11 +3,8 @@ import pytest
 from newton_log_helpers import check_solver_newton_log
 from restart_helpers import check_start_from_initial_state, read_checkpoint_state
 
-from xfsi_solver.solvers.threeDfsi_simplified import (
-    DEFAULT_DIRECT_SOLVER_OPTIONS,
-    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
-    solve,
-)
+from xfsi_solver.petsc_options.fsi3d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
+from xfsi_solver.solvers.threeDfsi_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
 
 VECTOR = ("Lagrange", 2, (3,))
@@ -16,6 +13,13 @@ VECTOR = ("Lagrange", 2, (3,))
 ELEMENTS = {"u": VECTOR, "v": VECTOR, "p": ("Lagrange", 1)}
 
 MESH = "data/meshes/fsi3d/mesh_sec_coarse.xdmf"
+
+# The residual of threeDfsi_simplified is multiplied by dt (except the continuity term), so the default
+# snes_atol = 1e-7 is 1e-7 / dt = 2.5e-5 on the unscaled momentum rows at dt = 0.004. On this mesh, from
+# rest, Newton then stops after one iteration in the first step, so two runs that take different paths
+# to the same state stop at different iterates. The tests comparing such runs converge Newton to
+# snes_atol = 1e-7 * dt instead, the tolerance of the unscaled residual.
+CONVERGED_SOLVER_OPTIONS = DEFAULT_DIRECT_SOLVER_OPTIONS | {"snes_atol": 1e-7 * 0.004}
 
 
 @pytest.mark.slow
@@ -34,24 +38,30 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
         )
         return np.loadtxt(qoi_path, ndmin=2)
 
+    # Since the residual is multiplied by dt, the default snes_atol = 1e-7 and ksp_atol = 1e-8 stop Newton
+    # after one iteration in the first step, and the default iterative solve then differs from the direct
+    # one by 0.2% in the drag and by more than the lift itself. Both solves are converged tightly here, so
+    # that the test compares the solutions, not where each solver stops.
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
     # Fails with DIVERGED_LINEAR_SOLVE if the fieldsplit does not get the v and p splits or their options.
-    iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS)
-    direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS)
+    iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS | converged)
+    direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS | converged)
 
     # The initial state and two time steps, with t, drag, lift and the displacement of B.
     assert iterative.shape == direct.shape == (3, 6)
     # The inflow drives the fluid in the x-direction, so the drag grows.
     assert 0.0 < iterative[1, 1] < iterative[2, 1]
-    # Newton stops at the same absolute residual tolerance with either linear solver, but at different
-    # iterates. The initial row of zeros is the same in both.
-    np.testing.assert_allclose(iterative[:, :3], direct[:, :3], rtol=1e-4, atol=0)
+    # The QoIs agree to all 7 written digits; rtol = 1e-6 allows for the rounding of the last one. The
+    # initial row of zeros is the same in both.
+    np.testing.assert_allclose(iterative[:, :3], direct[:, :3], rtol=1e-6, atol=0)
 
 
 @pytest.mark.slow
 def test_threeDfsi_simplified_prediction_options(output_dirs):
     # The default run predicts the displacements, here without Jacobian reuse, so it assembles in
     # every Newton iteration. The other starts from the previous step as it is, with the default
-    # reuse. Both converge to the same states, within the Newton tolerance.
+    # reuse. Both converge to the same states, within the Newton tolerance: their QoIs differ by at most
+    # 2.7e-7 of a column's largest value.
     dt_val = 0.004
 
     def run(name, **kwargs):
@@ -61,7 +71,7 @@ def test_threeDfsi_simplified_prediction_options(output_dirs):
             dt_val=dt_val,
             output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
-            solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS,
+            solver_options=CONVERGED_SOLVER_OPTIONS,
             newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
             **kwargs,
         )
@@ -100,7 +110,7 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
         dt_val=0.004,
         rtol=1e-6,
         qoi_rtol=1e-6,
-        solve_kwargs={"solver_options": DEFAULT_DIRECT_SOLVER_OPTIONS},
+        solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
     )
 
 

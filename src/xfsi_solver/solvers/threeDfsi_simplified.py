@@ -15,7 +15,13 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_motion_solver_options
+from xfsi_solver.petsc_options.fsi3d import (
+    DEFAULT_DIRECT_SOLVER_OPTIONS,
+    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
+    MUMPS_ON_SOLID,
+)
 from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
@@ -47,130 +53,6 @@ PHYSICAL_MARKERS = {
     "channel_side": 24,  # no-slip for fluid
     "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
-
-DEFAULT_SOLVER_OPTIONS = {
-    # SNES options
-    "snes_linesearch_type": "none",
-    "snes_max_it": 20,
-    "snes_atol": 1.0e-7,
-    "snes_rtol": 1.0e-12,
-    "snes_stol": 0.0,
-    # Turn off errors, catch manually instead.
-    "snes_error_if_not_converged": False,
-    "ksp_error_if_not_converged": False,
-    # Print to console.
-    # "snes_monitor": None,
-    "snes_converged_reason": None,
-}
-DEFAULT_DIRECT_SOLVER_OPTIONS = DEFAULT_SOLVER_OPTIONS | {
-    # KSP options
-    "ksp_type": "preonly",
-    "pc_type": "lu",
-    "pc_factor_mat_solver_type": "mumps",
-    "mat_mumps_cntl_1": 1e-4,
-}
-DEFAULT_V_OPTIONS = {
-    # One GAMG V-cycle on v, with the near-nullspace and block size attached to is_v.
-    "ksp_type": "preonly",
-    "pc_type": "gamg",
-    "pc_gamg_threshold": 0.01,
-    "pc_gamg_reuse_interpolation": True,
-    # GAMG smoothing with three steps of under-relaxed SOR per level. In parallel, PETSc's SOR is
-    # Gauss-Seidel within each rank and Jacobi between ranks, which can diverge where the coupling
-    # across a rank boundary is strong, such as in the thin, stiff beam: with omega = 1, GAMG
-    # diverged for some partitions of the 3d mesh in threeDfsi_c0ip. There, on the fine mesh with
-    # 64 ranks, three steps took a third fewer FGMRES iterations than PETSc's two, and omega = 0.4
-    # fewer than 0.3, 0.5 and 0.6 (32bd021:notes/fsi3d/implementation-log.md).
-    "mg_levels_ksp_type": "richardson",
-    "mg_levels_ksp_max_it": 3,
-    "mg_levels_pc_type": "sor",
-    "mg_levels_pc_sor_omega": 0.4,
-    # "ksp_converged_reason": None,
-}
-DEFAULT_P_OPTIONS = {
-    # One BoomerAMG V-cycle on \hat S.
-    "ksp_type": "preonly",
-    "pc_type": "hypre",
-    "pc_hypre_type": "boomeramg",
-    # hypre's recommendation for 3d problems; its default, 0.25, suits 2d.
-    "pc_hypre_boomeramg_strong_threshold": 0.5,
-    # "ksp_converged_reason": None,
-}
-# The K_c options of threeDfsi_c0ip, with a BoomerAMG strong threshold of 0.5.
-DEFAULT_ITERATIVE_SOLVER_OPTIONS = (
-    DEFAULT_SOLVER_OPTIONS
-    | {
-        "ksp_converged_reason": None,
-        "ksp_type": "fgmres",
-        # On the medium mesh, rtol 1e-4 kept the Newton iterations of 1e-5 with a fifth fewer FGMRES
-        # iterations (32bd021:notes/fsi3d/implementation-log.md).
-        "ksp_rtol": 1e-4,
-        "ksp_atol": 1e-8,
-        "ksp_max_it": 200,
-        #
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "schur",
-        "pc_fieldsplit_schur_fact_type": "upper",
-        # The pressure Schur complement S = -B A^{-1} G is dense and only applied as an operator, so it
-        # is preconditioned by the sparse approximation \hat S = -B diag(A)^{-1} G. The pressure term
-        # gives G = -B^T (up to quadrature, by the Piola identity), so \hat S = B diag(A)^{-1} B^T is a
-        # divergence of a gradient: close to a pressure Laplacian, scaled by about dt / rho_f, since the
-        # inertia term rho_f / dt dominates diag(A) at small time steps.
-        "pc_fieldsplit_schur_precondition": "selfp",
-    }
-    | {f"fieldsplit_v_0_{k}": v for k, v in DEFAULT_V_OPTIONS.items()}
-    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
-)
-# The velocity block of MUMPS_ON_SOLID, split into the dofs on solid cells (with the interface), s, and
-# the fluid dofs, f.
-DEFAULT_V_S_OPTIONS = {
-    # MUMPS LU on v_s.
-    "ksp_type": "preonly",
-    "pc_type": "lu",
-    "pc_factor_mat_solver_type": "mumps",
-}
-# Block Jacobi on v_f, one block per rank, with ILU(0) on each block. The fluid rows are dominated by
-# the mass, rho_f / dt M, and couple only neighbouring dofs, so they need no coarse grid: on the medium
-# and the fine mesh with dt = 0.004, block Jacobi took twice the FGMRES iterations of one GAMG V-cycle
-# (DEFAULT_V_OPTIONS, with the block size attached to is_v_f), but 17% and 22% less time per step
-# (32bd021:notes/fsi3d/implementation-log.md). Where the viscous term, nu dt / h^2, or the convection, U dt / h,
-# outgrows the mass, at larger dt or on finer meshes, use DEFAULT_V_OPTIONS here instead.
-DEFAULT_V_F_OPTIONS = {
-    "ksp_type": "preonly",
-    "pc_type": "bjacobi",
-    "sub_pc_type": "ilu",
-}
-# The Schur factor of DEFAULT_ITERATIVE_SOLVER_OPTIONS, with the velocity block split again,
-# multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by block Jacobi with
-# ILU(0). The solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is
-# Jacobi between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated
-# by the mass. Needs requires_v_sub_IS=True in solve, which sets the inner ISes.
-MUMPS_ON_SOLID = (
-    DEFAULT_SOLVER_OPTIONS
-    | {
-        "ksp_converged_reason": None,
-        "ksp_type": "fgmres",
-        # As in DEFAULT_ITERATIVE_SOLVER_OPTIONS, here with a quarter fewer FGMRES iterations than 1e-5;
-        # 1e-3 and looser took more Newton iterations.
-        "ksp_rtol": 1e-4,
-        "ksp_atol": 1e-8,
-        "ksp_max_it": 200,
-        #
-        "pc_type": "fieldsplit",
-        "pc_fieldsplit_type": "schur",
-        "pc_fieldsplit_schur_fact_type": "upper",
-        # The selfp approximation of the Schur complement, as in DEFAULT_ITERATIVE_SOLVER_OPTIONS.
-        "pc_fieldsplit_schur_precondition": "selfp",
-        #
-        # v split again, multiplicatively, into its solid (with the interface) and fluid dofs.
-        "fieldsplit_v_0_ksp_type": "preonly",
-        "fieldsplit_v_0_pc_type": "fieldsplit",
-        "fieldsplit_v_0_pc_fieldsplit_type": "multiplicative",
-    }
-    | {f"fieldsplit_v_0_fieldsplit_s_{k}": v for k, v in DEFAULT_V_S_OPTIONS.items()}
-    | {f"fieldsplit_v_0_fieldsplit_f_{k}": v for k, v in DEFAULT_V_F_OPTIONS.items()}
-    | {f"fieldsplit_p_1_{k}": v for k, v in DEFAULT_P_OPTIONS.items()}
-)
 
 
 def solve(
@@ -595,87 +477,21 @@ def solve(
     # FLUID: Bi-parabolic inflow at x = 0, no-slip on the channel walls and the cylinder, do-nothing at x = 2.8
     # SOLID: Homogeneous Dirichlet where the beam is attached to the cylinder
 
-    from xfsi_solver.fsi.materials import Fluid, Solid
-
     # create residual form with u condensed out.
-
-    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u_f - u_f_old) / dt), dv) * dx_fluid
-
-        return residual
-
-    def A_T_mass(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_old)
-        J_old = ufl.det(F_old)
-        J_mid = 0.5 * (J + J_old)
-
-        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
-
-        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
-
-        return residual
-
-    def A_T(v, v_old, u_f, u_f_old):
-        return A_T_mass(v, v_old, u_f, u_f_old) + A_T_mesh_transport(v, v_old, u_f, u_f_old)
-
-    def A_I(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
-
-        return residual
-
-    def A_E_fluid_viscous(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Fluid.NS_velocity(u_f, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    def A_E_fluid_transport(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
-
-        return residual
-
-    def A_E_fluid(v, u_f):
-
-        return A_E_fluid_viscous(v, u_f) + A_E_fluid_transport(v, u_f)
-
-    def A_E_solid(u_s):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Solid.STVK(u_s, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        return residual
-
-    def A_P(p, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    residual = A_T(v, v_old, u_f, u_f_old)
-    residual += A_I(v, u_f)
-    residual += A_P(p, u_f)
-    residual += theta * A_E_fluid(v, u_f)
-    residual += (1.0 - theta) * A_E_fluid(v_old, u_f_old)
-
-    u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
-    residual += theta * A_E_solid(u_s_condensed)
-    residual += (1.0 - theta) * A_E_solid(u_s_old)
+    forms = FSIForms(
+        dv=dv,
+        dp=dp,
+        dx_fluid=dx_fluid,
+        dx_solid=dx_solid,
+        rho_f=rho_f,
+        nu_f=nu_f,
+        rho_s=rho_s,
+        mu_s=mu_s,
+        lambda_s=lambda_s,
+        dt=dt,
+        theta=theta,
+    )
+    residual = forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
 
     residual_blocks = ufl.extract_blocks(residual)
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
