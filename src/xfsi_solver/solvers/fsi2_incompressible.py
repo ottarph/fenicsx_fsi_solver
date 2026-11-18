@@ -473,13 +473,17 @@ def solve(
 
     # create residual form with u condensed out.
 
-    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
+    def mesh_transport(v, u_f, w):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
         J = ufl.det(F)
 
-        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u_f - u_f_old) / dt), dv) * dx_fluid
+        return -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * w, dv) * dx_fluid
 
-        return residual
+    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
+        # Theta-weighted, with the mesh velocity of the step in both levels: evaluated at the new level only,
+        # it makes the scheme first order in time on a moving mesh.
+        w = (u_f - u_f_old) / dt
+        return theta * mesh_transport(v, u_f, w) + (1.0 - theta) * mesh_transport(v_old, u_f_old, w)
 
     def A_T_mass(v, v_old, u_f, u_f_old):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
@@ -544,11 +548,14 @@ def solve(
 
         return residual
 
-    def A_P_fluid(p, u_f):
+    def A_P_fluid(p, u_f, u_f_old):
+        # The implicit pressure with the geometric factor J F^-T theta-weighted: at the new level only, it
+        # makes the scheme first order in time on a moving mesh.
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
+        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_old)
+        geometry = theta * ufl.det(F) * ufl.inv(F).T + (1.0 - theta) * ufl.det(F_old) * ufl.inv(F_old).T
 
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+        residual = ufl.inner(Fluid.NS_pressure(p) * geometry, ufl.grad(dv)) * dx_fluid
 
         return residual
 
@@ -563,7 +570,7 @@ def solve(
     # The momentum equation is multiplied by dt; the continuity equation and the constraint are not.
     residual = dt * A_T(v, v_old, u_f, u_f_old)
     residual += A_I_fluid(v, u_f)
-    residual += dt * A_P_fluid(p, u_f)
+    residual += dt * A_P_fluid(p, u_f, u_f_old)
     residual += dt * theta * A_E_fluid(v, u_f)
     residual += dt * (1.0 - theta) * A_E_fluid(v_old, u_f_old)
 
