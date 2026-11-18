@@ -153,8 +153,8 @@ def solve(
     shared by cells taking the value of one of them, so the output pressure is for viewing only.
 
     Return a dict with the time steps ``t``, the errors ``error_v`` and ``error_p`` at each of them (the first
-    at t = 0), ``error_p_theta``, the pressure error against the exact pressure at t^{n+theta} instead of
-    t^{n+1}, ``newton_iterations``, and the local dof values ``v`` and ``p`` at the final time.
+    at t = 0), ``error_p_theta``, the pressure error against the exact pressure at t^{n+theta} on the domain at
+    t^{n+theta} instead of t^{n+1}, ``newton_iterations``, and the local dof values ``v`` and ``p`` at the final time.
     """
     if (output_path is None) != (output_every is None):
         raise ValueError("output_path and output_every go together")
@@ -242,36 +242,47 @@ def solve(
         },
     )
 
-    # The L2 errors on the current domain, pulled back to the reference square
-    # The pressure of the theta-scheme is also compared with the exact pressure at t^{n+theta}, the time at
-    # which it acts as the Lagrange multiplier of the time step (t^{n+1/2} for Crank-Nicolson).
-    t_exact, t_exact_p = dolfinx.fem.Constant(mesh, 0.0), dolfinx.fem.Constant(mesh, 0.0)
-    x = ufl.SpatialCoordinate(mesh) + u_f
-    J = ufl.det(ufl.Identity(2) + ufl.grad(u_f))
-    v_exact = ufl.as_vector(exact_velocity(x, t_exact, nu, lib=ufl))
-    p_exact = exact_pressure(x, t_exact_p, nu, lib=ufl)
+    # The L2 errors on the current domain, pulled back to the reference square. The pressure of the
+    # theta-scheme is also compared with the exact pressure at t^{n+theta} on the domain at t^{n+theta}, that of
+    # the displacement theta u_f + (1 - theta) u_f_old: it is the Lagrange multiplier of the time step, and the
+    # momentum equation weights its geometric factor J F^-T so (t^{n+1/2} for Crank-Nicolson).
     dx_error = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": 2 * velocity_degree + 4})
-    mean_p, mean_p_exact = dolfinx.fem.Constant(mesh, 0.0), dolfinx.fem.Constant(mesh, 0.0)
-    area_form = dolfinx.fem.form(J * dx_error)
-    mean_forms = dolfinx.fem.form(p * J * dx_error), dolfinx.fem.form(p_exact * J * dx_error)
-    error_v_form = dolfinx.fem.form(ufl.inner(v - v_exact, v - v_exact) * J * dx_error)
-    e_p = (p - mean_p) - (p_exact - mean_p_exact)
-    error_p_form = dolfinx.fem.form(e_p**2 * J * dx_error)
+    X = ufl.SpatialCoordinate(mesh)
 
     def assemble(form):
         return comm.allreduce(dolfinx.fem.assemble_scalar(form), op=MPI.SUM)
 
-    def pressure_error(t_p):
-        t_exact_p.value = t_p
-        area = assemble(area_form)
-        mean_p.value = assemble(mean_forms[0]) / area
-        mean_p_exact.value = assemble(mean_forms[1]) / area
-        return np.sqrt(assemble(error_p_form))
+    t_exact = dolfinx.fem.Constant(mesh, 0.0)
+    J = ufl.det(ufl.Identity(2) + ufl.grad(u_f))
+    v_exact = ufl.as_vector(exact_velocity(X + u_f, t_exact, nu, lib=ufl))
+    error_v_form = dolfinx.fem.form(ufl.inner(v - v_exact, v - v_exact) * J * dx_error)
+
+    def pressure_error_form(u_d):
+        """A function of the time t_p that returns the mean-free pressure error against the exact pressure at
+        t_p, on the domain of the displacement ``u_d``."""
+        t_p, mean_p, mean_p_exact = (dolfinx.fem.Constant(mesh, 0.0) for _ in range(3))
+        J_d = ufl.det(ufl.Identity(2) + ufl.grad(u_d))
+        p_exact = exact_pressure(X + u_d, t_p, nu, lib=ufl)
+        area = dolfinx.fem.form(J_d * dx_error)
+        means = dolfinx.fem.form(p * J_d * dx_error), dolfinx.fem.form(p_exact * J_d * dx_error)
+        error = dolfinx.fem.form(((p - mean_p) - (p_exact - mean_p_exact)) ** 2 * J_d * dx_error)
+
+        def evaluate(t):
+            t_p.value = t
+            a = assemble(area)
+            mean_p.value = assemble(means[0]) / a
+            mean_p_exact.value = assemble(means[1]) / a
+            return np.sqrt(assemble(error))
+
+        return evaluate
+
+    pressure_error = pressure_error_form(u_f)
+    pressure_error_theta = pressure_error_form(theta * u_f + (1.0 - theta) * u_f_old)
 
     def errors(t, t_theta):
-        """The velocity error at t, and the pressure errors at t and at t_theta."""
+        """The velocity and pressure errors at t, and the pressure error at t_theta."""
         t_exact.value = t
-        return np.sqrt(assemble(error_v_form)), pressure_error(t), pressure_error(t_theta)
+        return np.sqrt(assemble(error_v_form)), pressure_error(t), pressure_error_theta(t_theta)
 
     writer = None
     if output_path is not None:
