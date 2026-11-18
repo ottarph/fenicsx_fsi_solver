@@ -18,6 +18,8 @@ import ufl
 
 from xfsi_solver.fsi.materials import Fluid, Solid
 
+SOLID_MATERIALS = ("stvk", "mooney_rivlin_3")
+
 
 def _deformation(u):
     """Return the deformation gradient F = I + grad(u) and its determinant J."""
@@ -44,6 +46,17 @@ class FSIForms:
     lambda_s: dolfinx.fem.Constant
     dt: dolfinx.fem.Constant
     theta: dolfinx.fem.Constant
+    solid_material: str = "stvk"
+    mooney_rivlin_3: dict | None = None
+
+    def __post_init__(self):
+        if self.solid_material not in SOLID_MATERIALS:
+            raise ValueError(f"solid_material must be one of {SOLID_MATERIALS}, not {self.solid_material!r}")
+        if self.solid_material == "mooney_rivlin_3":
+            if self.mooney_rivlin_3 is None or set(self.mooney_rivlin_3) != {"C10", "C01", "C11", "D1"}:
+                raise ValueError("solid_material='mooney_rivlin_3' needs mooney_rivlin_3 with C10, C01, C11 and D1")
+        elif self.mooney_rivlin_3 is not None:
+            raise ValueError(f"mooney_rivlin_3 is given, but solid_material is {self.solid_material!r}")
 
     def A_T_mesh_transport(self, v, v_old, u_f, u_f_old):
         F, J = _deformation(u_f)
@@ -78,10 +91,20 @@ class FSIForms:
     def A_E_fluid(self, v, u_f):
         return self.A_E_fluid_viscous(v, u_f) + self.A_E_fluid_transport(v, u_f)
 
-    def A_E_solid(self, u_s):
+    def solid_piola(self, u_s):
+        """The first Piola-Kirchhoff stress of the solid at the displacement u_s.
+
+        The St. Venant-Kirchhoff law gives the Cauchy stress sigma, pulled back as J sigma F^-T; the
+        Mooney-Rivlin law gives the first Piola stress itself.
+        """
+        if self.solid_material == "mooney_rivlin_3":
+            return Solid.MR3_piola(u_s, **self.mooney_rivlin_3)
         F, J = _deformation(u_s)
         sigma = Solid.STVK(u_s, self.lambda_s, self.mu_s)
-        return ufl.inner(J * sigma * ufl.inv(F).T, ufl.grad(self.dv)) * self.dx_solid
+        return J * sigma * ufl.inv(F).T
+
+    def A_E_solid(self, u_s):
+        return ufl.inner(self.solid_piola(u_s), ufl.grad(self.dv)) * self.dx_solid
 
     def A_P(self, p, u_f):
         F, J = _deformation(u_f)

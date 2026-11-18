@@ -6,6 +6,27 @@ import dolfinx
 import dolfinx.fem.petsc
 import ufl
 
+# Coefficients of the compressible three-term Mooney-Rivlin solid (Solid.MR3_energy), in Pa. Without a D1, the
+# solvers take the bulk modulus from their St. Venant-Kirchhoff parameters
+# (xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients).
+#
+# An artificial benchmark material for FSI2, not a tissue fit: C10 + C01 = 2.5e5 Pa gives the initial shear
+# modulus of the FSI2 solid, mu_s = 5e5 Pa, and with D1 from the FSI2 bulk modulus, K = 2e6 + 2 * 5e5 / 3 Pa,
+# also its initial Poisson ratio 0.4, so it differs from the SVK solid at finite strain only. C11 is that of the
+# "medium" fit of Yamamoto et al. (2025), below.
+MR3_FSI2_MATCHED = {"C10": 0.0, "C01": 2.5e5, "C11": 1.8e6}
+# The same without the third term, the two-term compressible Mooney-Rivlin solid with the same initial moduli.
+MR3_FSI2_MATCHED_C11_0 = {"C10": 0.0, "C01": 2.5e5, "C11": 0.0}
+# The fits to aneurysm wall tissue of Yamamoto et al., Impact of wall property and flow rate assumptions on
+# simulations of flow-induced vibration of intracranial aneurysms, Int. J. Numer. Methods Biomed. Eng. (2025),
+# Table 1, converted to Pa. The paper gives no numerical D1, and with the FSI2 bulk modulus these are much
+# nearer incompressible than the FSI2 solid (initial Poisson ratio 0.4915 for "medium").
+MR3_YAMAMOTO_2025 = {
+    "soft": {"C10": 0.0, "C01": 2.0e3, "C11": 9.0e5},
+    "medium": {"C10": 0.0, "C01": 2.0e4, "C11": 1.8e6},
+    "stiff": {"C10": 0.0, "C01": 2.0e5, "C11": 1.8e6},
+}
+
 
 class Solid:
     def STVK(u: dolfinx.fem.Function, lambda_: dolfinx.fem.Constant, mu: dolfinx.fem.Constant):
