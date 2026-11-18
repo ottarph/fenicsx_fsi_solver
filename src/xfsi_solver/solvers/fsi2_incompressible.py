@@ -103,9 +103,12 @@ def solve(
     are c1 = mu1 / 2, c2 = mu2 / 2). The constraint det(F) = 1 is imposed by a solid pressure p_S, on
     the solid submesh, in addition to the fluid pressure p, on the fluid submesh. The elastic stress,
     shifted by its value 2 (c1 - c2) I in the reference configuration, so that the solid is stress
-    free at rest with p_S = 0, is theta-averaged in time, while the pressure stress -p_S I and the
-    constraint are fully implicit. The time stepping is shifted Crank-Nicolson, with theta = 0.5 +
-    ``absolute_theta_shift``, or theta = 0.5 + ``relative_theta_shift`` * ``dt_val``; with neither
+    free at rest with p_S = 0, is theta-averaged in time. The pressures p and p_S are implicit, the
+    multipliers of the step, with the geometric factors J F^-T of their stress terms theta-averaged like
+    the rest of the momentum equation (at the new time level only, they make the scheme first order in
+    time on a moving domain), and the constraints are imposed at the new time level. The time stepping
+    is shifted Crank-Nicolson, with theta = 0.5 + ``absolute_theta_shift``, or theta = 0.5 +
+    ``relative_theta_shift`` * ``dt_val``; with neither
     given, ``relative_theta_shift=2.0``, twice the shift of fsi2_simplified, and giving both raises
     ``ValueError``. The shift damps the stiff modes of the solid velocity by the factor
     (1 - theta) / theta per step, among them a mode that flips sign every step and that the
@@ -559,11 +562,13 @@ def solve(
 
         return residual
 
-    def A_P_solid(p_S, u_s):
+    def A_P_solid(p_S, u_s, u_s_old):
+        # The implicit solid pressure with the geometric factor J F^-T theta-weighted, as for the fluid.
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s)
-        J = ufl.det(F)
+        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s_old)
+        geometry = theta * ufl.det(F) * ufl.inv(F).T + (1.0 - theta) * ufl.det(F_old) * ufl.inv(F_old).T
 
-        residual = J * ufl.inner(Solid.IMR_pressure(p_S) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
+        residual = ufl.inner(Solid.IMR_pressure(p_S) * geometry, ufl.grad(dv)) * dx_solid
 
         return residual
 
@@ -574,11 +579,12 @@ def solve(
     residual += dt * theta * A_E_fluid(v, u_f)
     residual += dt * (1.0 - theta) * A_E_fluid(v_old, u_f_old)
 
-    # The elastic stress is theta-averaged; the solid pressure and the constraint are fully implicit.
+    # The elastic stress and the geometry of the solid pressure term are theta-averaged; the solid pressure
+    # and the constraint are fully implicit.
     u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
     residual += dt * theta * A_E_solid(u_s_condensed)
     residual += dt * (1.0 - theta) * A_E_solid(u_s_old)
-    residual += dt * A_P_solid(p_S, u_s_condensed)
+    residual += dt * A_P_solid(p_S, u_s_condensed, u_s_old)
     residual += A_I_solid(u_s_condensed)
 
     residual_blocks = ufl.extract_blocks(residual)
