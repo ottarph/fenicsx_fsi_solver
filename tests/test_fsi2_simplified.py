@@ -11,12 +11,9 @@ from restart_helpers import (
 )
 
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_motion
+from xfsi_solver.petsc_options.fsi2d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
-from xfsi_solver.solvers.fsi2_simplified import (
-    DEFAULT_DIRECT_SOLVER_OPTIONS,
-    DEFAULT_ITERATIVE_SOLVER_OPTIONS,
-    solve,
-)
+from xfsi_solver.solvers.fsi2_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
