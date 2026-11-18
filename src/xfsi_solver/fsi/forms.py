@@ -8,6 +8,12 @@ The unknowns are the velocity v on the whole mesh and the pressure p on the flui
 displacement is condensed out through the theta-scheme, u_s = u_s_old + dt * ((1 - theta) * v_old +
 theta * v), and the fluid displacement u_f, which moves the mesh, is a coefficient of the forms that
 the caller updates by a mesh motion solve.
+
+Every term that depends on the time level is theta-weighted, including the mesh transport term and the
+geometric factor J F^-T of the pressure term, so that the scheme is second order in time for theta =
+1/2 + O(dt) on a moving mesh as well. The pressure is the implicit multiplier of the step (it
+approximates the pressure at t^{n+theta}), and the mass equation A_I is imposed at t^{n+1}, following
+Wick (2011).
 """
 
 from dataclasses import dataclass
@@ -57,10 +63,19 @@ class FSIForms:
         elif self.mooney_rivlin_3 is not None:
             raise ValueError(f"mooney_rivlin_3 is given, but solid_material is {self.solid_material!r}")
 
-    def A_T_mesh_transport(self, v, v_old, u_f, u_f_old):
+    def _mesh_transport(self, v, u_f, w):
+        """The ALE transport by the mesh velocity w, -rho_f J grad(v) F^-1 w, at one time level."""
         F, J = _deformation(u_f)
-        w = (u_f - u_f_old) / self.dt  # mesh velocity
         return -self.rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * w, self.dv) * self.dx_fluid
+
+    def A_T_mesh_transport(self, v, v_old, u_f, u_f_old):
+        """The mesh transport term, theta-weighted between the new and old time levels, with the mesh
+        velocity w = (u_f - u_f_old) / dt of the step in both. Evaluated at the new time level only, it
+        makes the scheme first order in time on a moving mesh."""
+        w = (u_f - u_f_old) / self.dt
+        return self.theta * self._mesh_transport(v, u_f, w) + (1.0 - self.theta) * self._mesh_transport(
+            v_old, u_f_old, w
+        )
 
     def A_T_mass(self, v, v_old, u_f, u_f_old):
         _, J = _deformation(u_f)
@@ -105,9 +120,14 @@ class FSIForms:
     def A_E_solid(self, u_s):
         return ufl.inner(self.solid_piola(u_s), ufl.grad(self.dv)) * self.dx_solid
 
-    def A_P(self, p, u_f):
+    def A_P(self, p, u_f, u_f_old):
+        """The pressure term with the implicit pressure p and the geometric factor J F^-T theta-weighted
+        between the new and old time levels. With J F^-T at the new level only, the scheme is first
+        order in time on a moving mesh."""
         F, J = _deformation(u_f)
-        return J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(self.dv)) * self.dx_fluid
+        F_old, J_old = _deformation(u_f_old)
+        geometry = self.theta * J * ufl.inv(F).T + (1.0 - self.theta) * J_old * ufl.inv(F_old).T
+        return ufl.inner(Fluid.NS_pressure(p) * geometry, ufl.grad(self.dv)) * self.dx_fluid
 
     def build_residual(self, v, v_old, p, u_f, u_f_old, u_s_old):
         """Return the residual of one theta-scheme time step, with u_s condensed out.
@@ -118,7 +138,7 @@ class FSIForms:
 
         residual = dt * self.A_T(v, v_old, u_f, u_f_old)
         residual += self.A_I(v, u_f)
-        residual += dt * self.A_P(p, u_f)
+        residual += dt * self.A_P(p, u_f, u_f_old)
         residual += dt * theta * self.A_E_fluid(v, u_f)
         residual += dt * (1.0 - theta) * self.A_E_fluid(v_old, u_f_old)
 

@@ -102,3 +102,18 @@ def test_plot_of_a_study(tmp_path):
         out = tmp_path / f"spatial_{pressure_at_theta}.png"
         plot_study(sorted(tmp_path.glob("spatial_*.txt")), out, {"Q2Q1": (3.0, 2.0)}, pressure_at_theta)
         assert out.stat().st_size > 0
+
+
+def test_second_order_in_time_on_a_moving_mesh():
+    """With the mesh transport term and the geometric factor of the pressure term theta-weighted, Crank-Nicolson
+    is second order in time on a fast moving mesh, for the velocity and for the pressure at t^{n+1/2} on the
+    domain at t^{n+1/2}. With either evaluated at t^{n+1} only, both rates are 1."""
+    dts = [0.1, 0.05, 0.025]
+    histories = [
+        solve(8, velocity_degree=4, pressure_degree=3, **(SHORT | {"T": 0.4, "T_G": 0.8, "dt_val": dt_val}))
+        for dt_val in dts
+    ]
+    error_v = [h["error_v"][-1] for h in histories]
+    error_p = [h["error_p_theta"][-1] for h in histories]
+    assert convergence_rates(dts, error_v)[-1] == pytest.approx(2.0, abs=0.15)
+    assert convergence_rates(dts, error_p)[-1] == pytest.approx(2.0, abs=0.15)
