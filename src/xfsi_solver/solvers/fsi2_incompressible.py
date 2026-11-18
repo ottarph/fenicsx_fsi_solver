@@ -161,8 +161,8 @@ def solve(
 
     Checkpoints store the displacement as one function u on the parent mesh, with v, p and p_S. They
     hold no field of the mesh motion, which each solve computes again, so a run can start from the
-    io4dolfinx ``.bp`` checkpoints of fsi2_biharmonic_mixed_incompressible, whose extra field z is not
-    read, as well as from those of this solver.
+    io4dolfinx ``.bp`` checkpoints of fsi2_biharmonic_mixed_incompressible, the solver this one
+    replaces, whose extra field z is not read, as well as from those of this solver.
 
     With ``snapshot_dir``, the state at the time steps closest to the times ``snapshot_times`` is
     also kept, each in a checkpoint directory ``snapshot_dir/t<t:.4f>`` of its own, from which a run
