@@ -76,3 +76,14 @@ def test_pinning_one_dof_removes_the_constant_mode(family):
     P = dolfinx.fem.functionspace(mesh, basix.ufl.element(family, mesh.basix_cell(), 1))
     bc = _pin_pressure_dof(P)
     assert len(bc.dof_indices()[0]) == 1
+
+
+def test_plot_of_a_study(tmp_path):
+    from xfsi_solver.component_benchmarks.plot_taylor_green_convergence import plot_study
+
+    for name, pair in (("spatial", "Q2Q1"), ("spatial", "Q2DPC1")):
+        table = np.array([[8, 1e-3, 1e-3, 1e-2], [16, 1e-3, 1.25e-4, 2.5e-3]])
+        np.savetxt(tmp_path / f"{name}_{pair}.txt", table, header="n\tdt\terror_v\terror_p")
+    out = tmp_path / "spatial.png"
+    plot_study(sorted(tmp_path.glob("spatial_*.txt")), out, slopes={"Q2Q1": (3.0, 2.0)})
+    assert out.stat().st_size > 0
