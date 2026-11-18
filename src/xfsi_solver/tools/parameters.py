@@ -6,6 +6,9 @@
 
 import math
 
+# The solid materials of xfsi_solver.fsi.forms.FSIForms.
+SOLID_MATERIALS = ("stvk", "mooney_rivlin_3")
+
 
 def theta_value(dt_val, absolute_theta_shift, relative_theta_shift, default_relative_theta_shift) -> float:
     """Theta of the shifted Crank-Nicolson time stepping.
@@ -71,3 +74,33 @@ def mooney_rivlin_3_coefficients(C10, C01, C11, D1, mu_s, lambda_s) -> dict:
     if not math.isfinite(D1) or D1 <= 0.0:
         raise ValueError(f"D1 must be a finite positive number, not {D1!r}")
     return coefficients | {"D1": D1}
+
+
+def solid_material_coefficients(solid_material, mooney_rivlin_3, mu_s, lambda_s) -> dict | None:
+    """The resolved Mooney-Rivlin coefficients of the solver arguments ``solid_material`` and
+    ``mooney_rivlin_3``, or ``None`` for the St. Venant-Kirchhoff solid.
+
+    ``solid_material`` is one of ``SOLID_MATERIALS``. With ``"mooney_rivlin_3"``, ``mooney_rivlin_3`` is a
+    dict of ``"C10"``, ``"C01"``, ``"C11"`` and optionally ``"D1"``, resolved by ``mooney_rivlin_3_coefficients``
+    with the SVK parameters ``mu_s`` and ``lambda_s``; with ``"stvk"`` it must be ``None``. Raises
+    ``ValueError`` otherwise.
+    """
+    if solid_material not in SOLID_MATERIALS:
+        raise ValueError(f"solid_material must be one of {SOLID_MATERIALS}, not {solid_material!r}")
+    if solid_material == "stvk":
+        if mooney_rivlin_3 is not None:
+            raise ValueError(f"mooney_rivlin_3 is given, but solid_material is {solid_material!r}")
+        return None
+    if mooney_rivlin_3 is None or not {"C10", "C01", "C11"} <= set(mooney_rivlin_3) <= {"C10", "C01", "C11", "D1"}:
+        raise ValueError(
+            "solid_material='mooney_rivlin_3' needs mooney_rivlin_3, a dict of C10, C01, C11 and optionally D1, "
+            f"not {mooney_rivlin_3!r}"
+        )
+    return mooney_rivlin_3_coefficients(
+        mooney_rivlin_3["C10"],
+        mooney_rivlin_3["C01"],
+        mooney_rivlin_3["C11"],
+        mooney_rivlin_3.get("D1"),
+        mu_s,
+        lambda_s,
+    )

@@ -14,7 +14,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.fsi.forms import SOLID_MATERIALS, FSIForms
+from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.petsc_options.fsi2d import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
@@ -26,7 +26,7 @@ from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
-from xfsi_solver.tools.parameters import lame_lambda, mooney_rivlin_3_coefficients, theta_value
+from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
     DET_F_QOI_HEADER,
     append_qoi_row,
@@ -210,24 +210,7 @@ def solve(
     if nu_s is None and lambda_s is None:
         nu_s = 0.4
     lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
-    if solid_material not in SOLID_MATERIALS:
-        raise ValueError(f"solid_material must be one of {SOLID_MATERIALS}, not {solid_material!r}")
-    if solid_material == "mooney_rivlin_3":
-        if mooney_rivlin_3 is None or not {"C10", "C01", "C11"} <= set(mooney_rivlin_3) <= {"C10", "C01", "C11", "D1"}:
-            raise ValueError(
-                "solid_material='mooney_rivlin_3' needs mooney_rivlin_3, a dict of C10, C01, C11 and optionally D1, "
-                f"not {mooney_rivlin_3!r}"
-            )
-        mooney_rivlin_3 = mooney_rivlin_3_coefficients(
-            mooney_rivlin_3["C10"],
-            mooney_rivlin_3["C01"],
-            mooney_rivlin_3["C11"],
-            mooney_rivlin_3.get("D1"),
-            mu_s,
-            lambda_s_val,
-        )
-    elif mooney_rivlin_3 is not None:
-        raise ValueError(f"mooney_rivlin_3 is given, but solid_material is {solid_material!r}")
+    mooney_rivlin_3 = solid_material_coefficients(solid_material, mooney_rivlin_3, mu_s, lambda_s_val)
 
     if solver_options is None:
         solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
