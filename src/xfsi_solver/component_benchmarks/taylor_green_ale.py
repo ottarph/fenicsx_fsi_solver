@@ -153,7 +153,8 @@ def solve(
     shared by cells taking the value of one of them, so the output pressure is for viewing only.
 
     Return a dict with the time steps ``t``, the errors ``error_v`` and ``error_p`` at each of them (the first
-    at t = 0), ``newton_iterations``, and the local dof values ``v`` and ``p`` at the final time.
+    at t = 0), ``error_p_theta``, the pressure error against the exact pressure at t^{n+theta} instead of
+    t^{n+1}, ``newton_iterations``, and the local dof values ``v`` and ``p`` at the final time.
     """
     if (output_path is None) != (output_every is None):
         raise ValueError("output_path and output_every go together")
@@ -242,11 +243,13 @@ def solve(
     )
 
     # The L2 errors on the current domain, pulled back to the reference square
-    t_exact = dolfinx.fem.Constant(mesh, 0.0)
+    # The pressure of the theta-scheme is also compared with the exact pressure at t^{n+theta}, the time at
+    # which it acts as the Lagrange multiplier of the time step (t^{n+1/2} for Crank-Nicolson).
+    t_exact, t_exact_p = dolfinx.fem.Constant(mesh, 0.0), dolfinx.fem.Constant(mesh, 0.0)
     x = ufl.SpatialCoordinate(mesh) + u_f
     J = ufl.det(ufl.Identity(2) + ufl.grad(u_f))
     v_exact = ufl.as_vector(exact_velocity(x, t_exact, nu, lib=ufl))
-    p_exact = exact_pressure(x, t_exact, nu, lib=ufl)
+    p_exact = exact_pressure(x, t_exact_p, nu, lib=ufl)
     dx_error = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": 2 * velocity_degree + 4})
     mean_p, mean_p_exact = dolfinx.fem.Constant(mesh, 0.0), dolfinx.fem.Constant(mesh, 0.0)
     area_form = dolfinx.fem.form(J * dx_error)
@@ -258,12 +261,17 @@ def solve(
     def assemble(form):
         return comm.allreduce(dolfinx.fem.assemble_scalar(form), op=MPI.SUM)
 
-    def errors(t):
-        t_exact.value = t
+    def pressure_error(t_p):
+        t_exact_p.value = t_p
         area = assemble(area_form)
         mean_p.value = assemble(mean_forms[0]) / area
         mean_p_exact.value = assemble(mean_forms[1]) / area
-        return np.sqrt(assemble(error_v_form)), np.sqrt(assemble(error_p_form))
+        return np.sqrt(assemble(error_p_form))
+
+    def errors(t, t_theta):
+        """The velocity error at t, and the pressure errors at t and at t_theta."""
+        t_exact.value = t
+        return np.sqrt(assemble(error_v_form)), pressure_error(t), pressure_error(t_theta)
 
     writer = None
     if output_path is not None:
@@ -293,18 +301,19 @@ def solve(
             file.write(
                 f"# Moving-domain Taylor-Green vortex: n = {n}, dt = {dt_val}, theta = {theta.value}, "
                 f"Q{velocity_degree}/{pressure_family}{pressure_degree}, A = {A}, T_G = {T_G}, nu = {nu}\n"
-                "t\terror_v\terror_p\tnewton_iterations\n"
+                "t\terror_v\terror_p\terror_p_theta\tnewton_iterations\n"
             )
 
     # The initial state: the mesh is undeformed at t = 0
     t = 0.0
     u_f.interpolate(displacement(t))
     v.interpolate(boundary_velocity(t))
-    history = {"t": [t], "error_v": [], "error_p": [], "newton_iterations": [0]}
-    error_v, error_p = errors(t)
+    history = {"t": [t], "error_v": [], "error_p": [], "error_p_theta": [], "newton_iterations": [0]}
+    error_v, error_p, error_p_theta = errors(t, t)
     history["error_v"].append(error_v)
     history["error_p"].append(error_p)
-    write_qoi_row(t, error_v, error_p, 0)
+    history["error_p_theta"].append(error_p_theta)
+    write_qoi_row(t, error_v, error_p, error_p_theta, 0)
     write_output(t, 0)
 
     start = timer()
@@ -319,17 +328,19 @@ def solve(
         check_converged(problem, f"t = {t:.4f}")
         iterations = problem.solver.getIterationNumber()
 
-        error_v, error_p = errors(t)
+        error_v, error_p, error_p_theta = errors(t, t - (1.0 - theta.value) * dt_val)
         history["t"].append(t)
         history["error_v"].append(error_v)
         history["error_p"].append(error_p)
+        history["error_p_theta"].append(error_p_theta)
         history["newton_iterations"].append(iterations)
-        write_qoi_row(t, error_v, error_p, iterations)
+        write_qoi_row(t, error_v, error_p, error_p_theta, iterations)
         write_output(t, step)
 
     if comm.rank == 0:
         print(
-            f"n = {n}, dt = {dt_val}: error_v = {error_v:.4e}, error_p = {error_p:.4e} at t = {t:.4f}, "
+            f"n = {n}, dt = {dt_val}: error_v = {error_v:.4e}, error_p = {error_p:.4e}, "
+            f"error_p_theta = {error_p_theta:.4e} at t = {t:.4f}, "
             f"{timer() - start:.1f} s",
             flush=True,
         )
@@ -357,17 +368,16 @@ def _study(name, pairs, runs, out_dir, **solve_kwargs):
                 qoi_path=out_dir / f"{tag}.txt",
                 **solve_kwargs,
             )
-            rows.append((n, dt_val, history["error_v"][-1], history["error_p"][-1]))
+            rows.append((n, dt_val, *(history[key][-1] for key in ("error_v", "error_p", "error_p_theta"))))
         rows = np.array(rows)
         step = 1.0 / rows[:, 0] if name.startswith("spatial") else rows[:, 1]
-        rate_v = np.concatenate([[np.nan], convergence_rates(step, rows[:, 2])])
-        rate_p = np.concatenate([[np.nan], convergence_rates(step, rows[:, 3])])
+        rates = [np.concatenate([[np.nan], convergence_rates(step, rows[:, column])]) for column in (2, 3, 4)]
         if comm.rank == 0:
             header = (
                 f"{name}, {pair}, {', '.join(f'{k} = {v}' for k, v in solve_kwargs.items() if k != 'comm')}\n"
-                "n\tdt\terror_v\terror_p\trate_v\trate_p"
+                "n\tdt\terror_v\terror_p\terror_p_theta\trate_v\trate_p\trate_p_theta"
             )
-            table = np.column_stack([rows, rate_v, rate_p])
+            table = np.column_stack([rows, *rates])
             np.savetxt(out_dir / f"{name}_{pair}.txt", table, header=header, delimiter="\t", fmt="%.6e")
             print(f"\n{name}, {pair}\n{header}\n" + "\n".join("\t".join(f"{x:.4g}" for x in r) for r in table))
 
