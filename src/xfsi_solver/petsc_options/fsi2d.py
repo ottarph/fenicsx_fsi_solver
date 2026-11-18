@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""PETSc options for the 2d FSI2 benchmark solver, ``xfsi_solver.solvers.fsi2_simplified``."""
+"""PETSc options for the 2d FSI2 benchmark solvers ``xfsi_solver.solvers.fsi2_simplified`` and
+``xfsi_solver.solvers.fsi2_incompressible``, whose pressure split ``p_1`` holds both pressures."""
 
 DEFAULT_SOLVER_OPTIONS = {
     # SNES options
@@ -88,7 +89,7 @@ DEFAULT_V_F_OPTIONS = {
 # multiplicatively, into the solid dofs, solved exactly, and the fluid dofs, by one GAMG V-cycle. The
 # solid rows are dominated by the solid stiffness, where the SOR smoothing of GAMG, which is Jacobi
 # between ranks, depends on the partition; an exact solve does not. The fluid rows are dominated by the
-# mass. Needs requires_v_sub_IS=True in fsi2_simplified.solve, which sets the inner ISes.
+# mass. Needs requires_v_sub_IS=True in the solver's solve, which sets the inner ISes.
 MUMPS_ON_SOLID = (
     DEFAULT_SOLVER_OPTIONS
     | {
