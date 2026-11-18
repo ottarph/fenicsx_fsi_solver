@@ -6,6 +6,7 @@ from restart_helpers import check_start_from_initial_state, read_checkpoint_stat
 from xfsi_solver.petsc_options.fsi3d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers.threeDfsi_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER_3D
 
 VECTOR = ("Lagrange", 2, (3,))
 # p lives on the fluid submesh but is checkpointed on the full mesh. No field of the mesh motion is
@@ -47,8 +48,8 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
     iterative = run("iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS | converged)
     direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS | converged)
 
-    # The initial state and two time steps, with t, drag, lift and the displacement of B.
-    assert iterative.shape == direct.shape == (3, 6)
+    # The initial state and two time steps, with t, drag, lift, the displacement of B and the range of det(F).
+    assert iterative.shape == direct.shape == (3, 10)
     # The inflow drives the fluid in the x-direction, so the drag grows.
     assert 0.0 < iterative[1, 1] < iterative[2, 1]
     # The QoIs agree to all 7 written digits; rtol = 1e-6 allows for the rounding of the last one. The
@@ -129,7 +130,7 @@ def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(ou
 
     lifted, lifted_stats = run("lifted", False)
     held, held_stats = run("held", True)
-    assert held.shape == lifted.shape == (3, 6)
+    assert held.shape == lifted.shape == (3, 10)
     held_its, lifted_its = held_stats["iterations_per_step"], lifted_stats["iterations_per_step"]
     assert all(h <= lf for h, lf in zip(held_its, lifted_its, strict=True)), (held_its, lifted_its)
     for column in range(1, lifted.shape[1]):
@@ -176,6 +177,42 @@ def test_threeDfsi_simplified_writes_snapshots(output_dirs, tmp_path):
     assert state["v"].x.array.any()
 
 
+@pytest.mark.slow
+def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output_dirs):
+    """With C10 + C01 = mu_s / 2 and D1 from the SVK bulk modulus, the Mooney-Rivlin solid has the initial moduli
+    of the 3d benchmark solid, so from rest, where the beam has barely moved, the QoIs are those of the SVK solid
+    up to the small-strain difference of the laws. The QoI file holds the range of det(F) in its last four
+    columns, 1 in the initial state, and the solver returns the same values."""
+    dt_val = 0.004
+
+    def run(name, **kwargs):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        statistics = solve(
+            mesh_path=MESH,
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=CONVERGED_SOLVER_OPTIONS,
+            **kwargs,
+        )
+        with open(qoi_path) as f:
+            assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER_3D.split("\t")
+        return np.loadtxt(qoi_path, ndmin=2), statistics
+
+    svk, _ = run("svk")
+    mr3, statistics = run(
+        "mr3", solid_material="mooney_rivlin_3", mooney_rivlin_3={"C10": 0.0, "C01": 1.0e6, "C11": 1.8e6}
+    )
+    assert svk.shape == mr3.shape == (3, 10)
+    assert not np.array_equal(mr3, svk)
+    np.testing.assert_allclose(mr3[:, :6], svk[:, :6], rtol=1e-3, atol=1e-12)
+    np.testing.assert_array_equal(mr3[0, 6:], 1.0)
+    np.testing.assert_allclose(mr3[:, 6:], 1.0, atol=1e-3)
+    np.testing.assert_allclose(mr3[1:, 6:8], statistics["J_solid_per_step"], rtol=1e-6)
+    np.testing.assert_allclose(mr3[1:, 8:10], statistics["J_fluid_per_step"], rtol=1e-6)
+
+
 @pytest.mark.parametrize(
     "kwargs, match",
     [
@@ -184,8 +221,24 @@ def test_threeDfsi_simplified_writes_snapshots(output_dirs, tmp_path):
         ({"max_quadrature_degree": None}, "quadrature cap,"),
         ({"mesh_motion_max_quadrature_degree": None}, "quadrature cap on the mesh motion"),
         ({"snapshot_times": (0.004,)}, "snapshot_times requires snapshot_dir"),
+        ({"solid_material": "neo_hookean"}, "solid_material must be one of"),
+        ({"solid_material": "mooney_rivlin_3"}, "needs mooney_rivlin_3"),
+        ({"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 1e6}}, "needs mooney_rivlin_3"),
+        ({"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": -1.0}}, "C11"),
+        ({"mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": 0.0}}, "but solid_material is"),
     ],
-    ids=["theta_shift", "nu_s_lambda_s", "quadrature_cap", "mesh_motion_quadrature_cap", "snapshot_without_dir"],
+    ids=[
+        "theta_shift",
+        "nu_s_lambda_s",
+        "quadrature_cap",
+        "mesh_motion_quadrature_cap",
+        "snapshot_without_dir",
+        "unknown_material",
+        "no_coefficients",
+        "missing_C11",
+        "negative_C11",
+        "coefficients_without_material",
+    ],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):
     # Raised before the mesh is read
