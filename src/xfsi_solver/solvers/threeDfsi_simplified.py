@@ -210,7 +210,7 @@ def solve(
     mesh_motion_max_quadrature_degree=8,
     requires_v_sub_IS=False,
     predict_displacements=True,
-    skip_dirichlet_lifting=False,
+    skip_dirichlet_lifting=True,
     newton_log_path=None,
     snes_converged_reason_on=True,
 ):
