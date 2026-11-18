@@ -28,6 +28,7 @@ from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, mooney_rivlin_3_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
+    DET_F_QOI_HEADER,
     append_qoi_row,
     assemble_force,
     deformation_jacobian_range,
@@ -147,9 +148,10 @@ def solve(
     response, with initial shear modulus 2 (C10 + C01); without ``"D1"``, the bulk modulus K = 2 / D1 is that
     of the SVK parameters, lambda_s + 2 mu_s / 3 (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``).
     The material has no further unknowns: its stress is condensed in v as that of the SVK solid. The smallest
-    and largest J = det(F) of the solid and of the fluid mesh are measured after each step, at the points of
-    a lattice of degree 4 on each cell, and returned; with the Mooney-Rivlin solid they are also printed, and
-    a solid J <= 0, where its energy is not defined, raises ``RuntimeError``. Its energy is not polynomial in
+    and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
+    a lattice of degree 4 on each cell, and written as its last four columns (``DET_F_QOI_HEADER``); with the
+    Mooney-Rivlin solid they are also printed, and a solid J <= 0, where its energy is not defined, raises
+    ``RuntimeError`` after its row is written. Its energy is not polynomial in
     u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK), so give
     ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
     lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step
@@ -405,8 +407,13 @@ def solve(
         max_quadrature_degree=max_quadrature_degree,
     )
 
+    # The range of det(F) on the solid and on the fluid mesh, sampled at the points of a lattice on each cell
+    solid_J_range = deformation_jacobian_range(u_s, all_cells(solid_mesh))
+    fluid_J_range = deformation_jacobian_range(u_f, all_cells(fluid_mesh))
+
     def write_output(t, step):
-        """Write the QoI row, and every output_every steps the output, of the state at time t."""
+        """Write the QoI row, and every output_every steps the output, of the state at time t. Return the
+        (minimum, maximum) of det(F) on the solid and on the fluid mesh, which the row holds."""
         if output_every is not None and step % output_every == 0:
             displacement.gather()  # u is written with v
             for writer in writers:
@@ -415,7 +422,9 @@ def solve(
         u_spot = point_value(u_s, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
+        J_solid, J_fluid = solid_J_range(), fluid_J_range()
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *J_solid, *J_fluid)
+        return J_solid, J_fluid
 
     # create Dirichlet boundary condition
 
@@ -670,8 +679,6 @@ def solve(
             f"The nodal update needs the same element for U and V, not {elements['U']} and {elements['V']}"
         )
     solid_cells, fluid_cells = all_cells(solid_mesh), all_cells(fluid_mesh)
-    solid_J_range = deformation_jacobian_range(u_s, solid_cells)
-    fluid_J_range = deformation_jacobian_range(u_f, fluid_cells)
     solid_parent_cells = solid_cell_map.sub_topology_to_topology(solid_cells, inverse=False)
     num_u_s_dofs = U_s.dofmap.index_map.size_local + U_s.dofmap.index_map.num_ghosts
     v_dof_of_u_s = np.empty(num_u_s_dofs, dtype=np.int32)
@@ -769,7 +776,7 @@ def solve(
         solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=DET_F_QOI_HEADER)
     if newton_log_path is not None:
         newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
         solver.setMonitor(newton_log)
@@ -807,8 +814,11 @@ def solve(
         iterations_per_step.append(solver.getIterationNumber())
         assemblies_per_step.append(jacobian_state["num_assemblies"] - num_assemblies_before)
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
-        J_solid_per_step.append(solid_J_range())
-        J_fluid_per_step.append(fluid_J_range())
+
+        step += 1
+        J_solid, J_fluid = write_output(t, step)
+        J_solid_per_step.append(J_solid)
+        J_fluid_per_step.append(J_fluid)
         if solid_material == "mooney_rivlin_3":
             (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid_per_step[-1], J_fluid_per_step[-1]
             PETSc.Sys.Print(f"J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
@@ -817,9 +827,6 @@ def solve(
                     f"t = {t:.4f}: the solid J = det(F) reaches {J_s_min:g}, where the Mooney-Rivlin energy is not "
                     "defined"
                 )
-
-        step += 1
-        write_output(t, step)
 
         restart_checkpoint_due = checkpoint_every is not None and step % checkpoint_every == 0
         if snapshots.due(step) or restart_checkpoint_due:

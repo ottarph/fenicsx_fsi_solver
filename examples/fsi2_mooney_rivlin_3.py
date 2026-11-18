@@ -8,9 +8,9 @@ This is a modified FSI2 benchmark: the published SVK reference values are a cont
 targets. The default coefficients are ``MR3_FSI2_MATCHED``, an artificial benchmark material with the initial
 shear and bulk moduli of the FSI2 solid (C10 + C01 = mu_s / 2, D1 = 2 / (lambda_s + 2 mu_s / 3)) and the C11
 of a tissue fit. ``--D1`` overrides the D1 taken from the SVK bulk modulus. Every output goes to its own
-folder ``output/fsi2_mr3/<run-name>/``, which must not exist yet: the QoIs (``qoi.txt``), the Newton log
-(``newton.txt``), the range of det(F) of the solid and the fluid mesh after each step (``J.txt``), and with
-``--output-every`` the fields (``fields.vtkhdf``).
+folder ``output/fsi2_mr3/<run-name>/``, which must not exist yet: the QoIs (``qoi.txt``), with the range of
+det(F) of the solid and the fluid mesh in its last four columns, the Newton log (``newton.txt``), a summary of
+the run (``summary.json``), and with ``--output-every`` the fields (``fields.vtkhdf``).
 
 Run from the repository root, for example from rest on the coarse test mesh::
 
@@ -28,7 +28,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 from mpi4py import MPI
 
 from xfsi_solver.fsi.materials import MR3_FSI2_MATCHED
@@ -89,9 +88,6 @@ def main():
     )
 
     if comm.rank == 0:
-        times = np.loadtxt(folder / "qoi.txt", ndmin=2)[-statistics["num_steps"] :, 0]
-        J = np.column_stack([times, statistics["J_solid_per_step"], statistics["J_fluid_per_step"]])
-        np.savetxt(folder / "J.txt", J, header="t\tJ_solid_min\tJ_solid_max\tJ_fluid_min\tJ_fluid_max", comments="")
         summary = {key: value for key, value in vars(args).items()} | {
             "num_ranks": comm.size,
             "elapsed_time": statistics["elapsed_time"],

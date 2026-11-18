@@ -5,6 +5,7 @@ import ufl
 from mpi4py import MPI
 
 from xfsi_solver.tools.qoi import (
+    DET_F_QOI_HEADER,
     LAGRANGE_QOI_HEADER,
     QOI_HEADER,
     append_qoi_row,
@@ -109,6 +110,16 @@ def test_incompressibility_violation_of_a_stretch():
         assert change == pytest.approx(0.5)
         assert rms == pytest.approx(np.sqrt(1 / 3))
         assert maximum == pytest.approx(1.0)
+
+
+def test_init_qoi_file_rejects_a_restart_into_a_file_with_other_columns(tmp_path):
+    path = tmp_path / "qoi.txt"
+    init_qoi_file(path, COMM, restart=False, t=0.0, dt_val=0.1)
+    append_qoi_row(path, COMM, 0.0, 1.0, 2.0, np.array([3.0, 4.0]))
+    with pytest.raises(ValueError, match="restart into a new file"):
+        init_qoi_file(path, COMM, restart=True, t=0.0, dt_val=0.1, header=DET_F_QOI_HEADER)
+    init_qoi_file(path, COMM, restart=True, t=0.0, dt_val=0.1)  # the same columns
+    assert np.loadtxt(path, ndmin=2).shape == (1, 5)
 
 
 def test_deformation_jacobian_range_of_a_stretch():
