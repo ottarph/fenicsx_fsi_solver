@@ -12,12 +12,14 @@ from restart_helpers import (
     read_checkpoint_state,
 )
 
+from xfsi_solver.fsi.materials import MR3_FSI2_MATCHED, MR3_FSI2_MATCHED_C11_0
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_motion
 from xfsi_solver.petsc_options.fsi2d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
 from xfsi_solver.solvers.fsi2_simplified import solve
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.newton_log import read_newton_log
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
@@ -50,9 +52,16 @@ def test_fsi2_simplified_solve(output_dirs):
         newton_log_path=str(output_dirs["qoi"] / "fsi2_simplified_newton.txt"),
     )
 
-    # The initial state and six time steps, with t, drag, lift and the tip displacement.
+    # The initial state and six time steps, with t, drag, lift, the tip displacement and the range of det(F) on
+    # the solid and on the fluid mesh, which stays near 1 from rest.
     rows = np.loadtxt(qoi_path, ndmin=2)
-    assert rows.shape == (7, 5)
+    assert rows.shape == (7, 9)
+    with open(qoi_path) as f:
+        assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER.split("\t")
+    np.testing.assert_array_equal(rows[0, 5:], 1.0)  # at rest
+    np.testing.assert_allclose(rows[:, 5:], 1.0, atol=1e-3)
+    assert np.all(rows[1:, 5] <= rows[1:, 6]) and np.all(rows[1:, 7] <= rows[1:, 8])
+    assert np.any(rows[1:, 5:] != 1.0)
     # The inflow drives the fluid in the x-direction, so the drag grows, and the structure moves.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
@@ -80,7 +89,7 @@ def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
 
     exact = run("no_cap", None)
     capped = run("cap_4", 4)
-    assert exact.shape == capped.shape == (3, 5)
+    assert exact.shape == capped.shape == (3, 9)
     # The cap makes the integration of the nonlinear terms inexact, so the QoIs are not identical, but
     # they stay close. On this mesh the rows differ by up to 3e-5 relative to the uncapped values, so
     # rtol = 1e-3 leaves a margin of more than 30 while still failing for a wrong residual. The initial
@@ -141,12 +150,12 @@ def test_fsi2_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_t
 
     mixed = run("mixed", 2 * dt_val, checkpoint_dir=tmp_path / "mixed", checkpoint_every=2)
     other = run("other", 2 * dt_val, mesh_motion_type=mesh_motion_type)
-    assert other.shape == mixed.shape == (3, 5)
+    assert other.shape == mixed.shape == (3, 9)
     np.testing.assert_allclose(other, mixed, rtol=1e-4, atol=0)
 
     continued = run("continued", 4 * dt_val, mesh_motion_type=mesh_motion_type, initial_state_dir=tmp_path / "mixed")
     # The initial row, at the time of the checkpoint, holds the QoIs of the state read
-    assert continued.shape == (3, 5)
+    assert continued.shape == (3, 9)
     np.testing.assert_allclose(continued[0], mixed[-1], rtol=1e-6, atol=0)
     assert continued[-1, 0] == pytest.approx(4 * dt_val)
 
@@ -241,7 +250,7 @@ def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
 
     # The started run has the QoI rows of the source from t = 0.005 on, within the Newton tolerance
     started = run("started", initial_state_dir=snapshot_dir / "t0.0050")
-    assert started.shape == (5, 5)
+    assert started.shape == (5, 9)
     np.testing.assert_allclose(started[:, 0], source[2:, 0], rtol=1e-12)
     for column in range(1, source.shape[1]):
         np.testing.assert_allclose(
@@ -344,7 +353,8 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
         "simplified_from_mixed",
         "mixed_from_simplified",
     ):
-        rows = np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2)
+        # fsi2_biharmonic_mixed writes no det(F) columns, so compare the five columns both write
+        rows = np.loadtxt(output_dirs["qoi"] / f"{name}.txt", ndmin=2)[:, : reference.shape[1]]
         assert rows.shape == reference.shape
         for column, values in enumerate(reference.T):
             np.testing.assert_allclose(
@@ -462,3 +472,81 @@ def test_fsi2_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(output_
     scale = np.abs(lifted[1:, 1:]).max(axis=0)
     np.testing.assert_array_less(np.abs(held[1:, 1:] - lifted[1:, 1:]) / scale, 1e-4)
     np.testing.assert_array_equal(held[:, 0], lifted[:, 0])
+
+
+def run_material(output_dirs, name, T, dt_val, **kwargs):
+    """Run FSI2 on the coarse mesh with the given material and loading; return the QoI rows and statistics."""
+    qoi_path = output_dirs["qoi"] / f"{name}.txt"
+    statistics = solve(
+        mesh_path=MESH,
+        T=T,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+        qoi_path=str(qoi_path),
+        **kwargs,
+    )
+    return np.loadtxt(qoi_path, ndmin=2), statistics
+
+
+def test_fsi2_simplified_stvk_material_is_the_default(output_dirs):
+    default, _ = run_material(output_dirs, "default", 2 * 0.0025, 0.0025)
+    stvk, _ = run_material(output_dirs, "stvk", 2 * 0.0025, 0.0025, solid_material="stvk")
+    np.testing.assert_array_equal(stvk, default)
+
+
+def test_fsi2_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output_dirs):
+    """MR3_FSI2_MATCHED has the initial shear and bulk moduli of the FSI2 solid, so while the structure has
+    barely moved, the QoIs are those of the SVK solid up to the small-strain difference of the laws: by up to
+    1e-4 relative in these steps, where the solid J stays within 1e-4 of 1."""
+    svk, _ = run_material(output_dirs, "svk", 4 * 0.0025, 0.0025)
+    mr3, statistics = run_material(
+        output_dirs, "mr3", 4 * 0.0025, 0.0025, solid_material="mooney_rivlin_3", mooney_rivlin_3=MR3_FSI2_MATCHED
+    )
+    assert not np.array_equal(mr3, svk)
+    np.testing.assert_allclose(mr3, svk, rtol=1e-3, atol=1e-12)
+    assert len(statistics["J_solid_per_step"]) == len(statistics["J_fluid_per_step"]) == 4
+    for J_min, J_max in statistics["J_solid_per_step"]:
+        assert 1.0 - 1e-4 < J_min <= J_max < 1.0 + 1e-4
+
+
+def test_fsi2_simplified_mooney_rivlin_3_at_finite_strain(output_dirs):
+    """With three times the FSI2 inflow, over t in [0, 2] at dt = 0.02, the flag bends so that the solid J
+    ranges over about [0.955, 1.046] on this mesh, and the third term of the MR3 law changes the tip
+    displacement by 2-6% of its largest value against the same material without it (C11 = 0). The fluid mesh
+    stays valid (J > 0.85). Newton is started from a fresh Jacobian in every iteration, and converges in at
+    most 9 iterations per step, as with the SVK solid at this loading. This exercises the coupled MR3 stress
+    at finite strain; dt is too large for the QoIs to be accurate."""
+    kwargs = dict(U_bar=3.0, max_quadrature_degree=6, gamma_reassemble=None, solid_material="mooney_rivlin_3")
+    with_c11, statistics = run_material(output_dirs, "mr3_c11", 2.0, 0.02, mooney_rivlin_3=MR3_FSI2_MATCHED, **kwargs)
+    without, _ = run_material(output_dirs, "mr3_c11_0", 2.0, 0.02, mooney_rivlin_3=MR3_FSI2_MATCHED_C11_0, **kwargs)
+
+    assert with_c11.shape == without.shape == (101, 9)
+    assert np.all(np.isfinite(with_c11))
+    # The det(F) columns of the QoI file are the ranges the solver returns, after the initial row
+    J_solid, J_fluid = with_c11[1:, 5:7], with_c11[1:, 7:9]
+    np.testing.assert_allclose(J_solid, statistics["J_solid_per_step"], rtol=1e-6)  # written with 7 digits
+    np.testing.assert_allclose(J_fluid, statistics["J_fluid_per_step"], rtol=1e-6)
+    assert 0.9 < J_solid[:, 0].min() < 0.98 and 1.02 < J_solid[:, 1].max() < 1.1  # finite strain
+    assert J_fluid[:, 0].min() > 0.85
+    assert max(statistics["iterations_per_step"]) <= 12
+
+    tip_scale = np.abs(without[:, 3:5]).max(axis=0)
+    tip_change = np.abs(with_c11[:, 3:5] - without[:, 3:5]).max(axis=0) / tip_scale
+    assert np.all(tip_change > 0.005) and np.all(tip_change < 0.2)
+
+
+@pytest.mark.parametrize(
+    "material",
+    [
+        {"solid_material": "neo_hookean"},
+        {"solid_material": "mooney_rivlin_3"},
+        {"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 2.5e5}},
+        {"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": MR3_FSI2_MATCHED | {"C2": 1.0}},
+        {"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": MR3_FSI2_MATCHED | {"D1": -1.0}},
+        {"mooney_rivlin_3": MR3_FSI2_MATCHED},
+    ],
+    ids=["unknown", "no_coefficients", "missing_C11", "unknown_coefficient", "negative_D1", "without_material"],
+)
+def test_fsi2_simplified_rejects_an_inconsistent_material(output_dirs, material):
+    with pytest.raises(ValueError):
+        run_material(output_dirs, "rejected", 0.0025, 0.0025, **material)

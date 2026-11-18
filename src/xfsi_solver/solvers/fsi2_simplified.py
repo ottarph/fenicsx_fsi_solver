@@ -14,7 +14,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
-from xfsi_solver.fsi.forms import FSIForms
+from xfsi_solver.fsi.forms import SOLID_MATERIALS, FSIForms
 from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.petsc_options.fsi2d import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
@@ -26,10 +26,12 @@ from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
-from xfsi_solver.tools.parameters import lame_lambda, theta_value
+from xfsi_solver.tools.parameters import lame_lambda, mooney_rivlin_3_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
+    DET_F_QOI_HEADER,
     append_qoi_row,
     assemble_force,
+    deformation_jacobian_range,
     drag_lift_forms,
     find_point_dof,
     init_qoi_file,
@@ -73,6 +75,8 @@ def solve(
     mu_s=5.0e5,
     nu_s=None,
     lambda_s=None,
+    solid_material="stvk",
+    mooney_rivlin_3=None,
     U_bar=1.0,
     H=0.41,
     absolute_theta_shift=None,
@@ -136,6 +140,23 @@ def solve(
     (32bd021:notes/newton-convergence/report.md). With ``predict_displacements=False``, the mixed biharmonic
     mesh motion and exact solves, the iterates are those of fsi2_biharmonic_mixed.
 
+    The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or
+    ``nu_s``) by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the
+    compressible three-term Mooney-Rivlin material of ``xfsi_solver.fsi.materials.Solid.MR3_piola``, in plane
+    strain, with the coefficients ``mooney_rivlin_3``, a dict of ``"C10"``, ``"C01"`` and ``"C11"`` in Pa and
+    optionally ``"D1"`` in 1/Pa, such as ``xfsi_solver.fsi.materials.MR3_FSI2_MATCHED``. The Cij set the shear
+    response, with initial shear modulus 2 (C10 + C01); without ``"D1"``, the bulk modulus K = 2 / D1 is that
+    of the SVK parameters, lambda_s + 2 mu_s / 3 (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``).
+    The material has no further unknowns: its stress is condensed in v as that of the SVK solid. The smallest
+    and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
+    a lattice of degree 4 on each cell, and written as its last four columns (``DET_F_QOI_HEADER``); with the
+    Mooney-Rivlin solid they are also printed, and a solid J <= 0, where its energy is not defined, raises
+    ``RuntimeError`` after its row is written. Its energy is not polynomial in
+    u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK), so give
+    ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
+    lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step
+    against 0.45 s uncapped on 4 ranks.
+
     The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
     (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
     mesh, with the cell tags and the owning rank of each cell. p, on the fluid submesh, is 0 on the
@@ -166,7 +187,8 @@ def solve(
     Returns the statistics of the time steps of this run, the same on every rank: the wall time of the
     time loop, ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_assemblies`` of the
     Jacobian, and the Newton iterations and Jacobian assemblies of each step, ``iterations_per_step``
-    and ``assemblies_per_step``.
+    and ``assemblies_per_step``, and the (minimum, maximum) of J of each step in the solid,
+    ``J_solid_per_step``, and on the fluid mesh, ``J_fluid_per_step``.
 
     With ``skip_dirichlet_lifting=True``, the residual is assembled without lifting the Dirichlet
     conditions of v, and every Newton iterate holds their values exactly, by
@@ -188,6 +210,24 @@ def solve(
     if nu_s is None and lambda_s is None:
         nu_s = 0.4
     lambda_s_val = lame_lambda(mu_s, nu_s, lambda_s)
+    if solid_material not in SOLID_MATERIALS:
+        raise ValueError(f"solid_material must be one of {SOLID_MATERIALS}, not {solid_material!r}")
+    if solid_material == "mooney_rivlin_3":
+        if mooney_rivlin_3 is None or not {"C10", "C01", "C11"} <= set(mooney_rivlin_3) <= {"C10", "C01", "C11", "D1"}:
+            raise ValueError(
+                "solid_material='mooney_rivlin_3' needs mooney_rivlin_3, a dict of C10, C01, C11 and optionally D1, "
+                f"not {mooney_rivlin_3!r}"
+            )
+        mooney_rivlin_3 = mooney_rivlin_3_coefficients(
+            mooney_rivlin_3["C10"],
+            mooney_rivlin_3["C01"],
+            mooney_rivlin_3["C11"],
+            mooney_rivlin_3.get("D1"),
+            mu_s,
+            lambda_s_val,
+        )
+    elif mooney_rivlin_3 is not None:
+        raise ValueError(f"mooney_rivlin_3 is given, but solid_material is {solid_material!r}")
 
     if solver_options is None:
         solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
@@ -265,6 +305,10 @@ def solve(
     rho_s = dolfinx.fem.Constant(mesh, rho_s)
     mu_s = dolfinx.fem.Constant(mesh, mu_s)
     lambda_s = dolfinx.fem.Constant(mesh, lambda_s_val)
+    if mooney_rivlin_3 is not None:
+        mooney_rivlin_3_constants = {name: dolfinx.fem.Constant(mesh, value) for name, value in mooney_rivlin_3.items()}
+    else:
+        mooney_rivlin_3_constants = None
 
     t0 = start_time(mesh, restart, checkpoint_dir, initial_state_dir)
     dt = dolfinx.fem.Constant(mesh, dt_val)
@@ -363,8 +407,13 @@ def solve(
         max_quadrature_degree=max_quadrature_degree,
     )
 
+    # The range of det(F) on the solid and on the fluid mesh, sampled at the points of a lattice on each cell
+    solid_J_range = deformation_jacobian_range(u_s, all_cells(solid_mesh))
+    fluid_J_range = deformation_jacobian_range(u_f, all_cells(fluid_mesh))
+
     def write_output(t, step):
-        """Write the QoI row, and every output_every steps the output, of the state at time t."""
+        """Write the QoI row, and every output_every steps the output, of the state at time t. Return the
+        (minimum, maximum) of det(F) on the solid and on the fluid mesh, which the row holds."""
         if output_every is not None and step % output_every == 0:
             displacement.gather()  # u is written with v
             for writer in writers:
@@ -373,7 +422,9 @@ def solve(
         u_spot = point_value(u_s, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot)
+        J_solid, J_fluid = solid_J_range(), fluid_J_range()
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *J_solid, *J_fluid)
+        return J_solid, J_fluid
 
     # create Dirichlet boundary condition
 
@@ -463,6 +514,8 @@ def solve(
         lambda_s=lambda_s,
         dt=dt,
         theta=theta,
+        solid_material=solid_material,
+        mooney_rivlin_3=mooney_rivlin_3_constants,
     )
     residual = forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
 
@@ -723,7 +776,7 @@ def solve(
         solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=DET_F_QOI_HEADER)
     if newton_log_path is not None:
         newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
         solver.setMonitor(newton_log)
@@ -740,6 +793,7 @@ def solve(
     num_newton_iterations = 0
     # Newton iterations and Jacobian assemblies of each time step of this run
     iterations_per_step, assemblies_per_step = [], []
+    J_solid_per_step, J_fluid_per_step = [], []
     start = timer()
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
@@ -762,7 +816,17 @@ def solve(
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
 
         step += 1
-        write_output(t, step)
+        J_solid, J_fluid = write_output(t, step)
+        J_solid_per_step.append(J_solid)
+        J_fluid_per_step.append(J_fluid)
+        if solid_material == "mooney_rivlin_3":
+            (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid_per_step[-1], J_fluid_per_step[-1]
+            PETSc.Sys.Print(f"J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
+            if not J_s_min > 0.0:
+                raise RuntimeError(
+                    f"t = {t:.4f}: the solid J = det(F) reaches {J_s_min:g}, where the Mooney-Rivlin energy is not "
+                    "defined"
+                )
 
         restart_checkpoint_due = checkpoint_every is not None and step % checkpoint_every == 0
         if snapshots.due(step) or restart_checkpoint_due:
@@ -782,6 +846,19 @@ def solve(
         initial_guess_description = "the previous step, with the displacements predicted from dt * v_old"
     else:
         initial_guess_description = "the previous step"
+    if solid_material == "mooney_rivlin_3":
+        solid_description = "compressible three-term Mooney-Rivlin, P = dW/dF by UFL, plane strain, " + ", ".join(
+            f"{name} = {value:g}" for name, value in mooney_rivlin_3.items()
+        )
+    else:
+        solid_description = f"St. Venant-Kirchhoff, mu_s = {float(mu_s.value):g}, lambda_s = {lambda_s_val:g}"
+    if J_solid_per_step:
+        J_description = (
+            f"solid [{min(r[0] for r in J_solid_per_step):.6f}, {max(r[1] for r in J_solid_per_step):.6f}], "
+            f"fluid mesh [{min(r[0] for r in J_fluid_per_step):.6f}, {max(r[1] for r in J_fluid_per_step):.6f}]"
+        )
+    else:
+        J_description = "no time steps"
     if skip_dirichlet_lifting:
         initial_guess_description += ", with the Dirichlet values of the step set in it"
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
@@ -794,6 +871,8 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
+            f"  Solid material: {solid_description}\n"
+            f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
             "  Newton system: (v, p) only; u_s and the interface values of u_f set from v node by node,\n"
             "    and u_f by the mesh motion, after each linear solve\n"
@@ -822,6 +901,8 @@ def solve(
         "num_assemblies": jacobian_state["num_assemblies"],
         "iterations_per_step": iterations_per_step,
         "assemblies_per_step": assemblies_per_step,
+        "J_solid_per_step": J_solid_per_step,
+        "J_fluid_per_step": J_fluid_per_step,
     }
 
 

@@ -5,11 +5,13 @@ import ufl
 from mpi4py import MPI
 
 from xfsi_solver.tools.qoi import (
+    DET_F_QOI_HEADER,
     LAGRANGE_QOI_HEADER,
     QOI_HEADER,
     append_qoi_row,
     assemble_force,
     assemble_gap_norm,
+    deformation_jacobian_range,
     drag_lift_forms,
     find_point_dof,
     incompressibility_violation,
@@ -108,6 +110,29 @@ def test_incompressibility_violation_of_a_stretch():
         assert change == pytest.approx(0.5)
         assert rms == pytest.approx(np.sqrt(1 / 3))
         assert maximum == pytest.approx(1.0)
+
+
+def test_init_qoi_file_rejects_a_restart_into_a_file_with_other_columns(tmp_path):
+    path = tmp_path / "qoi.txt"
+    init_qoi_file(path, COMM, restart=False, t=0.0, dt_val=0.1)
+    append_qoi_row(path, COMM, 0.0, 1.0, 2.0, np.array([3.0, 4.0]))
+    with pytest.raises(ValueError, match="restart into a new file"):
+        init_qoi_file(path, COMM, restart=True, t=0.0, dt_val=0.1, header=DET_F_QOI_HEADER)
+    init_qoi_file(path, COMM, restart=True, t=0.0, dt_val=0.1)  # the same columns
+    assert np.loadtxt(path, ndmin=2).shape == (1, 5)
+
+
+def test_deformation_jacobian_range_of_a_stretch():
+    # u = (x^2 / 2, 0) has det(F) = 1 + x, between 1 and 2, at the vertices on x = 0 and x = 1, on every rank.
+    mesh = dolfinx.mesh.create_unit_square(COMM, 4, 4)
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))))
+    u.interpolate(lambda x: np.stack([x[0] ** 2 / 2, np.zeros_like(x[0])]))
+    cell_map = mesh.topology.index_map(mesh.topology.dim)
+    cells = np.arange(cell_map.size_local + cell_map.num_ghosts, dtype=np.int32)
+    measure = deformation_jacobian_range(u, cells)
+    assert measure() == pytest.approx((1.0, 2.0))
+    u.x.array[:] *= -3.0  # det(F) = 1 - 3 x, an inverted region
+    assert measure() == pytest.approx((-2.0, 1.0))
 
 
 @pytest.mark.parametrize("gdim", [2, 3])

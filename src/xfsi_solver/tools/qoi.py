@@ -21,6 +21,8 @@ QOI_HEADER = "t\tdrag\tlift\tA_x\tA_y"
 LAGRANGE_QOI_HEADER = QOI_HEADER + "\tinterface_u_gap\tinterface_v_gap"
 # The violation of det(F) = 1 in the solid, see incompressibility_violation.
 INCOMPRESSIBLE_QOI_HEADER = QOI_HEADER + "\tsolid_area_change\tdet_F_rms\tdet_F_max"
+# The smallest and largest det(F) of the solid and of the fluid mesh, see deformation_jacobian_range.
+DET_F_QOI_HEADER = QOI_HEADER + "\tdet_F_solid_min\tdet_F_solid_max\tdet_F_fluid_min\tdet_F_fluid_max"
 # The 3d benchmark measures the displacement at the point B on the beam.
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 
@@ -106,10 +108,23 @@ def init_qoi_file(
     """Create the QoI file with its ``header`` on rank 0.
 
     When restarting from a checkpoint at time ``t`` and the file exists, its
-    rows after ``t`` are dropped instead, so new rows can be appended.
+    rows after ``t`` are dropped instead, so new rows can be appended. Raises
+    ``ValueError`` on every rank if that file has another header, such as one
+    written before the solver added columns, whose rows the new ones would not fit.
     """
+    mismatch = None
     if comm.rank == 0:
         Path(qoi_path).parent.mkdir(parents=True, exist_ok=True)
+        if restart and Path(qoi_path).exists():
+            with open(qoi_path) as f:
+                existing = f.readline().lstrip("#").split()
+            columns = header.split("\t")
+            if existing != columns:
+                mismatch = f"{qoi_path} has the columns {existing}, not {columns}; restart into a new file"
+    mismatch = comm.bcast(mismatch, root=0)
+    if mismatch is not None:
+        raise ValueError(mismatch)
+    if comm.rank == 0:
         if restart and Path(qoi_path).exists():
             truncate_qoi_file(qoi_path, t, dt_val)
         else:
@@ -198,5 +213,29 @@ def incompressibility_violation(
         if mesh.comm.rank != 0:
             return None, None, None
         return change / area, np.sqrt(max(squared, 0.0) / area), maximum
+
+    return measure
+
+
+def deformation_jacobian_range(
+    u: dolfinx.fem.Function, cells: np.ndarray, points_degree: int = 4
+) -> Callable[[], tuple[float, float]]:
+    """The smallest and largest J = det(I + grad(u)) on the cells ``cells`` of the mesh of ``u``.
+
+    Returns a collective function that computes, from the current ``u``, the minimum and maximum of J at the
+    points of an equispaced lattice of degree ``points_degree`` on each cell, which include the vertices, the
+    same on every rank. J is sampled, so a J below the minimum between the points is not seen. A rank
+    without cells contributes nothing.
+    """
+    mesh = u.function_space.mesh
+    J = ufl.det(ufl.Identity(mesh.geometry.dim) + ufl.grad(u))
+    points = basix.create_lattice(mesh.basix_cell(), points_degree, basix.LatticeType.equispaced, True)
+    J_expression = dolfinx.fem.Expression(J, points)
+
+    def measure():
+        values = J_expression.eval(mesh, cells)
+        local_min = np.min(values, initial=np.inf)
+        local_max = np.max(values, initial=-np.inf)
+        return mesh.comm.allreduce(local_min, op=MPI.MIN), mesh.comm.allreduce(local_max, op=MPI.MAX)
 
     return measure
