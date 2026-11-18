@@ -15,6 +15,7 @@ from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
 
+from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, default_mesh_motion_solver_options
 from xfsi_solver.petsc_options.fsi3d import (
     DEFAULT_DIRECT_SOLVER_OPTIONS,
@@ -462,87 +463,21 @@ def solve(
     # FLUID: Bi-parabolic inflow at x = 0, no-slip on the channel walls and the cylinder, do-nothing at x = 2.8
     # SOLID: Homogeneous Dirichlet where the beam is attached to the cylinder
 
-    from xfsi_solver.fsi.materials import Fluid, Solid
-
     # create residual form with u condensed out.
-
-    def A_T_mesh_transport(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u_f - u_f_old) / dt), dv) * dx_fluid
-
-        return residual
-
-    def A_T_mass(v, v_old, u_f, u_f_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f_old)
-        J_old = ufl.det(F_old)
-        J_mid = 0.5 * (J + J_old)
-
-        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
-
-        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
-
-        return residual
-
-    def A_T(v, v_old, u_f, u_f_old):
-        return A_T_mass(v, v_old, u_f, u_f_old) + A_T_mesh_transport(v, v_old, u_f, u_f_old)
-
-    def A_I(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
-
-        return residual
-
-    def A_E_fluid_viscous(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Fluid.NS_velocity(u_f, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    def A_E_fluid_transport(v, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
-
-        return residual
-
-    def A_E_fluid(v, u_f):
-
-        return A_E_fluid_viscous(v, u_f) + A_E_fluid_transport(v, u_f)
-
-    def A_E_solid(u_s):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_s)
-        J = ufl.det(F)
-
-        residual = ufl.inner(J * Solid.STVK(u_s, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        return residual
-
-    def A_P(p, u_f):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_f)
-        J = ufl.det(F)
-
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    residual = A_T(v, v_old, u_f, u_f_old)
-    residual += A_I(v, u_f)
-    residual += A_P(p, u_f)
-    residual += theta * A_E_fluid(v, u_f)
-    residual += (1.0 - theta) * A_E_fluid(v_old, u_f_old)
-
-    u_s_condensed = u_s_old + dt * ((1.0 - theta) * v_old + theta * v)
-    residual += theta * A_E_solid(u_s_condensed)
-    residual += (1.0 - theta) * A_E_solid(u_s_old)
+    forms = FSIForms(
+        dv=dv,
+        dp=dp,
+        dx_fluid=dx_fluid,
+        dx_solid=dx_solid,
+        rho_f=rho_f,
+        nu_f=nu_f,
+        rho_s=rho_s,
+        mu_s=mu_s,
+        lambda_s=lambda_s,
+        dt=dt,
+        theta=theta,
+    )
+    residual = forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
 
     residual_blocks = ufl.extract_blocks(residual)
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
