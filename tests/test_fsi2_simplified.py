@@ -16,6 +16,7 @@ from xfsi_solver.fsi.materials import MR3_FSI2_MATCHED, MR3_FSI2_MATCHED_C11_0
 from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_motion
 from xfsi_solver.petsc_options.fsi2d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
+from xfsi_solver.solvers import fsi2_simplified as fsi2_simplified_module
 from xfsi_solver.solvers.fsi2_simplified import solve
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.newton_log import read_newton_log
@@ -550,3 +551,45 @@ def test_fsi2_simplified_mooney_rivlin_3_at_finite_strain(output_dirs):
 def test_fsi2_simplified_rejects_an_inconsistent_material(output_dirs, material):
     with pytest.raises(ValueError):
         run_material(output_dirs, "rejected", 0.0025, 0.0025, **material)
+
+
+@pytest.mark.parametrize("solid_material", ["stvk", "mooney_rivlin_3"])
+def test_fsi2_simplified_stops_on_an_inverted_fluid_mesh(output_dirs, monkeypatch, solid_material):
+    """A fluid mesh with det(F) <= 0 stops the run with either solid material, after the QoI row that shows it
+    is written. The measurement of the fluid mesh is made to report an inverted cell from the second step on."""
+    original = fsi2_simplified_module.deformation_jacobian_range
+    measures = []
+
+    def deformation_jacobian_range(u, cells, *args, **kwargs):
+        measure = original(u, cells, *args, **kwargs)
+        measures.append(measure)
+        if len(measures) == 1:
+            return measure  # the solid
+        calls = []
+
+        def fluid_measure():
+            calls.append(None)
+            J_min, J_max = measure()
+            return (-0.25, J_max) if len(calls) >= 3 else (J_min, J_max)  # rows: initial state, step 1, step 2
+
+        return fluid_measure
+
+    monkeypatch.setattr(fsi2_simplified_module, "deformation_jacobian_range", deformation_jacobian_range)
+    material = {"solid_material": solid_material}
+    if solid_material == "mooney_rivlin_3":
+        material["mooney_rivlin_3"] = MR3_FSI2_MATCHED
+    qoi_path = output_dirs["qoi"] / "inverted.txt"
+    with pytest.raises(
+        RuntimeError, match=r"At t = 0\.0050, the smallest det\(F\) is not positive: .* -0\.25 on the fluid mesh"
+    ):
+        solve(
+            mesh_path=MESH,
+            T=4 * 0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "inverted.vtkhdf"),
+            qoi_path=str(qoi_path),
+            **material,
+        )
+    rows = np.loadtxt(qoi_path, ndmin=2)
+    assert rows.shape == (3, 9)  # the initial state, step 1, and step 2, where the run stopped
+    assert rows[-1, 7] == -0.25 and rows[1, 7] > 0.99

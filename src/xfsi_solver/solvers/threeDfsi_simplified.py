@@ -200,8 +200,8 @@ def solve(
     the SVK solid, and its integrals are capped at ``max_quadrature_degree`` as the others are. The smallest
     and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
     a lattice of degree ``det_F_lattice_degree`` on each cell, and written as its last four columns
-    (``DET_F_QOI_HEADER_3D``); with the Mooney-Rivlin solid they are also printed, and a solid J <= 0, where
-    its energy is not defined, raises ``RuntimeError`` after its row is written.
+    (``DET_F_QOI_HEADER_3D``); with the Mooney-Rivlin solid they are also printed. A J <= 0 in the solid or on
+    the fluid mesh, with either material, raises ``RuntimeError`` after its row is written.
 
     Returns the statistics of the time steps of this run: the wall time of the time loop,
     ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_linear_iterations``,
@@ -878,11 +878,15 @@ def solve(
         if solid_material == "mooney_rivlin_3":
             (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid, J_fluid
             PETSc.Sys.Print(f"  J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
-            if not J_s_min > 0.0:
-                raise RuntimeError(
-                    f"t = {t:.4f}: the solid J = det(F) reaches {J_s_min:g}, where the Mooney-Rivlin energy is not "
-                    "defined"
-                )
+        if J_solid[0] <= 0.0 or J_fluid[0] <= 0.0:
+            # A solid with det(F) <= 0 has passed through itself, and a fluid mesh with det(F) <= 0 has inverted
+            # cells, on which the ALE terms change sign without failing. Close the output so it stays readable.
+            for writer in writers:
+                writer.close()
+            raise RuntimeError(
+                f"At t = {t:.4f}, the smallest det(F) is not positive: {J_solid[0]:g} in the solid, "
+                f"{J_fluid[0]:g} on the fluid mesh"
+            )
 
         restart_checkpoint_due = checkpoint_every is not None and step % checkpoint_every == 0
         if snapshots.due(step) or restart_checkpoint_due:

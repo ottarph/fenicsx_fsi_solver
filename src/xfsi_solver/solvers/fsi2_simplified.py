@@ -150,12 +150,12 @@ def solve(
     The material has no further unknowns: its stress is condensed in v as that of the SVK solid. The smallest
     and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
     a lattice of degree 4 on each cell, and written as its last four columns (``DET_F_QOI_HEADER``); with the
-    Mooney-Rivlin solid they are also printed, and a solid J <= 0, where its energy is not defined, raises
-    ``RuntimeError`` after its row is written. Its energy is not polynomial in
-    u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK), so give
-    ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
-    lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step
-    against 0.45 s uncapped on 4 ranks.
+    Mooney-Rivlin solid they are also printed. A J <= 0 in the solid or on the fluid mesh, with either material,
+    raises ``RuntimeError`` after its row is written.
+    The Mooney-Rivlin energy is not polynomial in u, and on the second-order FSI2 meshes UFL estimates degree 26
+    for its residual (14 for SVK), so give ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5
+    changed the tip displacement, drag and lift by less than 3e-5 of their amplitudes against a cap of 8 or
+    none, at 0.25 s per step against 0.45 s uncapped on 4 ranks.
 
     The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
     (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
@@ -805,11 +805,15 @@ def solve(
         if solid_material == "mooney_rivlin_3":
             (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid_per_step[-1], J_fluid_per_step[-1]
             PETSc.Sys.Print(f"J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
-            if not J_s_min > 0.0:
-                raise RuntimeError(
-                    f"t = {t:.4f}: the solid J = det(F) reaches {J_s_min:g}, where the Mooney-Rivlin energy is not "
-                    "defined"
-                )
+        if J_solid[0] <= 0.0 or J_fluid[0] <= 0.0:
+            # A solid with det(F) <= 0 has passed through itself, and a fluid mesh with det(F) <= 0 has inverted
+            # cells, on which the ALE terms change sign without failing. Close the output so it stays readable.
+            for writer in writers:
+                writer.close()
+            raise RuntimeError(
+                f"At t = {t:.4f}, the smallest det(F) is not positive: {J_solid[0]:g} in the solid, "
+                f"{J_fluid[0]:g} on the fluid mesh"
+            )
 
         restart_checkpoint_due = checkpoint_every is not None and step % checkpoint_every == 0
         if snapshots.due(step) or restart_checkpoint_due:
