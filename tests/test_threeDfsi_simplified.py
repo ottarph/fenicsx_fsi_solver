@@ -104,7 +104,15 @@ def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(ou
     # With the iterative solver, a nest Jacobian whose velocity block gets one GAMG V-cycle, which need
     # not leave the update zero on the Dirichlet dofs. The inflow changes in every step, so the lifted and
     # held iterates differ in the first Newton step of each, and the QoIs agree to the Newton tolerance.
+    #
+    # Since the momentum equation is multiplied by dt, the default snes_atol = 1e-7 stops Newton after one
+    # or two iterations here, by a residual just above or below it (2.2e-7 lifted, 9.8e-8 held, at the
+    # second step), so the two runs differ in their iteration counts and by up to the size of the lift
+    # in the QoIs. Both are converged tightly instead. The held iterate starts closer, since it holds the
+    # new inflow values (initial residual 9.5e-6 against 9.8e-4 at the first step), so it takes 2 and 3
+    # Newton iterations where the lifted one takes 3 and 3.
     dt_val = 0.004
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
 
     def run(name, hold):
         qoi_path = output_dirs["qoi"] / f"{name}.txt"
@@ -112,10 +120,9 @@ def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(ou
             mesh_path=MESH,
             T=2 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
-            solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS,
+            solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS | converged,
             skip_dirichlet_lifting=hold,
         )
         return np.loadtxt(qoi_path, ndmin=2), stats
@@ -123,10 +130,11 @@ def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(ou
     lifted, lifted_stats = run("lifted", False)
     held, held_stats = run("held", True)
     assert held.shape == lifted.shape == (3, 6)
-    assert held_stats["iterations_per_step"] == lifted_stats["iterations_per_step"]
+    held_its, lifted_its = held_stats["iterations_per_step"], lifted_stats["iterations_per_step"]
+    assert all(h <= lf for h, lf in zip(held_its, lifted_its, strict=True)), (held_its, lifted_its)
     for column in range(1, lifted.shape[1]):
         np.testing.assert_allclose(
-            held[:, column], lifted[:, column], rtol=0, atol=1e-4 * np.abs(lifted[:, column]).max()
+            held[:, column], lifted[:, column], rtol=0, atol=1e-6 * np.abs(lifted[:, column]).max()
         )
 
 

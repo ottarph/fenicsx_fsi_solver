@@ -382,7 +382,7 @@ def main():
             script = solver_script(qoi_path.stem)
         except ValueError:
             continue  # a QoI file of a solver that no longer exists
-        if script == "fsi2_biharmonic_mixed_incompressible":
+        if script == "fsi2_incompressible":
             plot_incompressible_qois(qoi_path.stem)
         elif script.startswith("fsi2_"):
             plot_comparison([qoi_path.stem])
