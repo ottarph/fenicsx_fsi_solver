@@ -51,7 +51,12 @@ from xfsi_solver.tools.submesh import all_cells
 
 BACKEND = "vtkhdf"
 SUFFIX = ".vtkhdf"
-_BACKEND_ARGS = {"compression": "gzip"}
+# Lossless compression of the mesh and data, applied by io4dolfinx from the first release after 1.5.1
+# (scientificcomputing/io4dolfinx#97) and ignored before. The shuffle filter matters for floating-point
+# data: on the 201-step output of fsi2_simplified on mesh_sec, gzip alone shrinks u, v and p by 6%,
+# with shuffle by 13%; a level above 4 gains nothing. Each column of a dataset is chunked on its own,
+# so the zero third component of padded 2D vectors costs nothing once compressed.
+_BACKEND_ARGS = {"compression": "gzip", "compression_opts": 4, "shuffle": True}
 _MESH_GROUP = f"VTKHDF/{io4dolfinx.backends.DEFAULT_MESH_NAME}"
 
 Submeshes = Sequence[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]]
