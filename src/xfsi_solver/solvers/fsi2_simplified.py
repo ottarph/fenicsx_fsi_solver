@@ -149,7 +149,11 @@ def solve(
     The material has no further unknowns: its stress is condensed in v as that of the SVK solid. The smallest
     and largest J = det(F) of the solid and of the fluid mesh are measured after each step, at the points of
     a lattice of degree 4 on each cell, and returned; with the Mooney-Rivlin solid they are also printed, and
-    a solid J <= 0, where its energy is not defined, raises ``RuntimeError``.
+    a solid J <= 0, where its energy is not defined, raises ``RuntimeError``. Its energy is not polynomial in
+    u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK), so give
+    ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
+    lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step
+    against 0.45 s uncapped on 4 ranks.
 
     The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
     (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
