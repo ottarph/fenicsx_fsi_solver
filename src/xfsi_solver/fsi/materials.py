@@ -52,6 +52,56 @@ class Solid:
         """
         return Solid.IMR_elastic(u, c1, c2) + Solid.IMR_pressure(p)
 
+    def MR3_energy(F, C10, C01, C11, D1):
+        """Strain energy per reference volume of the compressible three-term Mooney-Rivlin material.
+
+        With J = det(F) and the isochoric left Cauchy-Green tensor Bbar = J^(-2/3) F F^T, whose invariants
+        are I1bar = tr(Bbar) and I2bar = (tr(Bbar)^2 - tr(Bbar Bbar)) / 2,
+
+            W = C10 (I1bar - 3) + C01 (I2bar - 3) + C11 (I1bar - 3) (I2bar - 3) + (J - 1)^2 / D1.
+
+        ``F`` must be a 3 x 3 deformation gradient, the invariants being those of a three-dimensional
+        tensor; for plane strain, embed the in-plane gradient as ``MR3_piola`` does. The Cij have units
+        of stress and D1 of inverse stress; the initial shear and bulk moduli are mu0 = 2 (C10 + C01) and
+        K0 = 2 / D1, and C11 does not enter them. The energy is defined only for J > 0: J^(-2/3) of a
+        negative J is not real, which this function does not hide.
+        """
+        if ufl.shape(F) != (3, 3):
+            raise ValueError(f"MR3_energy needs a 3 x 3 deformation gradient, not one of shape {ufl.shape(F)}")
+        J = ufl.det(F)
+        Bbar = J ** (-2.0 / 3.0) * F * F.T
+        I1bar = ufl.tr(Bbar)
+        I2bar = 0.5 * (ufl.tr(Bbar) ** 2 - ufl.tr(Bbar * Bbar))
+        return C10 * (I1bar - 3.0) + C01 * (I2bar - 3.0) + C11 * (I1bar - 3.0) * (I2bar - 3.0) + (J - 1.0) ** 2 / D1
+
+    def MR3_piola(u: dolfinx.fem.Function, C10, C01, C11, D1):
+        """First Piola-Kirchhoff stress P = dW/dF of the compressible three-term Mooney-Rivlin material.
+
+        P is obtained by UFL differentiation of ``MR3_energy`` with respect to the deformation gradient
+        F = I + grad(u), marked as a UFL variable. P still depends on u through F, so the residual
+        ``inner(P, grad(test)) dx`` can be differentiated again, by ``ufl.derivative``, for the Jacobian.
+
+        For a 2D displacement this is plane strain: the in-plane gradient is embedded in the 3 x 3
+
+            F3 = [[F[0, 0], F[0, 1], 0], [F[1, 0], F[1, 1], 0], [0, 0, 1]],
+
+        the three-dimensional energy is differentiated with respect to F3, and the upper-left 2 x 2 block
+        of P is returned. The out-of-plane stress P[2, 2] does not in general vanish and is not returned.
+        The Cauchy stress is P F^T / J.
+        """
+        dim = u.ufl_shape[0]
+        F = ufl.Identity(dim) + ufl.grad(u)
+        if dim == 3:
+            F3 = ufl.variable(F)
+        elif dim == 2:
+            F3 = ufl.variable(ufl.as_matrix([[F[0, 0], F[0, 1], 0.0], [F[1, 0], F[1, 1], 0.0], [0.0, 0.0, 1.0]]))
+        else:
+            raise ValueError(f"MR3_piola supports 2D (plane strain) and 3D displacements, not {dim}D")
+        P3 = ufl.diff(Solid.MR3_energy(F3, C10, C01, C11, D1), F3)
+        if dim == 3:
+            return P3
+        return ufl.as_matrix([[P3[0, 0], P3[0, 1]], [P3[1, 0], P3[1, 1]]])
+
 
 class Fluid:
     def NS_pressure(p: dolfinx.fem.Function):

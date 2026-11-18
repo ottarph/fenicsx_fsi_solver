@@ -4,6 +4,8 @@
 
 """Resolve the solver arguments that can be given in more than one, mutually exclusive, way."""
 
+import math
+
 
 def theta_value(dt_val, absolute_theta_shift, relative_theta_shift, default_relative_theta_shift) -> float:
     """Theta of the shifted Crank-Nicolson time stepping.
@@ -36,3 +38,36 @@ def lame_lambda(mu_s, nu_s, lambda_s) -> float:
     if nu_s is None:
         raise ValueError("Give one of nu_s and lambda_s")
     return -mu_s / (1.0 - 0.5 / nu_s)
+
+
+def mooney_rivlin_3_coefficients(C10, C01, C11, D1, mu_s, lambda_s) -> dict:
+    """The coefficients ``C10``, ``C01``, ``C11`` and ``D1`` of the compressible three-term Mooney-Rivlin
+    solid (``xfsi_solver.fsi.materials.Solid.MR3_energy``), in Pa and 1/Pa, with D1 resolved.
+
+    The Cij set the distortional (shear) response, with initial shear modulus 2 (C10 + C01). ``D1`` sets the
+    volumetric one, with initial bulk modulus K0 = 2 / D1. With ``D1=None``, D1 is taken from the bulk
+    modulus of the St. Venant-Kirchhoff parameters of the solver, K = lambda_s + 2 mu_s / 3, as D1 = 2 / K,
+    so that only the shear response differs from that of the SVK solid; this is a provisional choice for
+    lack of a measured D1, which an explicit ``D1`` overrides.
+
+    Raises ``ValueError`` unless every coefficient is finite, C10, C01 and C11 are nonnegative, C10 + C01 is
+    positive and D1 (or the K it comes from) is positive. These are basic checks of the input, not a proof
+    that the material is stable at every deformation.
+    """
+    coefficients = {"C10": C10, "C01": C01, "C11": C11}
+    for name, value in coefficients.items():
+        if value is None or not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be a finite nonnegative number, not {value!r}")
+    if C10 + C01 <= 0.0:
+        raise ValueError(f"C10 + C01, half the initial shear modulus, must be positive, not {C10 + C01!r}")
+    if D1 is None:
+        bulk_modulus = lambda_s + 2.0 * mu_s / 3.0
+        if not math.isfinite(bulk_modulus) or bulk_modulus <= 0.0:
+            raise ValueError(
+                f"The bulk modulus lambda_s + 2 mu_s / 3 = {bulk_modulus!r} that D1 = 2 / K is taken from must be "
+                "finite and positive"
+            )
+        D1 = 2.0 / bulk_modulus
+    if not math.isfinite(D1) or D1 <= 0.0:
+        raise ValueError(f"D1 must be a finite positive number, not {D1!r}")
+    return coefficients | {"D1": D1}
