@@ -200,3 +200,27 @@ def incompressibility_violation(
         return change / area, np.sqrt(max(squared, 0.0) / area), maximum
 
     return measure
+
+
+def deformation_jacobian_range(
+    u: dolfinx.fem.Function, cells: np.ndarray, points_degree: int = 4
+) -> Callable[[], tuple[float, float]]:
+    """The smallest and largest J = det(I + grad(u)) on the cells ``cells`` of the mesh of ``u``.
+
+    Returns a collective function that computes, from the current ``u``, the minimum and maximum of J at the
+    points of an equispaced lattice of degree ``points_degree`` on each cell, which include the vertices, the
+    same on every rank. J is sampled, so a J below the minimum between the points is not seen. A rank
+    without cells contributes nothing.
+    """
+    mesh = u.function_space.mesh
+    J = ufl.det(ufl.Identity(mesh.geometry.dim) + ufl.grad(u))
+    points = basix.create_lattice(mesh.basix_cell(), points_degree, basix.LatticeType.equispaced, True)
+    J_expression = dolfinx.fem.Expression(J, points)
+
+    def measure():
+        values = J_expression.eval(mesh, cells)
+        local_min = np.min(values, initial=np.inf)
+        local_max = np.max(values, initial=-np.inf)
+        return mesh.comm.allreduce(local_min, op=MPI.MIN), mesh.comm.allreduce(local_max, op=MPI.MAX)
+
+    return measure

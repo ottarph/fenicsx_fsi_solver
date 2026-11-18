@@ -10,6 +10,7 @@ from xfsi_solver.tools.qoi import (
     append_qoi_row,
     assemble_force,
     assemble_gap_norm,
+    deformation_jacobian_range,
     drag_lift_forms,
     find_point_dof,
     incompressibility_violation,
@@ -108,6 +109,19 @@ def test_incompressibility_violation_of_a_stretch():
         assert change == pytest.approx(0.5)
         assert rms == pytest.approx(np.sqrt(1 / 3))
         assert maximum == pytest.approx(1.0)
+
+
+def test_deformation_jacobian_range_of_a_stretch():
+    # u = (x^2 / 2, 0) has det(F) = 1 + x, between 1 and 2, at the vertices on x = 0 and x = 1, on every rank.
+    mesh = dolfinx.mesh.create_unit_square(COMM, 4, 4)
+    u = dolfinx.fem.Function(dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,))))
+    u.interpolate(lambda x: np.stack([x[0] ** 2 / 2, np.zeros_like(x[0])]))
+    cell_map = mesh.topology.index_map(mesh.topology.dim)
+    cells = np.arange(cell_map.size_local + cell_map.num_ghosts, dtype=np.int32)
+    measure = deformation_jacobian_range(u, cells)
+    assert measure() == pytest.approx((1.0, 2.0))
+    u.x.array[:] *= -3.0  # det(F) = 1 - 3 x, an inverted region
+    assert measure() == pytest.approx((-2.0, 1.0))
 
 
 @pytest.mark.parametrize("gdim", [2, 3])
