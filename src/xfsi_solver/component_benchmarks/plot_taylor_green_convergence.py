@@ -14,6 +14,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import NullFormatter
 
 
 def plot_study(files, out_path, slopes=None, pressure_at_theta=False):
@@ -39,6 +40,7 @@ def plot_study(files, out_path, slopes=None, pressure_at_theta=False):
             ax.set_xlabel("h" if spatial else "dt")
             ax.set_ylabel(f"L2 error of the {field}")
     for ax in axes:
+        ax.xaxis.set_minor_formatter(NullFormatter())  # the minor labels of a log axis overlap
         ax.grid(True, which="both", alpha=0.3)
         ax.legend(fontsize="small")
     out_path = Path(out_path)
