@@ -40,6 +40,19 @@ times, kept for the whole run, unlike the restart checkpoints, which are
 overwritten. Each snapshot is a directory with a single checkpoint file in it,
 so a run can start from it with ``initial_state_dir``, as from any other
 checkpoint directory.
+
+Checkpoints are written in one of two file formats, ``file_format``:
+
+- ``"bp"``, the default: io4dolfinx checkpoints in ADIOS2 files, ``checkpoint_<i>.bp``,
+  which hold the dofs of each function, of any element.
+- ``"vtkhdf"``: VTKHDF files, ``checkpoint_<i>.vtkhdf``, which hold continuous
+  Lagrange functions up to degree 2 as point data at the nodes of the mesh, and open
+  in ParaView like the output of a run (:mod:`xfsi_solver.tools.vtkhdf`). They are
+  read back to round-off, within about 1e-14 of the largest value, rather than exactly.
+
+A checkpoint is read in the format it was written in, whatever ``file_format`` a run
+writes, so a run can restart from, or start from, the checkpoints of a run that wrote
+the other format.
 """
 
 import shutil
@@ -52,20 +65,35 @@ import dolfinx
 import io4dolfinx
 import numpy as np
 
+from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.submesh import all_cells
 
 _ATTRIBUTES = "checkpoint"
 # Checkpoints written before t0 was stored have no t0; they were all written by runs starting at t0 = 0
 _ATTRIBUTE_KEYS = {"t", "step", "dt", "num_cells"}
 _NUM_FILES = 2
+_SUFFIXES = {"bp": ".bp", "vtkhdf": vtkhdf.SUFFIX}
 
 
 def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
     return mesh.topology.index_map(mesh.topology.dim).size_global
 
 
-def _checkpoint_file(directory: Path, i: int) -> Path:
-    return directory / f"checkpoint_{i}.bp"
+def _check_file_format(file_format: str) -> None:
+    if file_format not in _SUFFIXES:
+        raise ValueError(f"file_format must be one of {list(_SUFFIXES)}, not {file_format!r}")
+
+
+def _checkpoint_file(directory: Path, i: int, file_format: str = "bp") -> Path:
+    return directory / f"checkpoint_{i}{_SUFFIXES[file_format]}"
+
+
+def _remove(path: Path) -> None:
+    """Remove the checkpoint file ``path``: a directory for ADIOS2, a file for VTKHDF."""
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _read_complete_attributes(path: Path, comm) -> dict[str, np.ndarray] | None:
@@ -74,7 +102,10 @@ def _read_complete_attributes(path: Path, comm) -> dict[str, np.ndarray] | None:
         return None
     # An incomplete file, from a run killed while writing it, has no attributes
     try:
-        attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES)
+        if path.suffix == vtkhdf.SUFFIX:
+            attrs = vtkhdf.read_attributes(path, comm, _ATTRIBUTES)
+        else:
+            attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES)
     except Exception:  # noqa: BLE001
         return None
     return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
@@ -95,6 +126,9 @@ class Checkpointer:
     The functions live on ``mesh``, read from file, or on one of the cell
     submeshes of it listed in ``submeshes`` as ``(submesh, entity_map)``
     pairs, with the entity map returned by ``dolfinx.mesh.create_submesh``.
+    Checkpoints are written in ``file_format``, ``"bp"`` or ``"vtkhdf"``, and
+    VTKHDF ones also hold ``cell_tags`` as cell data, for viewing; checkpoints
+    of either format are read.
     """
 
     def __init__(
@@ -102,9 +136,16 @@ class Checkpointer:
         directory: str | Path,
         mesh: dolfinx.mesh.Mesh,
         submeshes: list[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]] = (),
+        file_format: str = "bp",
+        cell_tags: dolfinx.mesh.MeshTags | None = None,
     ):
+        _check_file_format(file_format)
         self.directory = Path(directory)
         self.mesh = mesh
+        self.file_format = file_format
+        self._submeshes = list(submeshes)
+        self._cell_tags = cell_tags
+        self._layout = None  # the PointDataLayout of the VTKHDF files, made at the first write
         self._next_file = 0
         self._submesh_cells = []
         for submesh, entity_map in submeshes:
@@ -146,14 +187,16 @@ class Checkpointer:
         g.x.array[: len(rank_count)] /= rank_count
         g.x.scatter_forward()
 
-    def _file(self, i: int) -> Path:
-        return _checkpoint_file(self.directory, i)
+    def _file(self, i: int, file_format: str | None = None) -> Path:
+        return _checkpoint_file(self.directory, i, file_format or self.file_format)
 
     def clear(self) -> None:
-        """Remove checkpoints from an earlier run, which a restart could otherwise pick up as the latest."""
+        """Remove checkpoints from an earlier run, of either format, which a restart could otherwise pick up as
+        the latest."""
         if self.mesh.comm.rank == 0:
-            for i in range(_NUM_FILES):
-                shutil.rmtree(self._file(i), ignore_errors=True)
+            for file_format in _SUFFIXES:
+                for i in range(_NUM_FILES):
+                    _remove(self._file(i, file_format))
         self.mesh.comm.Barrier()
         self._next_file = 0
 
@@ -169,12 +212,18 @@ class Checkpointer:
         if self.mesh.comm.rank == 0:
             path.parent.mkdir(parents=True, exist_ok=True)
         self.mesh.comm.Barrier()
-        io4dolfinx.write_mesh_input_order(path, self.mesh)
-        for f in functions:
-            g, cells = self._on_parent(f)
-            if cells is not None:
-                self._copy_to_parent(g, f, cells)
-            io4dolfinx.write_function_on_input_mesh(path, g, time=t)
+        if path.suffix == vtkhdf.SUFFIX:
+            if self._layout is None:
+                self._layout = vtkhdf.PointDataLayout(self.mesh, self._submeshes)
+            self._layout.write_mesh(path, t, self._cell_tags)
+            self._layout.write_functions(path, functions, t)
+        else:
+            io4dolfinx.write_mesh_input_order(path, self.mesh)
+            for f in functions:
+                g, cells = self._on_parent(f)
+                if cells is not None:
+                    self._copy_to_parent(g, f, cells)
+                io4dolfinx.write_function_on_input_mesh(path, g, time=t)
         attrs = {
             "t": np.array([t], dtype=np.float64),
             "step": np.array([step], dtype=np.int64),
@@ -183,17 +232,26 @@ class Checkpointer:
             "t0": np.array([t0], dtype=np.float64),
         }
         assert _ATTRIBUTE_KEYS <= attrs.keys()
-        io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
+        if path.suffix == vtkhdf.SUFFIX:
+            vtkhdf.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
+        else:
+            io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
 
-    def _read_attributes(self, i: int) -> dict[str, np.ndarray] | None:
-        return _read_complete_attributes(self._file(i), self.mesh.comm)
+    def _latest(self) -> tuple[dict[str, np.ndarray], Path]:
+        """Attributes and file of the latest complete checkpoint, of either format.
 
-    def _latest(self) -> tuple[dict[str, np.ndarray], int]:
-        """Attributes and file index of the latest complete checkpoint."""
-        candidates = [(attrs, i) for i in range(_NUM_FILES) if (attrs := self._read_attributes(i)) is not None]
+        Of two checkpoints of the same step, the one in this checkpointer's own format is taken.
+        """
+        candidates = [
+            (attrs, file_format == self.file_format, self._file(i, file_format))
+            for file_format in _SUFFIXES
+            for i in range(_NUM_FILES)
+            if (attrs := _read_complete_attributes(self._file(i, file_format), self.mesh.comm)) is not None
+        ]
         if not candidates:
             raise FileNotFoundError(f"No complete checkpoint in {self.directory}")
-        return max(candidates, key=lambda c: int(c[0]["step"][0]))
+        attrs, _, path = max(candidates, key=lambda c: (int(c[0]["step"][0]), c[1]))
+        return attrs, path
 
     def latest_times(self) -> tuple[float, float]:
         """Time ``t`` of the latest complete checkpoint and start time ``t0`` of the run that wrote it."""
@@ -216,27 +274,37 @@ class Checkpointer:
         ``ValueError`` if it was written on a different mesh, or, unless ``dt``
         is None, with a time step other than ``dt``.
         """
-        attrs, i = self._latest()
+        attrs, path = self._latest()
         t, step = float(attrs["t"][0]), int(attrs["step"][0])
         if dt is not None and not np.isclose(attrs["dt"][0], dt, rtol=1e-12, atol=0.0):
-            raise ValueError(f"Checkpoint {self._file(i)} was written with dt = {attrs['dt'][0]}, not {dt}")
+            raise ValueError(f"Checkpoint {path} was written with dt = {attrs['dt'][0]}, not {dt}")
         if int(attrs["num_cells"][0]) != _num_global_cells(self.mesh):
             raise ValueError(
-                f"Checkpoint {self._file(i)} was written on a mesh with {int(attrs['num_cells'][0])} cells, "
+                f"Checkpoint {path} was written on a mesh with {int(attrs['num_cells'][0])} cells, "
                 f"not {_num_global_cells(self.mesh)}"
             )
+        if path.suffix == vtkhdf.SUFFIX:
+            names = vtkhdf.point_data_names(path, self.mesh.comm)
+            stored = [f for f in functions if f.name not in optional or f.name in names]
+            vtkhdf.read_functions(path, stored, t, self.mesh, self._submeshes)
+        else:
+            self._read_bp(path, functions, t, optional)
+        # The next write goes to the other file of this checkpointer's format, so the one read is kept
+        i = int(path.stem.rsplit("_", 1)[1])
+        self._next_file = (i + 1) % _NUM_FILES if path.suffix == _SUFFIXES[self.file_format] else 0
+        return t, step
+
+    def _read_bp(self, path: Path, functions: list[dolfinx.fem.Function], t: float, optional: Collection[str]) -> None:
         for f in functions:
-            if f.name in optional and len(io4dolfinx.read_timestamps(self._file(i), self.mesh.comm, f.name)) == 0:
+            if f.name in optional and len(io4dolfinx.read_timestamps(path, self.mesh.comm, f.name)) == 0:
                 continue
             g, cells = self._on_parent(f)
-            io4dolfinx.read_function(self._file(i), g, time=t, name=f.name)
+            io4dolfinx.read_function(path, g, time=t, name=f.name)
             # Every dof of f, owned or ghost, is in a local submesh cell, and g has its ghost values from
             # read_function, so unlike in write, interpolating cell by cell sets all of f
             if cells is not None:
                 sub_cells, parent_cells = cells
                 f.interpolate(g, cells0=parent_cells, cells1=sub_cells)
-        self._next_file = (i + 1) % _NUM_FILES
-        return t, step
 
 
 def check_start_options(
@@ -328,8 +396,8 @@ class SnapshotWriter:
     The snapshot at time ``t`` goes to ``directory / snapshot_name(t)``, a checkpoint directory with
     one complete checkpoint, from which a run starts with ``initial_state_dir``. ``t`` is the time of
     the step closest to the requested time, by :func:`snapshot_steps`; the requested times ``times``
-    are those of a run starting at ``t0`` with ``num_steps`` steps of ``dt``, and ``mesh`` and
-    ``submeshes`` are those of :class:`Checkpointer`.
+    are those of a run starting at ``t0`` with ``num_steps`` steps of ``dt``, and ``mesh``,
+    ``submeshes``, ``file_format`` and ``cell_tags`` are those of :class:`Checkpointer`.
 
     A new run (``restart=False``) removes the snapshots of an earlier run in ``directory``, which
     would otherwise mix with its own, and nothing else there. A run restarted after step ``step``
@@ -355,19 +423,21 @@ class SnapshotWriter:
         num_steps: int,
         step: int = 0,
         restart: bool = False,
+        file_format: str = "bp",
+        cell_tags: dolfinx.mesh.MeshTags | None = None,
     ):
+        _check_file_format(file_format)
         self.directory = None if directory is None else Path(directory)
+        self.file_format = file_format
         self._steps = {}
         if self.directory is None:
             return
         self._comm = mesh.comm
-        self._checkpointer = Checkpointer(self.directory, mesh, submeshes)
+        self._checkpointer = Checkpointer(self.directory, mesh, submeshes, file_format, cell_tags)
         self._steps = snapshot_steps(times, t0, dt, num_steps)
         if restart:
             done = [k for k in self._steps if k <= step]
-            missing = [
-                self._steps[k] for k in done if _read_complete_attributes(self.path(t0 + k * dt), self._comm) is None
-            ]
+            missing = [self._steps[k] for k in done if not self._complete(t0 + k * dt)]
             if missing:
                 warnings.warn(
                     f"The snapshots for t = {missing} in {self.directory} are missing or incomplete, and are before "
@@ -383,17 +453,22 @@ class SnapshotWriter:
             steps = ", ".join(str(k) for k in self._steps)
             print(f"Writing snapshots at t = {times} (steps {steps}) to {self.directory}", flush=True)
 
-    def path(self, t: float) -> Path:
-        """The checkpoint file of the snapshot at time ``t``."""
-        return _checkpoint_file(self.directory / snapshot_name(t), 0)
+    def path(self, t: float, file_format: str | None = None) -> Path:
+        """The checkpoint file of the snapshot at time ``t``, in ``file_format``, by default the writer's."""
+        return _checkpoint_file(self.directory / snapshot_name(t), 0, file_format or self.file_format)
+
+    def _complete(self, t: float) -> bool:
+        """Whether the snapshot at time ``t`` is complete, in either format."""
+        return any(_read_complete_attributes(self.path(t, f), self._comm) is not None for f in _SUFFIXES)
 
     def clear(self) -> None:
-        """Remove the snapshots of an earlier run, and nothing else in the directory."""
+        """Remove the snapshots of an earlier run, of either format, and nothing else in the directory."""
         if self._comm.rank == 0 and self.directory.is_dir():
-            for path in self.directory.glob(f"t*/{_checkpoint_file(Path(), 0)}"):
-                shutil.rmtree(path, ignore_errors=True)
-                if not any(path.parent.iterdir()):
-                    path.parent.rmdir()
+            for file_format in _SUFFIXES:
+                for path in self.directory.glob(f"t*/{_checkpoint_file(Path(), 0, file_format)}"):
+                    _remove(path)
+                    if not any(path.parent.iterdir()):
+                        path.parent.rmdir()
         self._comm.Barrier()
 
     def due(self, step: int) -> bool:
@@ -401,8 +476,13 @@ class SnapshotWriter:
         return step in self._steps
 
     def write(self, functions: list[dolfinx.fem.Function], t: float, step: int, dt: float, t0: float) -> None:
-        """Write ``functions``, the state at time ``t`` after time step ``step``, as its snapshot."""
+        """Write ``functions``, the state at time ``t`` after time step ``step``, as its snapshot, replacing a
+        snapshot of the same time in the other format, from a run restarted in this one."""
         path = self.path(t)
+        if self._comm.rank == 0:
+            for file_format in _SUFFIXES:
+                if file_format != self.file_format:
+                    _remove(self.path(t, file_format))
         self._checkpointer._write_file(path, functions, t, step, dt, t0)
         if self._comm.rank == 0:
             print(
@@ -416,7 +496,7 @@ class StartState(NamedTuple):
     t: float  # time of the state
     step: int  # number of time steps of the run completed at t
     checkpointer: Checkpointer | None  # writes the checkpoints of the run, None without checkpoint_dir
-    output_paths: list[str]  # the VTX output paths, renamed on a restart so earlier output is kept
+    output_paths: list[str]  # the output paths, renamed on a restart so earlier output is kept
 
 
 def load_start_state(
@@ -435,11 +515,14 @@ def load_start_state(
     output_paths=(),
     write_vtx: bool = False,
     optional: Collection[str] = (),
+    file_format: str = "bp",
+    cell_tags: dolfinx.mesh.MeshTags | None = None,
 ) -> StartState:
     """Read the state a solver run starts from into ``functions``, and set up the run's checkpointer.
 
     The arguments are those of the solver: ``t0`` is from :func:`start_time`, ``num_steps`` the number
-    of time steps from ``t0`` to ``T``, and ``mesh`` and ``submeshes`` those of :class:`Checkpointer`.
+    of time steps from ``t0`` to ``T``, and ``mesh``, ``submeshes``, ``file_format`` and ``cell_tags``
+    those of :class:`Checkpointer`, which reads checkpoints of either format.
     On a restart, ``functions`` are read from the latest checkpoint in ``checkpoint_dir`` and the
     ``output_paths`` renamed by :func:`restart_output_path`; on a new run with ``checkpoint_every``,
     the checkpoints of an earlier run in ``checkpoint_dir`` are removed. With ``initial_state_dir``,
@@ -455,7 +538,7 @@ def load_start_state(
     t, step = t0, 0
     checkpointer = None
     if checkpoint_dir is not None:
-        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes)
+        checkpointer = Checkpointer(checkpoint_dir, mesh, submeshes, file_format, cell_tags)
     if restart:
         t, step = checkpointer.read(functions, dt, optional)
         if step >= num_steps:
@@ -464,9 +547,9 @@ def load_start_state(
                 f"up to {T = } ({num_steps = })"
             )
         output_paths = [restart_output_path(path, t) for path in output_paths]
-        vtx_message = f", writing VTX output to {_join_and(output_paths)}" if write_vtx else ""
+        output_message = f", writing output to {_join_and(output_paths)}" if write_vtx else ""
         if mesh.comm.rank == 0:
-            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){vtx_message}")
+            print(f"Restarting from {checkpoint_dir} at {t = :.4f} ({step = }){output_message}")
     elif checkpoint_every is not None:
         checkpointer.clear()
     if initial_state_dir is not None:
@@ -492,7 +575,7 @@ def _join_and(items: list[str]) -> str:
 
 
 def restart_output_path(path: str | Path, t: float) -> str:
-    """``out/name.bp`` -> ``out/name_from_t<t>.bp``, so a restart at time ``t`` keeps earlier VTX output."""
+    """``out/name.bp`` -> ``out/name_from_t<t>.bp``, so a restart at time ``t`` keeps earlier output."""
     path = Path(path)
     return str(path.with_name(f"{path.stem}_from_t{t:.4f}{path.suffix}"))
 

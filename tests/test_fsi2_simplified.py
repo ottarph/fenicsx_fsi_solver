@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from mpi4py import MPI
 from newton_log_helpers import check_solver_newton_log
 from restart_helpers import (
     check_initial_state_rejects_T_not_after_it,
@@ -7,6 +8,7 @@ from restart_helpers import (
     check_restart_rejects_T_not_after_checkpoint,
     check_restart_reproduces_continuous_run,
     check_start_from_initial_state,
+    output_path_kwargs,
     read_checkpoint_state,
 )
 
@@ -14,6 +16,7 @@ from xfsi_solver.mesh_motion import biharmonic_c0ip_mesh_motion, harmonic_mesh_m
 from xfsi_solver.petsc_options.fsi2d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers import fsi2_biharmonic_mixed
 from xfsi_solver.solvers.fsi2_simplified import solve
+from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.newton_log import read_newton_log
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
@@ -38,13 +41,12 @@ def test_fsi2_simplified_solve(output_dirs):
     qoi_path = output_dirs["qoi"] / "fsi2_simplified.txt"
     solve(
         mesh_path=MESH,
-        # Run enough steps to save at least 2 VTX snapshots
+        # Run enough steps to write the output at two times
         T=6 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "fsi2_simplified.bp"),
-        output_path_p=str(output_dirs["pv"] / "fsi2_simplified_p.bp"),
+        output_path=str(output_dirs["pv"] / "fsi2_simplified.vtkhdf"),
         qoi_path=str(qoi_path),
-        vtx_save_every=4,
+        output_every=4,
         newton_log_path=str(output_dirs["qoi"] / "fsi2_simplified_newton.txt"),
     )
 
@@ -54,7 +56,10 @@ def test_fsi2_simplified_solve(output_dirs):
     # The inflow drives the fluid in the x-direction, so the drag grows, and the structure moves.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
-    assert (output_dirs["pv"] / "fsi2_simplified.bp").exists()
+    # The output at steps 0 and 4, in one VTKHDF file with u, v and p
+    output_path = output_dirs["pv"] / "fsi2_simplified.vtkhdf"
+    np.testing.assert_allclose(vtkhdf.output_times(output_path, MPI.COMM_WORLD), [0.0, 4 * dt_val])
+    assert sorted(vtkhdf.point_data_names(output_path, MPI.COMM_WORLD)) == ["p", "u", "v"]
     check_solver_newton_log(output_dirs["qoi"] / "fsi2_simplified_newton.txt", qoi_path, ["v", "p"])
 
 
@@ -67,8 +72,7 @@ def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
             mesh_path=MESH,
             T=2 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
             max_quadrature_degree=max_quadrature_degree,
         )
@@ -94,8 +98,7 @@ def test_fsi2_simplified_iterative_solve_matches_direct(output_dirs):
             mesh_path=MESH,
             T=3 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
             solver_options=solver_options,
         )
@@ -130,8 +133,7 @@ def test_fsi2_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_t
             mesh_path=MESH,
             T=T,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
             **kwargs,
         )
@@ -206,8 +208,7 @@ def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
             mesh_path=MESH,
             T=6 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             solver_options=CONVERGED_SOLVER_OPTIONS,
             **kwargs,
@@ -225,6 +226,8 @@ def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
         checkpoint_every=4,
     )
     assert _snapshot_names(snapshot_dir) == ["t0.0000", "t0.0050", "t0.0100", "t0.0125"]
+    assert _snapshot_names(snapshot_dir / "t0.0050") == ["checkpoint_0.vtkhdf"]
+    assert _snapshot_names(tmp_path / "checkpoints") == ["checkpoint_0.vtkhdf"]
 
     t, step, state = read_checkpoint_state(MESH, snapshot_dir / "t0.0000", dt_val, ELEMENTS)
     assert (t, step) == (0.0, 0)
@@ -254,8 +257,7 @@ def test_fsi2_simplified_restart_keeps_earlier_snapshots(output_dirs, tmp_path):
     kwargs = dict(
         mesh_path=MESH,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "snapshots.bp"),
-        output_path_p=str(output_dirs["pv"] / "snapshots_p.bp"),
+        output_path=str(output_dirs["pv"] / "snapshots.vtkhdf"),
         qoi_path=str(output_dirs["qoi"] / "snapshots.txt"),
         checkpoint_dir=tmp_path / "checkpoints",
         checkpoint_every=4,
@@ -278,8 +280,7 @@ def test_fsi2_simplified_rejects_snapshot_after_T(output_dirs, tmp_path):
             mesh_path=MESH,
             T=0.005,
             dt_val=0.0025,
-            output_path=str(output_dirs["pv"] / "late.bp"),
-            output_path_p=str(output_dirs["pv"] / "late_p.bp"),
+            output_path=str(output_dirs["pv"] / "late.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / "late.txt"),
             snapshot_dir=tmp_path / "snapshots",
             snapshot_times=(0.01,),
@@ -300,8 +301,7 @@ def test_fsi2_simplified_checkpoints_interchangeable_with_mixed(output_dirs, tmp
             mesh_path=MESH,
             T=T,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            **output_path_kwargs(module_solve, output_dirs["pv"], name),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             checkpoint_dir=tmp_path / name,
             checkpoint_every=4,
@@ -362,8 +362,7 @@ def test_fsi2_simplified_reassembles_the_jacobian_in_every_iteration_without_reu
             mesh_path=MESH,
             T=3 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             gamma_reassemble=gamma_reassemble,
             newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
@@ -385,8 +384,7 @@ def test_fsi2_simplified_returns_the_newton_statistics_of_the_newton_log(output_
         mesh_path=MESH,
         T=4 * dt_val,
         dt_val=dt_val,
-        output_path=str(output_dirs["pv"] / "stats.bp"),
-        output_path_p=str(output_dirs["pv"] / "stats_p.bp"),
+        output_path=str(output_dirs["pv"] / "stats.vtkhdf"),
         qoi_path=str(output_dirs["qoi"] / "stats.txt"),
         newton_log_path=str(output_dirs["qoi"] / "stats_newton.txt"),
     )
@@ -412,8 +410,7 @@ def test_fsi2_simplified_predicted_displacements_converge_to_the_same_state(outp
             mesh_path=MESH,
             T=4 * dt_val,
             dt_val=dt_val,
-            output_path=str(output_dirs["pv"] / f"{name}.bp"),
-            output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
             newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
             predict_displacements=predict_displacements,
