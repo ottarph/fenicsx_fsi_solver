@@ -194,7 +194,7 @@ def solve(
     requires_v_sub_IS=False,
     newton_log_path=None,
     predict_displacements=True,
-    skip_dirichlet_lifting=False,
+    skip_dirichlet_lifting=True,
     snes_converged_reason_on=True,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
