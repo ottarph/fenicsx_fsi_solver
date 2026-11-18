@@ -1,4 +1,5 @@
-"""The residual of FSIForms with the solid materials, on a unit square split into a fluid and a solid half."""
+"""The residual of FSIForms with the solid materials, on a unit square (2D, plane strain) and a unit cube (3D),
+each split into a fluid and a solid half."""
 
 import dolfinx
 import dolfinx.fem.petsc
@@ -16,26 +17,53 @@ LAMBDA_S, MU_S = 2.0e6, 5.0e5
 MR3 = MR3_FSI2_MATCHED | {"D1": 2.0 / (LAMBDA_S + 2.0 * MU_S / 3.0)}
 
 
-@pytest.fixture
-def setup():
-    mesh = dolfinx.mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
-    midpoints = dolfinx.mesh.compute_midpoints(mesh, mesh.topology.dim, np.arange(32, dtype=np.int32))
+def fields(dim, *components):
+    """The interpolation callable of the 2D vector field ``components`` (functions of x), with in 3D a third
+    component that couples z, so that the 3D deformations are not plane."""
+    third = {
+        "u_s_old": lambda x: 0.1 * x[0] * x[2] - 0.05 * x[1],
+        "u_f_old": lambda x: 0.01 * x[0] * x[2],
+        "u_f": lambda x: 0.011 * x[0] * x[2],
+        "v_old": lambda x: 0.3 * (x[1] - 0.5),
+        "v": lambda x: 0.35 * (x[1] - 0.5) + 0.1 * x[2] ** 2,
+    }
+
+    def make(name):
+        if dim == 2:
+            return lambda x: np.stack([c(x) for c in components])
+        return lambda x: np.stack([*(c(x) for c in components), third[name](x)])
+
+    return make
+
+
+@pytest.fixture(params=[2, 3], ids=["2d", "3d"])
+def setup(request):
+    dim = request.param
+    if dim == 2:
+        mesh = dolfinx.mesh.create_unit_square(MPI.COMM_SELF, 4, 4)
+    else:
+        mesh = dolfinx.mesh.create_unit_cube(MPI.COMM_SELF, 2, 2, 2)
+    num_cells = mesh.topology.index_map(dim).size_local
+    midpoints = dolfinx.mesh.compute_midpoints(mesh, dim, np.arange(num_cells, dtype=np.int32))
     cell_tags = dolfinx.mesh.meshtags(
-        mesh, mesh.topology.dim, np.arange(32, dtype=np.int32), np.where(midpoints[:, 0] < 0.5, FLUID, SOLID)
+        mesh, dim, np.arange(num_cells, dtype=np.int32), np.where(midpoints[:, 0] < 0.5, FLUID, SOLID)
     )
     dx = ufl.Measure("dx", domain=mesh, subdomain_data=cell_tags)
-    V = dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,)))
+    V = dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (dim,)))
     P = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
     dv, dp = ufl.TestFunctions(ufl.MixedFunctionSpace(V, P))
     v, v_old, u_f, u_f_old, u_s_old = (dolfinx.fem.Function(V) for _ in range(5))
     p = dolfinx.fem.Function(P)
 
     # A bending-like finite deformation with J in about [0.85, 1.15], the velocity of a rotation, and a pressure
-    u_s_old.interpolate(lambda x: np.stack([0.15 * x[0] * x[1] - 0.05 * x[1] ** 2, 0.2 * x[0] ** 2 + 0.1 * x[1]]))
-    u_f_old.interpolate(lambda x: np.stack([0.02 * x[0] * x[1], -0.01 * x[0] ** 2]))
-    u_f.interpolate(lambda x: np.stack([0.021 * x[0] * x[1], -0.011 * x[0] ** 2]))
-    v_old.interpolate(lambda x: np.stack([-(x[1] - 0.5), x[0] - 0.5]))
-    v.interpolate(lambda x: np.stack([-1.1 * (x[1] - 0.5) + 0.3 * x[0] ** 2, (x[0] - 0.5) - 0.2 * x[1]]))
+    f = fields(dim, lambda x: 0.15 * x[0] * x[1] - 0.05 * x[1] ** 2, lambda x: 0.2 * x[0] ** 2 + 0.1 * x[1])
+    u_s_old.interpolate(f("u_s_old"))
+    u_f_old.interpolate(fields(dim, lambda x: 0.02 * x[0] * x[1], lambda x: -0.01 * x[0] ** 2)("u_f_old"))
+    u_f.interpolate(fields(dim, lambda x: 0.021 * x[0] * x[1], lambda x: -0.011 * x[0] ** 2)("u_f"))
+    v_old.interpolate(fields(dim, lambda x: -(x[1] - 0.5), lambda x: x[0] - 0.5)("v_old"))
+    v.interpolate(
+        fields(dim, lambda x: -1.1 * (x[1] - 0.5) + 0.3 * x[0] ** 2, lambda x: (x[0] - 0.5) - 0.2 * x[1])("v")
+    )
     p.interpolate(lambda x: 100.0 * x[0])
 
     def forms(rho_f=1e3, rho_s=1e4, **material):
@@ -65,7 +93,9 @@ def test_mooney_rivlin_3_residual_jacobian_in_v_through_the_condensed_displaceme
     fsi_forms = forms(solid_material="mooney_rivlin_3", mooney_rivlin_3=MR3 | {"C11": C11}, rho_f=0.0, rho_s=0.0)
     residual = fsi_forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
     direction = dolfinx.fem.Function(v.function_space)
-    direction.interpolate(lambda x: np.stack([np.sin(3 * x[1]) * x[0], np.cos(2 * x[0]) * x[1]]))
+    direction.interpolate(
+        lambda x: np.stack([np.sin(3 * x[1]) * x[0], np.cos(2 * x[0]) * x[1], x[0] * x[2]][: v.ufl_shape[0]])
+    )
     tangent = dolfinx.fem.form(ufl.derivative(ufl.extract_blocks(residual)[0], v, direction))
     J_direction = dolfinx.fem.assemble_vector(tangent).array.copy()
 

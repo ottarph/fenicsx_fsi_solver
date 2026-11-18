@@ -17,8 +17,7 @@ import dolfinx.fem.petsc
 import ufl
 
 from xfsi_solver.fsi.materials import Fluid, Solid
-
-SOLID_MATERIALS = ("stvk", "mooney_rivlin_3")
+from xfsi_solver.tools.parameters import SOLID_MATERIALS
 
 
 def _deformation(u):
