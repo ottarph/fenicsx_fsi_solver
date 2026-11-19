@@ -29,6 +29,7 @@ from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import theta_value
 from xfsi_solver.tools.qoi import (
     INCOMPRESSIBLE_QOI_HEADER,
+    THETA_FORCE_COLUMNS,
     append_qoi_row,
     assemble_force,
     drag_lift_forms,
@@ -173,8 +174,12 @@ def solve(
     after ``T`` raises ``ValueError``, and a new run removes the snapshots of an earlier run in
     ``snapshot_dir``, while a restart keeps those up to the step it resumes from.
 
-    The QoI file has, after the drag, lift and tip displacement, three measures of the violation of
-    det(F) = 1 in the solid, by ``xfsi_solver.tools.qoi.incompressibility_violation``.
+    The QoI file has, after the drag, lift and tip displacement, three measures of the violation of det(F) = 1 in
+    the solid, by ``xfsi_solver.tools.qoi.incompressibility_violation``. The last two columns
+    (``THETA_FORCE_COLUMNS``) are the drag and lift at t^{n+theta}, from the theta averages of v and u_f with the
+    pressure of the step, which is that of t^{n+theta} (see ``xfsi_solver.tools.qoi.drag_lift_forms``): second order
+    in time, where the drag and lift from v and u_f of t^{n+1} are first order; in the row of a start state they are
+    those of the state.
 
     If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
@@ -385,6 +390,20 @@ def solve(
         entity_maps,
         max_quadrature_degree=max_quadrature_degree,
     )
+    # The drag and lift at t^{n+theta}: the pressure of a step approximates that at t^{n+theta}, and with v and
+    # u_f of t^{n+1} the force above is only first order in time. v_old and u_f_old hold the previous step when
+    # the row of a step is written.
+    drag_forms_theta, lift_forms_theta = drag_lift_forms(
+        mesh,
+        theta * u_f + (1.0 - theta) * u_f_old,
+        theta * v + (1.0 - theta) * v_old,
+        p,
+        nu_f,
+        rho_f,
+        [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
+        entity_maps,
+        max_quadrature_degree=max_quadrature_degree,
+    )
     measure_incompressibility = incompressibility_violation(u_s, ufl.dx(domain=solid_mesh), all_cells(solid_mesh))
 
     def write_output(t, step):
@@ -397,7 +416,9 @@ def solve(
         u_spot = point_value(u_s, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *measure_incompressibility())
+        drag_theta = assemble_force(drag_forms_theta, comm)
+        lift_theta = assemble_force(lift_forms_theta, comm)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *measure_incompressibility(), drag_theta, lift_theta)
 
     # create Dirichlet boundary condition
 
@@ -849,12 +870,15 @@ def solve(
         solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=INCOMPRESSIBLE_QOI_HEADER)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=INCOMPRESSIBLE_QOI_HEADER + THETA_FORCE_COLUMNS)
     if newton_log_path is not None:
         newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p", "p_S"]), comm, restart, t, dt_val)
         solver.setMonitor(newton_log)
 
     if not restart:
+        # The start state has no previous step: the forces at t^{n+theta} are those of the start state
+        v_old.x.array[:] = v.x.array
+        u_f_old.x.array[:] = u_f.x.array
         write_output(t, step)
         if snapshots.due(step):
             snapshots.write(checkpoint_fields, t, step, dt_val, t0)  # u holds the start state

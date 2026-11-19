@@ -6,7 +6,10 @@ from restart_helpers import check_start_from_initial_state, read_checkpoint_stat
 from xfsi_solver.petsc_options.fsi3d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers.threeDfsi_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
-from xfsi_solver.tools.qoi import DET_F_QOI_HEADER_3D
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER_3D, THETA_FORCE_COLUMNS
+
+# The columns of the QoI file
+NUM_COLUMNS = len((DET_F_QOI_HEADER_3D + THETA_FORCE_COLUMNS).split("\t"))
 
 VECTOR = ("Lagrange", 2, (3,))
 # p lives on the fluid submesh but is checkpointed on the full mesh. No field of the mesh motion is
@@ -49,7 +52,7 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
     direct = run("direct", DEFAULT_DIRECT_SOLVER_OPTIONS | converged)
 
     # The initial state and two time steps, with t, drag, lift, the displacement of B and the range of det(F).
-    assert iterative.shape == direct.shape == (3, 10)
+    assert iterative.shape == direct.shape == (3, NUM_COLUMNS)
     # The inflow drives the fluid in the x-direction, so the drag grows.
     assert 0.0 < iterative[1, 1] < iterative[2, 1]
     # The QoIs agree to all 7 written digits; rtol = 1e-6 allows for the rounding of the last one. The
@@ -130,7 +133,7 @@ def test_threeDfsi_simplified_skipped_dirichlet_lifting_gives_the_lifted_qois(ou
 
     lifted, lifted_stats = run("lifted", False)
     held, held_stats = run("held", True)
-    assert held.shape == lifted.shape == (3, 10)
+    assert held.shape == lifted.shape == (3, NUM_COLUMNS)
     held_its, lifted_its = held_stats["iterations_per_step"], lifted_stats["iterations_per_step"]
     assert all(h <= lf for h, lf in zip(held_its, lifted_its, strict=True)), (held_its, lifted_its)
     for column in range(1, lifted.shape[1]):
@@ -151,6 +154,7 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
         rtol=1e-6,
         qoi_rtol=1e-6,
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
+        start_row_new_columns=("drag_theta", "lift_theta"),
     )
 
 
@@ -197,18 +201,18 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
             **kwargs,
         )
         with open(qoi_path) as f:
-            assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER_3D.split("\t")
+            assert f.readline().lstrip("#").split() == (DET_F_QOI_HEADER_3D + THETA_FORCE_COLUMNS).split("\t")
         return np.loadtxt(qoi_path, ndmin=2), statistics
 
     svk, _ = run("svk")
     mr3, statistics = run(
         "mr3", solid_material="mooney_rivlin_3", mooney_rivlin_3={"C10": 0.0, "C01": 1.0e6, "C11": 1.8e6}
     )
-    assert svk.shape == mr3.shape == (3, 10)
+    assert svk.shape == mr3.shape == (3, NUM_COLUMNS)
     assert not np.array_equal(mr3, svk)
     np.testing.assert_allclose(mr3[:, :6], svk[:, :6], rtol=1e-3, atol=1e-12)
-    np.testing.assert_array_equal(mr3[0, 6:], 1.0)
-    np.testing.assert_allclose(mr3[:, 6:], 1.0, atol=1e-3)
+    np.testing.assert_array_equal(mr3[0, 6:10], 1.0)
+    np.testing.assert_allclose(mr3[:, 6:10], 1.0, atol=1e-3)
     np.testing.assert_allclose(mr3[1:, 6:8], statistics["J_solid_per_step"], rtol=1e-6)
     np.testing.assert_allclose(mr3[1:, 8:10], statistics["J_fluid_per_step"], rtol=1e-6)
 

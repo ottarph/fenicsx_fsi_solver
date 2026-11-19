@@ -20,7 +20,13 @@ from xfsi_solver.solvers import fsi2_simplified as fsi2_simplified_module
 from xfsi_solver.solvers.fsi2_simplified import solve
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.newton_log import read_newton_log
-from xfsi_solver.tools.qoi import DET_F_QOI_HEADER
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER, THETA_FORCE_COLUMNS
+
+# The columns of the QoI file
+NUM_COLUMNS = len((DET_F_QOI_HEADER + THETA_FORCE_COLUMNS).split("\t"))
+# The columns that the first row of a run started from a checkpoint computes from the start state alone, as
+# they need the previous step: the forces at t^{n+theta}
+START_ROW_NEW_COLUMNS = [NUM_COLUMNS - 2, NUM_COLUMNS - 1]
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
@@ -56,13 +62,13 @@ def test_fsi2_simplified_solve(output_dirs):
     # The initial state and six time steps, with t, drag, lift, the tip displacement and the range of det(F) on
     # the solid and on the fluid mesh, which stays near 1 from rest.
     rows = np.loadtxt(qoi_path, ndmin=2)
-    assert rows.shape == (7, 9)
+    assert rows.shape == (7, NUM_COLUMNS)
     with open(qoi_path) as f:
-        assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER.split("\t")
-    np.testing.assert_array_equal(rows[0, 5:], 1.0)  # at rest
-    np.testing.assert_allclose(rows[:, 5:], 1.0, atol=1e-3)
+        assert f.readline().lstrip("#").split() == (DET_F_QOI_HEADER + THETA_FORCE_COLUMNS).split("\t")
+    np.testing.assert_array_equal(rows[0, 5:9], 1.0)  # at rest
+    np.testing.assert_allclose(rows[:, 5:9], 1.0, atol=1e-3)
     assert np.all(rows[1:, 5] <= rows[1:, 6]) and np.all(rows[1:, 7] <= rows[1:, 8])
-    assert np.any(rows[1:, 5:] != 1.0)
+    assert np.any(rows[1:, 5:9] != 1.0)
     # The inflow drives the fluid in the x-direction, so the drag grows, and the structure moves.
     assert 0.0 < rows[1, 1] < rows[-1, 1]
     assert np.abs(rows[-1, 3]) > 0.0
@@ -90,7 +96,7 @@ def test_fsi2_simplified_quadrature_cap_changes_the_qois_slightly(output_dirs):
 
     exact = run("no_cap", None)
     capped = run("cap_4", 4)
-    assert exact.shape == capped.shape == (3, 9)
+    assert exact.shape == capped.shape == (3, NUM_COLUMNS)
     # The cap makes the integration of the nonlinear terms inexact, so the QoIs are not identical, but
     # they stay close. On this mesh the rows differ by up to 3e-5 relative to the uncapped values, so
     # rtol = 1e-3 leaves a margin of more than 30 while still failing for a wrong residual. The initial
@@ -151,13 +157,14 @@ def test_fsi2_simplified_other_mesh_motions(output_dirs, tmp_path, mesh_motion_t
 
     mixed = run("mixed", 2 * dt_val, checkpoint_dir=tmp_path / "mixed", checkpoint_every=2)
     other = run("other", 2 * dt_val, mesh_motion_type=mesh_motion_type)
-    assert other.shape == mixed.shape == (3, 9)
+    assert other.shape == mixed.shape == (3, NUM_COLUMNS)
     np.testing.assert_allclose(other, mixed, rtol=1e-4, atol=0)
 
     continued = run("continued", 4 * dt_val, mesh_motion_type=mesh_motion_type, initial_state_dir=tmp_path / "mixed")
     # The initial row, at the time of the checkpoint, holds the QoIs of the state read
-    assert continued.shape == (3, 9)
-    np.testing.assert_allclose(continued[0], mixed[-1], rtol=1e-6, atol=0)
+    assert continued.shape == (3, NUM_COLUMNS)
+    same = np.setdiff1d(np.arange(NUM_COLUMNS), START_ROW_NEW_COLUMNS)
+    np.testing.assert_allclose(continued[0, same], mixed[-1, same], rtol=1e-6, atol=0)
     assert continued[-1, 0] == pytest.approx(4 * dt_val)
 
 
@@ -197,6 +204,7 @@ def test_fsi2_simplified_starts_from_initial_state(output_dirs, tmp_path):
         rtol=1e-6,
         qoi_rtol=1e-6,
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
+        start_row_new_columns=("drag_theta", "lift_theta"),
     )
 
 
@@ -251,11 +259,12 @@ def test_fsi2_simplified_writes_snapshots_to_start_from(output_dirs, tmp_path):
 
     # The started run has the QoI rows of the source from t = 0.005 on, within the Newton tolerance
     started = run("started", initial_state_dir=snapshot_dir / "t0.0050")
-    assert started.shape == (5, 9)
+    assert started.shape == (5, NUM_COLUMNS)
     np.testing.assert_allclose(started[:, 0], source[2:, 0], rtol=1e-12)
     for column in range(1, source.shape[1]):
+        first = 1 if column in START_ROW_NEW_COLUMNS else 0
         np.testing.assert_allclose(
-            started[:, column], source[2:, column], rtol=0, atol=1e-6 * np.abs(source[:, column]).max()
+            started[first:, column], source[2 + first :, column], rtol=0, atol=1e-6 * np.abs(source[:, column]).max()
         )
 
 
@@ -523,7 +532,7 @@ def test_fsi2_simplified_mooney_rivlin_3_at_finite_strain(output_dirs):
     with_c11, statistics = run_material(output_dirs, "mr3_c11", 2.0, 0.02, mooney_rivlin_3=MR3_FSI2_MATCHED, **kwargs)
     without, _ = run_material(output_dirs, "mr3_c11_0", 2.0, 0.02, mooney_rivlin_3=MR3_FSI2_MATCHED_C11_0, **kwargs)
 
-    assert with_c11.shape == without.shape == (101, 9)
+    assert with_c11.shape == without.shape == (101, NUM_COLUMNS)
     assert np.all(np.isfinite(with_c11))
     # The det(F) columns of the QoI file are the ranges the solver returns, after the initial row
     J_solid, J_fluid = with_c11[1:, 5:7], with_c11[1:, 7:9]
@@ -593,5 +602,5 @@ def test_fsi2_simplified_stops_on_an_inverted_fluid_mesh(output_dirs, monkeypatc
             **material,
         )
     rows = np.loadtxt(qoi_path, ndmin=2)
-    assert rows.shape == (3, 9)  # the initial state, step 1, and step 2, where the run stopped
+    assert rows.shape == (3, NUM_COLUMNS)  # the initial state, step 1, and step 2, where the run stopped
     assert rows[-1, 7] == -0.25 and rows[1, 7] > 0.99

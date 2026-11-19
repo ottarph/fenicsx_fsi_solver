@@ -29,6 +29,7 @@ from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
     DET_F_QOI_HEADER,
+    THETA_FORCE_COLUMNS,
     append_qoi_row,
     assemble_force,
     deformation_jacobian_range,
@@ -140,22 +141,25 @@ def solve(
     (32bd021:notes/newton-convergence/report.md). With ``predict_displacements=False``, the mixed biharmonic
     mesh motion and exact solves, the iterates are those of fsi2_biharmonic_mixed.
 
-    The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or
-    ``nu_s``) by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the
-    compressible three-term Mooney-Rivlin material of ``xfsi_solver.fsi.materials.Solid.MR3_piola``, in plane
-    strain, with the coefficients ``mooney_rivlin_3``, a dict of ``"C10"``, ``"C01"`` and ``"C11"`` in Pa and
-    optionally ``"D1"`` in 1/Pa, such as ``xfsi_solver.fsi.materials.MR3_FSI2_MATCHED``. The Cij set the shear
-    response, with initial shear modulus 2 (C10 + C01); without ``"D1"``, the bulk modulus K = 2 / D1 is that
-    of the SVK parameters, lambda_s + 2 mu_s / 3 (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``).
-    The material has no further unknowns: its stress is condensed in v as that of the SVK solid. The smallest
-    and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
-    a lattice of degree 4 on each cell, and written as its last four columns (``DET_F_QOI_HEADER``); with the
-    Mooney-Rivlin solid they are also printed. A J <= 0 in the solid or on the fluid mesh, with either material,
-    raises ``RuntimeError`` after its row is written.
-    The Mooney-Rivlin energy is not polynomial in u, and on the second-order FSI2 meshes UFL estimates degree 26
-    for its residual (14 for SVK), so give ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5
-    changed the tip displacement, drag and lift by less than 3e-5 of their amplitudes against a cap of 8 or
-    none, at 0.25 s per step against 0.45 s uncapped on 4 ranks.
+    The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or ``nu_s``)
+    by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the compressible
+    three-term Mooney-Rivlin material of ``xfsi_solver.fsi.materials.Solid.MR3_piola``, in plane strain, with the
+    coefficients ``mooney_rivlin_3``, a dict of ``"C10"``, ``"C01"`` and ``"C11"`` in Pa and optionally ``"D1"`` in
+    1/Pa, such as ``xfsi_solver.fsi.materials.MR3_FSI2_MATCHED``. The Cij set the shear response, with initial shear
+    modulus 2 (C10 + C01); without ``"D1"``, the bulk modulus K = 2 / D1 is that of the SVK parameters, lambda_s + 2
+    mu_s / 3 (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``). The material has no further unknowns:
+    its stress is condensed in v as that of the SVK solid. The smallest and largest J = det(F) of the solid and of
+    the fluid mesh are measured at every QoI row, at the points of a lattice of degree 4 on each cell, and written
+    as the four columns after the tip displacement (``DET_F_QOI_HEADER``); with the Mooney-Rivlin solid they are
+    also printed. A J <= 0 in the solid or on the fluid mesh, with either material, raises ``RuntimeError`` after
+    its row is written. The last two columns (``THETA_FORCE_COLUMNS``) are the drag and lift at t^{n+theta}, from
+    the theta averages of v and u_f with the pressure of the step, which is that of t^{n+theta} (see
+    ``xfsi_solver.tools.qoi.drag_lift_forms``): second order in time, where the drag and lift from v and u_f of
+    t^{n+1} are first order; in the row of a start state they are those of the state. The Mooney-Rivlin energy is
+    not polynomial in u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK),
+    so give ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
+    lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step against 0.45 s
+    uncapped on 4 ranks.
 
     The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
     (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
@@ -389,6 +393,20 @@ def solve(
         entity_maps,
         max_quadrature_degree=max_quadrature_degree,
     )
+    # The drag and lift at t^{n+theta}: the pressure of a step approximates that at t^{n+theta}, and with v and
+    # u_f of t^{n+1} the force above is only first order in time. v_old and u_f_old hold the previous step when
+    # the row of a step is written.
+    drag_forms_theta, lift_forms_theta = drag_lift_forms(
+        mesh,
+        theta * u_f + (1.0 - theta) * u_f_old,
+        theta * v + (1.0 - theta) * v_old,
+        p,
+        nu_f,
+        rho_f,
+        [ds(PHYSICAL_MARKERS["obstacle"]), ds_interface_fluid],
+        entity_maps,
+        max_quadrature_degree=max_quadrature_degree,
+    )
 
     # The range of det(F) on the solid and on the fluid mesh, sampled at the points of a lattice on each cell
     solid_J_range = deformation_jacobian_range(u_s, all_cells(solid_mesh))
@@ -405,8 +423,10 @@ def solve(
         u_spot = point_value(u_s, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
+        drag_theta = assemble_force(drag_forms_theta, comm)
+        lift_theta = assemble_force(lift_forms_theta, comm)
         J_solid, J_fluid = solid_J_range(), fluid_J_range()
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *J_solid, *J_fluid)
+        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *J_solid, *J_fluid, drag_theta, lift_theta)
         return J_solid, J_fluid
 
     # create Dirichlet boundary condition
@@ -759,12 +779,15 @@ def solve(
         solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=DET_F_QOI_HEADER)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=DET_F_QOI_HEADER + THETA_FORCE_COLUMNS)
     if newton_log_path is not None:
         newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p"]), comm, restart, t, dt_val)
         solver.setMonitor(newton_log)
 
     if not restart:
+        # The start state has no previous step: the forces at t^{n+theta} are those of the start state
+        v_old.x.array[:] = v.x.array
+        u_f_old.x.array[:] = u_f.x.array
         write_output(t, step)
         if snapshots.due(step):
             snapshots.write(checkpoint_fields, t, step, dt_val, t0)  # u holds the start state

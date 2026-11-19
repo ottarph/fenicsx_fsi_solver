@@ -32,7 +32,7 @@ MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 CONVERGED_SOLVER_OPTIONS = DEFAULT_DIRECT_SOLVER_OPTIONS | {"snes_atol": 1e-12}
 
 # The columns of the QoI file: t, drag, lift, the tip displacement and the violation of det(F) = 1
-NUM_COLUMNS = 8
+NUM_COLUMNS = 10
 AREA_CHANGE = 5
 
 
@@ -60,8 +60,8 @@ def test_fsi2_incompressible_solve(output_dirs):
     # The constraint against P1 pressures, which contain the constants, keeps the area of the solid to
     # round-off, while det(F) - 1 is small but not zero pointwise.
     assert np.all(np.abs(rows[:, AREA_CHANGE]) < 1e-12)
-    assert np.all(rows[1:, AREA_CHANGE + 1 :] > 0.0)
-    assert np.all(rows[:, AREA_CHANGE + 1 :] < 1e-6)
+    assert np.all(rows[1:, AREA_CHANGE + 1 : AREA_CHANGE + 3] > 0.0)
+    assert np.all(rows[:, AREA_CHANGE + 1 : AREA_CHANGE + 3] < 1e-6)
     # The output at steps 0 and 4, in one VTKHDF file with u, v, p and p_S
     np.testing.assert_allclose(vtkhdf.output_times(output_path, MPI.COMM_WORLD), [0.0, 4 * dt_val])
     assert sorted(vtkhdf.point_data_names(output_path, MPI.COMM_WORLD)) == ["p", "p_S", "u", "v"]
@@ -196,6 +196,7 @@ def test_fsi2_incompressible_starts_from_initial_state(output_dirs, tmp_path):
         qoi_rtol=1e-6,
         qoi_column_rtol={"solid_area_change": 1.0},
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
+        start_row_new_columns=("drag_theta", "lift_theta"),
     )
 
 
