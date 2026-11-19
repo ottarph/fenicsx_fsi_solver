@@ -78,6 +78,11 @@ def drag_lift_forms(
     mesh the measures are defined on, which is not the mesh of ``u`` when
     that lives on a submesh. With ``max_quadrature_degree``, the quadrature degree is capped
     as in :func:`xfsi_solver.tools.quadrature.cap_quadrature_degree`.
+
+    ``u`` and ``v`` may be UFL expressions. The pressure of a theta-scheme step approximates the pressure
+    at t^{n+theta}, not at t^{n+1}, so the force from v, u and p of the new time level is only first order
+    in time; with the theta averages ``theta * u + (1 - theta) * u_old`` and ``theta * v + (1 - theta) *
+    v_old`` it is the force at t^{n+theta}, and second order.
     """
     normal = ufl.FacetNormal(mesh)
     F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)

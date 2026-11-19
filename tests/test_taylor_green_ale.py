@@ -106,8 +106,8 @@ def test_plot_of_a_study(tmp_path):
 
 def test_second_order_in_time_on_a_moving_mesh():
     """With the mesh transport term and the geometric factor of the pressure term theta-weighted, Crank-Nicolson
-    is second order in time on a fast moving mesh, for the velocity and for the pressure at t^{n+1/2} on the
-    domain at t^{n+1/2}. With either evaluated at t^{n+1} only, both rates are 1."""
+    is second order in time on a fast moving mesh, for the velocity and for the pressure and the force at
+    t^{n+1/2} on the domain at t^{n+1/2}. With either term evaluated at t^{n+1} only, the rates are 1."""
     dts = [0.1, 0.05, 0.025]
     histories = [
         solve(8, velocity_degree=4, pressure_degree=3, **(SHORT | {"T": 0.4, "T_G": 0.8, "dt_val": dt_val}))
@@ -117,3 +117,11 @@ def test_second_order_in_time_on_a_moving_mesh():
     error_p = [h["error_p_theta"][-1] for h in histories]
     assert convergence_rates(dts, error_v)[-1] == pytest.approx(2.0, abs=0.15)
     assert convergence_rates(dts, error_p)[-1] == pytest.approx(2.0, abs=0.15)
+    # The force by drag_lift_forms: with v, u_f and p of the new time level, it is first order, the pressure
+    # being that of t^{n+theta}; with the theta averages of v and u_f, against the force at t^{n+theta}, it is
+    # second order or better.
+    error_force = [h["error_force"][-1] for h in histories]
+    error_force_theta = [h["error_force_theta"][-1] for h in histories]
+    assert convergence_rates(dts, error_force)[-1] == pytest.approx(1.0, abs=0.15)
+    assert convergence_rates(dts, error_force_theta)[-1] > 1.9
+    assert error_force_theta[-1] < 0.01 * error_force[-1]

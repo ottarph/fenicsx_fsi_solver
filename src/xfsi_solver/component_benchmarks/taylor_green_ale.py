@@ -51,6 +51,7 @@ from mpi4py import MPI
 
 from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.qoi import drag_lift_forms
 from xfsi_solver.tools.quadrature import cap_quadrature_degree
 from xfsi_solver.tools.vtkhdf import VTKHDFWriter
 
@@ -69,6 +70,9 @@ ELEMENT_PAIRS = {
     "Q3Q2": (3, "Lagrange", 2),
     "Q4Q3": (4, "Lagrange", 3),
 }
+
+# The errors at the final time in the study tables, in their columns after n and dt
+ERROR_NAMES = ("error_v", "error_p", "error_p_theta", "error_force", "error_force_theta")
 
 OUTPUT_DEGREE = 2  # the degree of the continuous Lagrange functions in the VTKHDF output
 
@@ -152,9 +156,12 @@ def solve(
     square, which ParaView's Warp By Vector moves by u_f. A DPC pressure is interpolated cell by cell, a node
     shared by cells taking the value of one of them, so the output pressure is for viewing only.
 
-    Return a dict with the time steps ``t``, the errors ``error_v`` and ``error_p`` at each of them (the first
-    at t = 0), ``error_p_theta``, the pressure error against the exact pressure at t^{n+theta} on the domain at
-    t^{n+theta} instead of t^{n+1}, ``newton_iterations``, and the local dof values ``v`` and ``p`` at the final time.
+    Return a dict with the time steps ``t``, and at each of them (the first at t = 0) the errors ``error_v``,
+    ``error_p`` (against the exact pressure at t^{n+1}), ``error_p_theta`` (at t^{n+theta} on the domain at
+    t^{n+theta}), ``error_force`` and ``error_force_theta`` (the force on the middle half of the bottom side by
+    ``tools.qoi.drag_lift_forms``, with v^{n+1}, u_f^{n+1} and p^{n+1} against the exact force at t^{n+1}, and with
+    the theta averages of v and u_f and p^{n+1} against the exact force at t^{n+theta}), and
+    ``newton_iterations``; and the local dof values ``v`` and ``p`` at the final time.
     """
     if (output_path is None) != (output_every is None):
         raise ValueError("output_path and output_every go together")
@@ -202,14 +209,15 @@ def solve(
 
     dt = dolfinx.fem.Constant(mesh, dt_val)
     theta = dolfinx.fem.Constant(mesh, 0.5 + dt_val if theta_value is None else theta_value)
+    rho_f, nu_f = dolfinx.fem.Constant(mesh, 1.0), dolfinx.fem.Constant(mesh, nu)
     dx = ufl.Measure("dx", domain=mesh, subdomain_data=cell_tags)
     forms = FSIForms(
         dv=dv,
         dp=dp,
         dx_fluid=dx(FLUID),
         dx_solid=dx(SOLID),
-        rho_f=dolfinx.fem.Constant(mesh, 1.0),
-        nu_f=dolfinx.fem.Constant(mesh, nu),
+        rho_f=rho_f,
+        nu_f=nu_f,
         rho_s=dolfinx.fem.Constant(mesh, 1.0),
         mu_s=dolfinx.fem.Constant(mesh, 1.0),
         lambda_s=dolfinx.fem.Constant(mesh, 1.0),
@@ -257,32 +265,54 @@ def solve(
     v_exact = ufl.as_vector(exact_velocity(X + u_f, t_exact, nu, lib=ufl))
     error_v_form = dolfinx.fem.form(ufl.inner(v - v_exact, v - v_exact) * J * dx_error)
 
-    def pressure_error_form(u_d):
-        """A function of the time t_p that returns the mean-free pressure error against the exact pressure at
-        t_p, on the domain of the displacement ``u_d``."""
-        t_p, mean_p, mean_p_exact = (dolfinx.fem.Constant(mesh, 0.0) for _ in range(3))
+    # The force of the fluid on the middle half of the bottom side of the domain (chi_2 = -L/2, |chi_1| <= L/4 in
+    # the reference square; on a whole side the exact pressure force vanishes, cos(2 pi x_1) integrating to zero),
+    # from tools.qoi.drag_lift_forms, the forms the FSI solvers compute drag and lift with, against the
+    # same forms with the exact velocity and pressure. The pressure, fixed only up to a constant, is shifted so
+    # that its mean is that of the exact pressure.
+    bottom_facets = dolfinx.mesh.locate_entities_boundary(
+        mesh, tdim - 1, lambda x: np.isclose(x[1], -L / 2) & (np.abs(x[0]) <= L / 4 + 1e-12)
+    )
+    bottom_tags = dolfinx.mesh.meshtags(mesh, tdim - 1, bottom_facets, np.full(len(bottom_facets), 1, np.int32))
+    ds_bottom = ufl.Measure("ds", domain=mesh, subdomain_data=bottom_tags, metadata=dx_error.metadata())(1)
+
+    def time_level_errors(u_d, v_d):
+        """A function of the time t_d that returns the mean-free pressure error and the error of the force on the
+        middle of the bottom side, for the discrete displacement ``u_d`` and velocity ``v_d`` of one time level
+        (those of t^{n+1}, or their theta averages for t^{n+theta}), against the exact solution at t_d on the
+        domain of ``u_d``."""
+        t_d, mean_p, mean_p_exact = (dolfinx.fem.Constant(mesh, 0.0) for _ in range(3))
         J_d = ufl.det(ufl.Identity(2) + ufl.grad(u_d))
-        p_exact = exact_pressure(X + u_d, t_p, nu, lib=ufl)
+        p_exact = exact_pressure(X + u_d, t_d, nu, lib=ufl)
+        v_exact_d = ufl.as_vector(exact_velocity(X + u_d, t_d, nu, lib=ufl))
         area = dolfinx.fem.form(J_d * dx_error)
         means = dolfinx.fem.form(p * J_d * dx_error), dolfinx.fem.form(p_exact * J_d * dx_error)
         error = dolfinx.fem.form(((p - mean_p) - (p_exact - mean_p_exact)) ** 2 * J_d * dx_error)
+        p_shifted = p - mean_p + mean_p_exact
+        force_forms = [
+            [forms[0] for forms in drag_lift_forms(mesh, u_d, w, q, nu_f, rho_f, [ds_bottom])]
+            for w, q in ((v_d, p_shifted), (v_exact_d, p_exact))
+        ]
 
         def evaluate(t):
-            t_p.value = t
+            t_d.value = t
             a = assemble(area)
             mean_p.value = assemble(means[0]) / a
             mean_p_exact.value = assemble(means[1]) / a
-            return np.sqrt(assemble(error))
+            force, force_exact = (np.array([assemble(form) for form in pair]) for pair in force_forms)
+            return np.sqrt(assemble(error)), np.linalg.norm(force - force_exact)
 
         return evaluate
 
-    pressure_error = pressure_error_form(u_f)
-    pressure_error_theta = pressure_error_form(theta * u_f + (1.0 - theta) * u_f_old)
+    errors_new = time_level_errors(u_f, v)
+    errors_theta = time_level_errors(theta * u_f + (1.0 - theta) * u_f_old, theta * v + (1.0 - theta) * v_old)
 
     def errors(t, t_theta):
-        """The velocity and pressure errors at t, and the pressure error at t_theta."""
+        """The velocity error at t, and the pressure and force errors at t and at t_theta."""
         t_exact.value = t
-        return np.sqrt(assemble(error_v_form)), pressure_error(t), pressure_error_theta(t_theta)
+        error_p, error_force = errors_new(t)
+        error_p_theta, error_force_theta = errors_theta(t_theta)
+        return np.sqrt(assemble(error_v_form)), error_p, error_p_theta, error_force, error_force_theta
 
     writer = None
     if output_path is not None:
@@ -312,19 +342,19 @@ def solve(
             file.write(
                 f"# Moving-domain Taylor-Green vortex: n = {n}, dt = {dt_val}, theta = {theta.value}, "
                 f"Q{velocity_degree}/{pressure_family}{pressure_degree}, A = {A}, T_G = {T_G}, nu = {nu}\n"
-                "t\terror_v\terror_p\terror_p_theta\tnewton_iterations\n"
+                "t\terror_v\terror_p\terror_p_theta\terror_force\terror_force_theta\tnewton_iterations\n"
             )
 
     # The initial state: the mesh is undeformed at t = 0
     t = 0.0
     u_f.interpolate(displacement(t))
     v.interpolate(boundary_velocity(t))
-    history = {"t": [t], "error_v": [], "error_p": [], "error_p_theta": [], "newton_iterations": [0]}
-    error_v, error_p, error_p_theta = errors(t, t)
-    history["error_v"].append(error_v)
-    history["error_p"].append(error_p)
-    history["error_p_theta"].append(error_p_theta)
-    write_qoi_row(t, error_v, error_p, error_p_theta, 0)
+    names = ERROR_NAMES
+    history = {"t": [t], "newton_iterations": [0]} | {name: [] for name in names}
+    values = errors(t, t)
+    for name, value in zip(names, values, strict=True):
+        history[name].append(value)
+    write_qoi_row(t, *values, 0)
     write_output(t, 0)
 
     start = timer()
@@ -339,19 +369,19 @@ def solve(
         check_converged(problem, f"t = {t:.4f}")
         iterations = problem.solver.getIterationNumber()
 
-        error_v, error_p, error_p_theta = errors(t, t - (1.0 - theta.value) * dt_val)
+        values = errors(t, t - (1.0 - theta.value) * dt_val)
         history["t"].append(t)
-        history["error_v"].append(error_v)
-        history["error_p"].append(error_p)
-        history["error_p_theta"].append(error_p_theta)
+        for name, value in zip(names, values, strict=True):
+            history[name].append(value)
         history["newton_iterations"].append(iterations)
-        write_qoi_row(t, error_v, error_p, error_p_theta, iterations)
+        write_qoi_row(t, *values, iterations)
         write_output(t, step)
 
     if comm.rank == 0:
         print(
-            f"n = {n}, dt = {dt_val}: error_v = {error_v:.4e}, error_p = {error_p:.4e}, "
-            f"error_p_theta = {error_p_theta:.4e} at t = {t:.4f}, "
+            f"n = {n}, dt = {dt_val}: "
+            + ", ".join(f"{name} = {history[name][-1]:.4e}" for name in names)
+            + f" at t = {t:.4f}, "
             f"{timer() - start:.1f} s",
             flush=True,
         )
@@ -379,14 +409,17 @@ def _study(name, pairs, runs, out_dir, **solve_kwargs):
                 qoi_path=out_dir / f"{tag}.txt",
                 **solve_kwargs,
             )
-            rows.append((n, dt_val, *(history[key][-1] for key in ("error_v", "error_p", "error_p_theta"))))
+            rows.append((n, dt_val, *(history[key][-1] for key in ERROR_NAMES)))
         rows = np.array(rows)
         step = 1.0 / rows[:, 0] if name.startswith("spatial") else rows[:, 1]
-        rates = [np.concatenate([[np.nan], convergence_rates(step, rows[:, column])]) for column in (2, 3, 4)]
+        rates = [
+            np.concatenate([[np.nan], convergence_rates(step, rows[:, column])])
+            for column in range(2, 2 + len(ERROR_NAMES))
+        ]
         if comm.rank == 0:
             header = (
                 f"{name}, {pair}, {', '.join(f'{k} = {v}' for k, v in solve_kwargs.items() if k != 'comm')}\n"
-                "n\tdt\terror_v\terror_p\terror_p_theta\trate_v\trate_p\trate_p_theta"
+                "n\tdt\t" + "\t".join(ERROR_NAMES) + "\t" + "\t".join(f"rate_{name[6:]}" for name in ERROR_NAMES)
             )
             table = np.column_stack([rows, *rates])
             np.savetxt(out_dir / f"{name}_{pair}.txt", table, header=header, delimiter="\t", fmt="%.6e")
