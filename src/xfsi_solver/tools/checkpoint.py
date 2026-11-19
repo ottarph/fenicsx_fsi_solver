@@ -295,7 +295,7 @@ class Checkpointer:
                 f"not {_num_global_cells(self.mesh)}"
             )
         if path.suffix == vtkhdf.SUFFIX:
-            names = vtkhdf.point_data_names(path, self.mesh.comm)
+            names = vtkhdf.function_names(path, self.mesh.comm)
             stored = [f for f in functions if f.name not in optional or f.name in names]
             vtkhdf.read_functions(path, stored, t, self.mesh, self._submeshes)
         else:

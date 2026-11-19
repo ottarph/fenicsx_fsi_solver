@@ -55,6 +55,9 @@ SUFFIX = ".vtkhdf"
 # 13%; a level above 4 gains nothing.
 _BACKEND_ARGS = {"compression": "gzip", "compression_opts": 4, "shuffle": True}
 _MESH_GROUP = f"VTKHDF/{io4dolfinx.backends.DEFAULT_MESH_NAME}"
+# The cell data written with the mesh, which are not functions
+_CELL_TAGS = "cell_tags"
+_OWNER = "owner"
 
 Submeshes = Sequence[tuple[dolfinx.mesh.Mesh, dolfinx.mesh.EntityMap]]
 
@@ -128,8 +131,8 @@ class PointDataLayout:
             tags = np.zeros(num_owned, dtype=np.int32)
             owned = cell_tags.indices < num_owned
             tags[cell_tags.indices[owned]] = cell_tags.values[owned]
-            self.write_cell_data(path, "cell_tags", tags, t)
-        self.write_cell_data(path, "owner", np.full(num_owned, comm.rank, dtype=np.int32), t)
+            self.write_cell_data(path, _CELL_TAGS, tags, t)
+        self.write_cell_data(path, _OWNER, np.full(num_owned, comm.rank, dtype=np.int32), t)
 
     def write_cell_data(self, path: Path, name: str, values: np.ndarray, t: float) -> None:
         """Write ``values``, a row for each owned cell of ``mesh``, as cell data at time ``t``.
@@ -277,19 +280,11 @@ def output_times(path: str | Path, comm: MPI.Comm) -> np.ndarray:
     return _on_rank_0(comm, read)
 
 
-def point_data_names(path: str | Path, comm: MPI.Comm) -> list[str]:
-    """The names of the point data in the VTKHDF file ``path``.
-
-    ``io4dolfinx.read_function_names`` looks for them at the top of the file, but io4dolfinx writes a
-    multiblock file with the point data in the block of the mesh, so they are read here directly.
-    """
-
-    def read():
-        with h5py.File(path, "r") as h5file:
-            point_data = h5file[_MESH_GROUP].get("PointData")
-            return [] if point_data is None else list(point_data.keys())
-
-    return _on_rank_0(comm, read)
+def function_names(path: str | Path, comm: MPI.Comm) -> list[str]:
+    """The names of the functions in the VTKHDF file ``path``: its point data and cell data, without the
+    cell tags and owning ranks written with the mesh."""
+    names = io4dolfinx.read_function_names(path, comm, backend=BACKEND)
+    return [name for name in names if name not in (_CELL_TAGS, _OWNER)]
 
 
 def read_functions(
@@ -307,10 +302,10 @@ def read_functions(
     with another number of cells.
     """
     comm = mesh.comm
-    names = point_data_names(path, comm)
+    names = function_names(path, comm)
     missing = [f.name for f in functions if f.name not in names]
     if missing:
-        raise KeyError(f"{path} holds no point data named {missing}, only {names}")
+        raise KeyError(f"{path} holds no functions named {missing}, only {names}")
     file_mesh = io4dolfinx.read_mesh(path, comm, time=None, backend=BACKEND)
     num_cells = mesh.topology.index_map(mesh.topology.dim).size_global
     num_file_cells = file_mesh.topology.index_map(file_mesh.topology.dim).size_global

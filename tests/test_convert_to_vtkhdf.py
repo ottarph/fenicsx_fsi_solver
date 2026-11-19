@@ -47,7 +47,7 @@ def check_converted(mesh_kind, directory):
     mesh, submeshes, functions = _setup(mesh_kind)
     path = directory / "pv" / "run.vtkhdf"
     np.testing.assert_allclose(vtkhdf.output_times(path, mesh.comm), TIMES)
-    assert sorted(vtkhdf.point_data_names(path, mesh.comm)) == ["p", "u", "v_s"]
+    assert sorted(vtkhdf.function_names(path, mesh.comm)) == ["p", "u", "v_s"]
     for t in TIMES:
         vtkhdf.read_functions(path, functions, t, mesh, submeshes)
         _assert_state(functions, t, ATOL["vtkhdf"])

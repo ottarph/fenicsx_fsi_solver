@@ -37,7 +37,7 @@ def test_writer_writes_a_time_series_to_read_back(mesh_kind, tmp_path):
     writer.close()
 
     np.testing.assert_allclose(vtkhdf.output_times(path, mesh.comm), times)
-    assert sorted(vtkhdf.point_data_names(path, mesh.comm)) == sorted(f.name for f in functions)
+    assert sorted(vtkhdf.function_names(path, mesh.comm)) == sorted(f.name for f in functions)
     mesh, submeshes, functions = _setup(mesh_kind)
     vtkhdf.read_functions(path, functions, 0.5, mesh, submeshes)
     _assert_state(functions, 0.5, ATOL["vtkhdf"])

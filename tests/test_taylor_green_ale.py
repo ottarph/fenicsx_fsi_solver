@@ -13,7 +13,7 @@ from xfsi_solver.component_benchmarks.taylor_green_ale import (
     convergence_rates,
     solve,
 )
-from xfsi_solver.tools.vtkhdf import output_times, point_data_names
+from xfsi_solver.tools.vtkhdf import function_names, output_times
 
 # A few steps of a fast mesh motion: the mesh velocity is about 0.5, but the time error of the few steps stays
 # below the spatial error of the meshes, whose rates are then those of the elements.
@@ -59,7 +59,7 @@ def test_vtkhdf_output_of_a_dpc_pressure(tmp_path):
     path = tmp_path / "taylor_green.vtkhdf"
     solve(4, pressure_family="DPC", output_path=path, output_every=2, **SHORT)
     np.testing.assert_allclose(output_times(path, MPI.COMM_SELF), [0.0, 0.002, 0.004])
-    assert set(point_data_names(path, MPI.COMM_SELF)) >= {"v", "p", "u_f"}
+    assert set(function_names(path, MPI.COMM_SELF)) >= {"v", "p", "u_f"}
 
 
 def test_qoi_file_has_a_row_per_step(tmp_path):
