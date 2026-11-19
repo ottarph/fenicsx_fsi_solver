@@ -10,7 +10,7 @@ stored by its values at the nodes of the mesh with a Lagrange coordinate element
 Each cell and node is stored once, with no ghosts, so ParaView counts no cell twice, as it does in
 the per-rank blocks of ``dolfinx.io.VTXWriter``.
 
-The mesh is written in the cell order of the input mesh file (``io4dolfinx.write_mesh_input_order``).
+The mesh is written in the cell order of the input mesh file (``on_input_mesh=True`` in io4dolfinx).
 Functions are read back onto the mesh read from the input mesh file, or onto cell submeshes of it,
 not onto the mesh in the VTKHDF file: each cell gets its values from the stored cell with the same
 input cell index (``io4dolfinx.transfer_submesh_function``), so the number of MPI ranks may differ
@@ -21,8 +21,8 @@ by cell. The owner of a node on the boundary of a submesh need not hold a submes
 cells may touch the submesh only at a vertex or an edge), so the ranks that do add their values into
 the owner, which divides by their number.
 
-Vectors of 2 components, on 2D meshes, are written with a third, zero component, as VTK takes vectors
-with 3 components (otherwise ParaView's Warp By Vector offers none), and read back without it.
+Vectors of 2 components, on 2D meshes, are written by io4dolfinx with a third, zero component, as VTK
+takes vectors with 3 components (otherwise ParaView's Warp By Vector offers none), and read back without it.
 
 With the mesh go the cell tags (0 where a cell has none) and the rank that owns each cell, as cell
 data. A function need not be written at every time: at a time where it is not, the file, and so
@@ -43,7 +43,6 @@ import io4dolfinx
 import io4dolfinx.comm_helpers
 import io4dolfinx.readers
 import io4dolfinx.structures
-import io4dolfinx.utils
 import numpy as np
 from mpi4py import MPI
 
@@ -51,11 +50,9 @@ from xfsi_solver.tools.submesh import all_cells
 
 BACKEND = "vtkhdf"
 SUFFIX = ".vtkhdf"
-# Lossless compression of the mesh and data, applied by io4dolfinx from the first release after 1.5.1
-# (scientificcomputing/io4dolfinx#97) and ignored before. The shuffle filter matters for floating-point
-# data: on the 201-step output of fsi2_simplified on mesh_sec, gzip alone shrinks u, v and p by 6%,
-# with shuffle by 13%; a level above 4 gains nothing. Each column of a dataset is chunked on its own,
-# so the zero third component of padded 2D vectors costs nothing once compressed.
+# Lossless compression of the mesh and data. The shuffle filter matters for floating-point data: on the
+# 201-step output of fsi2_simplified on mesh_sec, gzip alone shrinks u, v and p by 6%, with shuffle by
+# 13%; a level above 4 gains nothing.
 _BACKEND_ARGS = {"compression": "gzip", "compression_opts": 4, "shuffle": True}
 _MESH_GROUP = f"VTKHDF/{io4dolfinx.backends.DEFAULT_MESH_NAME}"
 
@@ -114,8 +111,14 @@ class PointDataLayout:
         if comm.rank == 0:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         comm.Barrier()
-        io4dolfinx.write_mesh_input_order(
-            path, self.out_mesh, time=t, mode=io4dolfinx.FileMode.write, backend=BACKEND, backend_args=_BACKEND_ARGS
+        io4dolfinx.write_mesh(
+            path,
+            self.out_mesh,
+            mode=io4dolfinx.FileMode.write,
+            time=t,
+            backend_args=_BACKEND_ARGS,
+            backend=BACKEND,
+            on_input_mesh=True,
         )
         tdim = self.mesh.topology.dim
         num_owned = self.mesh.topology.index_map(tdim).size_local
@@ -131,24 +134,20 @@ class PointDataLayout:
     def write_cell_data(self, path: Path, name: str, values: np.ndarray, t: float) -> None:
         """Write ``values``, a row for each owned cell of ``mesh``, as cell data at time ``t``.
 
-        ``io4dolfinx.write_cell_data`` writes the cells in their current order, but the file holds
-        them in input order, so each value is sent to the rank that holds its cell's input index.
+        The file holds the cells in input order, so each value is sent to the rank that holds its
+        cell's input index, as ``io4dolfinx.write_cell_data`` does for a function.
         """
         comm = self.mesh.comm
         cell_map = self.mesh.topology.index_map(self.mesh.topology.dim)
         num_owned, num_global = cell_map.size_local, cell_map.size_global
         input_index = np.asarray(self.mesh.topology.original_cell_index[:num_owned], dtype=np.int64)
         values = np.asarray(values).reshape(num_owned, -1)
-        owners = io4dolfinx.utils.index_owner(comm, input_index, num_global)
-        (recv_index, recv_values), *_ = io4dolfinx.comm_helpers.exchange_to_owners(comm, owners, [input_index, values])
-        start, stop = io4dolfinx.utils.compute_local_range(comm, num_global)
-        ordered = np.empty((stop - start, values.shape[1]), dtype=values.dtype)
-        ordered[recv_index - start] = recv_values
+        (ordered,), local_range = io4dolfinx.comm_helpers.send_to_input_order(comm, input_index, [values], num_global)
         data = io4dolfinx.structures.ArrayData(
             name=name,
             values=ordered,
             global_shape=(num_global, values.shape[1]),
-            local_range=(int(start), int(stop)),
+            local_range=(int(local_range[0]), int(local_range[1])),
             type="Cell",
         )
         io4dolfinx.get_backend(BACKEND).write_data(
@@ -163,7 +162,7 @@ class PointDataLayout:
             if f_mesh is not self.mesh and f_mesh not in self._cells:
                 raise ValueError(f"Function {f.name!r} is neither on the mesh nor on one of its listed submeshes")
             num_components = int(np.prod(f.ufl_shape))
-            V = io4dolfinx.readers.create_geometry_function_space(self.out_mesh, num_components)
+            V = io4dolfinx.readers.create_geometry_function_space(self.out_mesh, num_components, f.ufl_shape)
             self._out_functions[f.name] = dolfinx.fem.Function(V, name=f.name)
             if f_mesh is not self.mesh:
                 self._rank_counts[f.name] = self._rank_count(V, self._cells[f_mesh][1])
@@ -199,21 +198,17 @@ class PointDataLayout:
     def _write_point_data(self, path: Path, g: dolfinx.fem.Function, t: float) -> None:
         """Write the owned values of ``g``, on the output mesh's nodes, as point data at time ``t``.
 
-        As ``io4dolfinx.write_point_data``, except that a vector of 2 components is written with a third,
-        zero one: VTK takes vectors with 3 components, so ParaView's Warp By Vector, Glyph and the like
-        offer no array of 2 components, as dolfinx's VTX writer pads them too.
+        As ``io4dolfinx.write_point_data``, without interpolating ``g``, which is already at the nodes.
         """
         imap = g.function_space.dofmap.index_map
         bs = g.function_space.dofmap.index_map_bs
-        values = g.x.array.reshape(-1, bs)[: imap.size_local]
-        if bs == 2:
-            values = np.hstack([values, np.zeros((len(values), 1), dtype=values.dtype)])
         data = io4dolfinx.structures.ArrayData(
             name=g.name,
-            values=np.ascontiguousarray(values),
-            global_shape=(imap.size_global, values.shape[1]),
+            values=g.x.array.reshape(-1, bs)[: imap.size_local],
+            global_shape=(imap.size_global, bs),
             local_range=(int(imap.local_range[0]), int(imap.local_range[1])),
             type="Point",
+            value_shape=tuple(g.ufl_shape),
         )
         io4dolfinx.get_backend(BACKEND).write_data(
             path, data, self.mesh.comm, float(t), io4dolfinx.FileMode.append, _BACKEND_ARGS
@@ -271,8 +266,8 @@ def _on_rank_0(comm: MPI.Comm, read):
 def output_times(path: str | Path, comm: MPI.Comm) -> np.ndarray:
     """The times in the VTKHDF file ``path``.
 
-    ``io4dolfinx.read_timestamps`` looks for them at the top of the file, but io4dolfinx writes a
-    multiblock file with the times in the block of the mesh, so they are read here directly.
+    These are the times of the mesh, at which every function in the file has values (see the module
+    docstring), so no function name is needed, unlike for ``io4dolfinx.read_timestamps``.
     """
 
     def read():
@@ -283,7 +278,11 @@ def output_times(path: str | Path, comm: MPI.Comm) -> np.ndarray:
 
 
 def point_data_names(path: str | Path, comm: MPI.Comm) -> list[str]:
-    """The names of the point data in the VTKHDF file ``path``."""
+    """The names of the point data in the VTKHDF file ``path``.
+
+    ``io4dolfinx.read_function_names`` looks for them at the top of the file, but io4dolfinx writes a
+    multiblock file with the point data in the block of the mesh, so they are read here directly.
+    """
 
     def read():
         with h5py.File(path, "r") as h5file:
@@ -327,15 +326,8 @@ def read_functions(
                 raise ValueError(f"Function {f.name!r} is neither on the mesh nor on one of its listed submeshes")
             cells = cell_maps[f_mesh].sub_topology_to_topology(cells, inverse=False)
         g = io4dolfinx.read_point_data(path, f.name, file_mesh, time=float(t), backend=BACKEND)
-        num_components = int(np.prod(f.ufl_shape))
-        stored_components = g.function_space.dofmap.index_map_bs
-        if stored_components != num_components:
-            if (num_components, stored_components) != (2, 3):
-                raise ValueError(f"{path} holds {f.name!r} with {stored_components} components, not {num_components}")
-            # A vector of 2 components, written with a third, zero one for VTK
-            g2 = dolfinx.fem.Function(io4dolfinx.readers.create_geometry_function_space(file_mesh, 2), name=f.name)
-            g2.x.array.reshape(-1, 2)[:] = g.x.array.reshape(-1, 3)[:, :2]
-            g = g2
+        if g.ufl_shape != f.ufl_shape:
+            raise ValueError(f"{path} holds {f.name!r} with value shape {g.ufl_shape}, not {f.ufl_shape}")
         io4dolfinx.transfer_submesh_function(g, f, original_cell_index[cells])
 
 
