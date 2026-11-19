@@ -67,15 +67,18 @@ def solve(
     ``round((T - t0) / dt_val)`` time steps (at most ``max_steps``), writing the initial state at ``t0``
     as the first QoI row and, with ``vtx_save_every``, as the first VTX snapshot. With
     ``vtx_save_every=None``, no VTX output is written; otherwise a snapshot is written every
-    ``vtx_save_every`` steps. The solver is that of solvers/fsi2_biharmonic_mixed.py.
+    ``vtx_save_every`` steps. The solver is that of solvers/fsi2_biharmonic_mixed.py, except for the
+    time weighting of two terms, below.
 
-    The time stepping is the theta-scheme with theta = 0.5 + relative_theta_shift * dt, or
-    ``theta_value`` if given. With ``pseudo_transient=True``, for the steady FSI1, the time step is
-    doubled after every step, up to ``max_dt``, and the run stops at the first time step that Newton's method solves in
-    zero iterations: then the residual at the previous state, which is the steady residual up to the
-    last displacement increment, is below the absolute tolerance. The approximate Jacobian below drops
-    the fluid ALE derivatives, which grow with dt, so Newton's method converges slowly or not at all for
-    large time steps: ``max_dt`` caps them.
+    The time stepping is the theta-scheme with theta = 0.5 + relative_theta_shift * dt, or ``theta_value`` if
+    given. The mesh transport term and the geometric factor J F^-T of the pressure term are theta-weighted like
+    the rest of the momentum equation, the pressure and the continuity equation being implicit; evaluated at the
+    new time level only, as in fsi2_biharmonic_mixed, they make the scheme first order in time on a moving mesh.
+    With ``pseudo_transient=True``, for the steady FSI1, the time step is doubled after every step, up to
+    ``max_dt``, and the run stops at the first time step that Newton's method solves in zero iterations: then
+    the residual at the previous state, which is the steady residual up to the last displacement increment, is
+    below the absolute tolerance. The approximate Jacobian below drops the fluid ALE derivatives, which grow
+    with dt, so Newton's method converges slowly or not at all for large time steps: ``max_dt`` caps them.
 
     The solid stress in the momentum equation is written in terms of the velocity, with
     the solid displacement given by the kinematic relation u = u_old + dt * (theta * v
@@ -315,13 +318,17 @@ def solve(
 
     # create residual form with u condensed out.
 
-    def A_T_mesh_transport(u, u_old, v, v_old):
+    def mesh_transport(u, v, w):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
         J = ufl.det(F)
 
-        residual = -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
+        return -rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * w, dv) * dx_fluid
 
-        return residual
+    def A_T_mesh_transport(u, u_old, v, v_old):
+        # Theta-weighted, with the mesh velocity of the step in both levels: evaluated at the new level only,
+        # it makes the scheme first order in time on a moving mesh.
+        w = (u - u_old) / dt
+        return theta * mesh_transport(u, v, w) + (1.0 - theta) * mesh_transport(u_old, v_old, w)
 
     def A_T_mass(u, u_old, v, v_old):
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
@@ -381,17 +388,20 @@ def solve(
 
         return residual
 
-    def A_P(u, p):
+    def A_P(u, u_old, p):
+        # The implicit pressure with the geometric factor J F^-T theta-weighted: at the new level only, it
+        # makes the scheme first order in time on a moving mesh.
         F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
+        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_old)
+        geometry = theta * ufl.det(F) * ufl.inv(F).T + (1.0 - theta) * ufl.det(F_old) * ufl.inv(F_old).T
 
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+        residual = ufl.inner(Fluid.NS_pressure(p) * geometry, ufl.grad(dv)) * dx_fluid
 
         return residual
 
     residual = A_T(u, u_old, v, v_old)
     residual += A_I(u, v, z)
-    residual += A_P(u, p)
+    residual += A_P(u, u_old, p)
     residual += theta * A_E_fluid(u, v)
     residual += (1.0 - theta) * A_E_fluid(u_old, v_old)
 

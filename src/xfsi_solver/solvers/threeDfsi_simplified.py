@@ -190,18 +190,22 @@ def solve(
     cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The other arguments are
     those of ``threeDfsi_c0ip.solve``.
 
-    The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or
-    ``nu_s``) by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the
-    compressible three-term Mooney-Rivlin material of ``xfsi_solver.fsi.materials.Solid.MR3_piola``, with the
-    coefficients ``mooney_rivlin_3``, a dict of ``"C10"``, ``"C01"`` and ``"C11"`` in Pa and optionally ``"D1"``
-    in 1/Pa. The Cij set the shear response, with initial shear modulus 2 (C10 + C01); without ``"D1"``, the
-    bulk modulus K = 2 / D1 is that of the SVK parameters, lambda_s + 2 mu_s / 3
-    (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``). Its stress is condensed in v as that of
-    the SVK solid, and its integrals are capped at ``max_quadrature_degree`` as the others are. The smallest
-    and largest J = det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of
-    a lattice of degree ``det_F_lattice_degree`` on each cell, and written as its last four columns
-    (``DET_F_QOI_HEADER_3D``); with the Mooney-Rivlin solid they are also printed. A J <= 0 in the solid or on
-    the fluid mesh, with either material, raises ``RuntimeError`` after its row is written.
+    The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or ``nu_s``)
+    by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the compressible
+    three-term Mooney-Rivlin material of ``xfsi_solver.fsi.materials.Solid.MR3_piola``, with the coefficients
+    ``mooney_rivlin_3``, a dict of ``"C10"``, ``"C01"`` and ``"C11"`` in Pa and optionally ``"D1"`` in 1/Pa. The Cij
+    set the shear response, with initial shear modulus 2 (C10 + C01); without ``"D1"``, the bulk modulus K = 2 / D1
+    is that of the SVK parameters, lambda_s + 2 mu_s / 3
+    (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``). Its stress is condensed in v as that of the SVK
+    solid, and its integrals are capped at ``max_quadrature_degree`` as the others are. The smallest and largest J =
+    det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of a lattice of degree
+    ``det_F_lattice_degree`` on each cell, and written as the four columns after the displacement of B
+    (``DET_F_QOI_HEADER_3D``). A J <= 0 in the solid or on the fluid mesh, with either material, raises
+    ``RuntimeError`` after its row is written. The drag and lift are those at t^{n+theta} = t - (1 - theta) dt, half
+    a step before the time of their row for theta near 1/2: the pressure of a step is that of t^{n+theta}, and they
+    are computed with the theta averages of v and u_f (see ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes
+    them second order in time; from v and u_f of t^{n+1} they would be first order. In the row of a start state they
+    are those of the state.
 
     Returns the statistics of the time steps of this run: the wall time of the time loop,
     ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_linear_iterations``,
@@ -412,10 +416,13 @@ def solve(
     # Quantities of interest: the displacement at the point B on the back face of the beam, and
     # the drag and lift on the obstacle and on the fluid side of the solid-fluid interface.
     spot_dof = find_point_dof(U_s, np.array([0.9, 0.2, 0.3], dtype=np.float64))
+    # The drag and lift are those at t^{n+theta}: the pressure of a step approximates that at t^{n+theta}, and
+    # with v and u_f of t^{n+1} the force would be only first order in time, so they are taken from the theta
+    # averages of v and u_f. v_old and u_f_old hold the previous step when the row of a step is written.
     drag_forms, lift_forms = drag_lift_forms(
         mesh,
-        u_f,
-        v,
+        theta * u_f + (1.0 - theta) * u_f_old,
+        theta * v + (1.0 - theta) * v_old,
         p,
         nu_f,
         rho_f,
@@ -822,6 +829,9 @@ def solve(
         solver.setMonitor(newton_log)
 
     if not restart:
+        # The start state has no previous step: its drag and lift are those of the start state
+        v_old.x.array[:] = v.x.array
+        u_f_old.x.array[:] = u_f.x.array
         write_output(t, step)
         if snapshots.due(step):
             snapshots.write(checkpoint_fields, t, step, dt_val, t0)  # u holds the start state
@@ -875,9 +885,6 @@ def solve(
         J_solid, J_fluid = write_output(t, step)
         J_solid_per_step.append(J_solid)
         J_fluid_per_step.append(J_fluid)
-        if solid_material == "mooney_rivlin_3":
-            (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid, J_fluid
-            PETSc.Sys.Print(f"  J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
         if J_solid[0] <= 0.0 or J_fluid[0] <= 0.0:
             # A solid with det(F) <= 0 has passed through itself, and a fluid mesh with det(F) <= 0 has inverted
             # cells, on which the ALE terms change sign without failing. Close the output so it stays readable.

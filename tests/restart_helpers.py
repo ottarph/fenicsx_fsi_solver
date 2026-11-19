@@ -198,6 +198,7 @@ def check_start_from_initial_state(
     qoi_column_rtol=None,
     output_kwargs=None,
     solve_kwargs=None,
+    start_row_new_columns=(),
 ):
     """Start runs with time step ``dt_val`` from the checkpoint of a run with time step ``2 * dt_val``.
 
@@ -209,6 +210,10 @@ def check_start_from_initial_state(
     - another new run stops after 1 step and is restarted: it reproduces the first new run,
       to ``rtol`` (or ``field_rtol[name]``) in the fields and ``qoi_rtol`` (or
       ``qoi_column_rtol[name]``) in the QoIs, relative to their largest absolute values.
+
+    The first row of a new run is not compared with the source's last in the columns
+    ``start_row_new_columns``: quantities such as the forces at t^{n+theta}, which need the previous step,
+    are computed from the start state alone in the first row of a run started from a checkpoint.
 
     ``output_kwargs`` maps the names of further output path arguments of ``solve`` (e.g.
     ``output_path_p_S``) to file suffixes. ``solve_kwargs`` are passed on to every call.
@@ -245,7 +250,8 @@ def check_start_from_initial_state(
     assert qoi_resumed.keys() == qoi_started.keys() == qoi_source.keys()
     for name, values in qoi_started.items():
         tol = (qoi_column_rtol or {}).get(name, qoi_rtol) * np.max(np.abs(values))
-        np.testing.assert_allclose(values[0], qoi_source[name][-1], rtol=0, atol=tol, err_msg=f"first QoI {name}")
+        if name not in start_row_new_columns:
+            np.testing.assert_allclose(values[0], qoi_source[name][-1], rtol=0, atol=tol, err_msg=f"first QoI {name}")
         np.testing.assert_allclose(qoi_resumed[name], values, rtol=0, atol=tol, err_msg=f"QoI {name}")
 
     t_s, step_s, state_s = read_checkpoint_state(mesh_path, tmp_path / "started", dt_val, elements)

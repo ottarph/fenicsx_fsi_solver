@@ -24,6 +24,7 @@ INCOMPRESSIBLE_QOI_HEADER = QOI_HEADER + "\tsolid_area_change\tdet_F_rms\tdet_F_
 # The smallest and largest det(F) of the solid and of the fluid mesh, see deformation_jacobian_range.
 DET_F_COLUMNS = "\tdet_F_solid_min\tdet_F_solid_max\tdet_F_fluid_min\tdet_F_fluid_max"
 DET_F_QOI_HEADER = QOI_HEADER + DET_F_COLUMNS
+DET_F_INCOMPRESSIBLE_QOI_HEADER = INCOMPRESSIBLE_QOI_HEADER + DET_F_COLUMNS
 # The 3d benchmark measures the displacement at the point B on the beam.
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 DET_F_QOI_HEADER_3D = QOI_HEADER_3D + DET_F_COLUMNS
@@ -78,6 +79,11 @@ def drag_lift_forms(
     mesh the measures are defined on, which is not the mesh of ``u`` when
     that lives on a submesh. With ``max_quadrature_degree``, the quadrature degree is capped
     as in :func:`xfsi_solver.tools.quadrature.cap_quadrature_degree`.
+
+    ``u`` and ``v`` may be UFL expressions. The pressure of a theta-scheme step approximates the pressure
+    at t^{n+theta}, not at t^{n+1}, so the force from v, u and p of the new time level is only first order
+    in time; with the theta averages ``theta * u + (1 - theta) * u_old`` and ``theta * v + (1 - theta) *
+    v_old`` it is the force at t^{n+theta}, and second order.
     """
     normal = ufl.FacetNormal(mesh)
     F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
