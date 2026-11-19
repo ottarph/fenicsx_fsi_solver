@@ -6,10 +6,10 @@ from restart_helpers import check_start_from_initial_state, read_checkpoint_stat
 from xfsi_solver.petsc_options.fsi3d import DEFAULT_DIRECT_SOLVER_OPTIONS, DEFAULT_ITERATIVE_SOLVER_OPTIONS
 from xfsi_solver.solvers.threeDfsi_simplified import solve
 from xfsi_solver.tools.newton_log import read_newton_log
-from xfsi_solver.tools.qoi import DET_F_QOI_HEADER_3D, THETA_FORCE_COLUMNS
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER_3D
 
 # The columns of the QoI file
-NUM_COLUMNS = len((DET_F_QOI_HEADER_3D + THETA_FORCE_COLUMNS).split("\t"))
+NUM_COLUMNS = len(DET_F_QOI_HEADER_3D.split("\t"))
 
 VECTOR = ("Lagrange", 2, (3,))
 # p lives on the fluid submesh but is checkpointed on the full mesh. No field of the mesh motion is
@@ -154,7 +154,7 @@ def test_threeDfsi_simplified_starts_from_initial_state(output_dirs, tmp_path):
         rtol=1e-6,
         qoi_rtol=1e-6,
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
-        start_row_new_columns=("drag_theta", "lift_theta"),
+        start_row_new_columns=("drag", "lift"),
     )
 
 
@@ -201,7 +201,7 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
             **kwargs,
         )
         with open(qoi_path) as f:
-            assert f.readline().lstrip("#").split() == (DET_F_QOI_HEADER_3D + THETA_FORCE_COLUMNS).split("\t")
+            assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER_3D.split("\t")
         return np.loadtxt(qoi_path, ndmin=2), statistics
 
     svk, _ = run("svk")

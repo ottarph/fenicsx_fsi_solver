@@ -26,9 +26,6 @@ DET_F_COLUMNS = "\tdet_F_solid_min\tdet_F_solid_max\tdet_F_fluid_min\tdet_F_flui
 DET_F_QOI_HEADER = QOI_HEADER + DET_F_COLUMNS
 # The 3d benchmark measures the displacement at the point B on the beam.
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
-# The drag and lift at t^{n+theta}, from the theta averages of v and u with the pressure of the step (see
-# drag_lift_forms), next to those at t^{n+1}: the last two columns, for comparing the two.
-THETA_FORCE_COLUMNS = "\tdrag_theta\tlift_theta"
 DET_F_QOI_HEADER_3D = QOI_HEADER_3D + DET_F_COLUMNS
 
 

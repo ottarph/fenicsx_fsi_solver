@@ -20,13 +20,13 @@ from xfsi_solver.solvers import fsi2_simplified as fsi2_simplified_module
 from xfsi_solver.solvers.fsi2_simplified import solve
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.newton_log import read_newton_log
-from xfsi_solver.tools.qoi import DET_F_QOI_HEADER, THETA_FORCE_COLUMNS
+from xfsi_solver.tools.qoi import DET_F_QOI_HEADER
 
 # The columns of the QoI file
-NUM_COLUMNS = len((DET_F_QOI_HEADER + THETA_FORCE_COLUMNS).split("\t"))
+NUM_COLUMNS = len(DET_F_QOI_HEADER.split("\t"))
 # The columns that the first row of a run started from a checkpoint computes from the start state alone, as
-# they need the previous step: the forces at t^{n+theta}
-START_ROW_NEW_COLUMNS = [NUM_COLUMNS - 2, NUM_COLUMNS - 1]
+# they need the previous step: the drag and lift, at t^{n+theta}
+START_ROW_NEW_COLUMNS = [1, 2]
 
 # The checkpoints hold the displacement as one function u on the full mesh, as in fsi2_biharmonic_mixed;
 # p lives on the fluid submesh but is checkpointed on the full mesh. z, the Laplacian of the displacement
@@ -64,7 +64,7 @@ def test_fsi2_simplified_solve(output_dirs):
     rows = np.loadtxt(qoi_path, ndmin=2)
     assert rows.shape == (7, NUM_COLUMNS)
     with open(qoi_path) as f:
-        assert f.readline().lstrip("#").split() == (DET_F_QOI_HEADER + THETA_FORCE_COLUMNS).split("\t")
+        assert f.readline().lstrip("#").split() == DET_F_QOI_HEADER.split("\t")
     np.testing.assert_array_equal(rows[0, 5:9], 1.0)  # at rest
     np.testing.assert_allclose(rows[:, 5:9], 1.0, atol=1e-3)
     assert np.all(rows[1:, 5] <= rows[1:, 6]) and np.all(rows[1:, 7] <= rows[1:, 8])
@@ -204,7 +204,7 @@ def test_fsi2_simplified_starts_from_initial_state(output_dirs, tmp_path):
         rtol=1e-6,
         qoi_rtol=1e-6,
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
-        start_row_new_columns=("drag_theta", "lift_theta"),
+        start_row_new_columns=("drag", "lift"),
     )
 
 

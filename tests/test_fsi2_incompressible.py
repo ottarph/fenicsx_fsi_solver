@@ -32,7 +32,7 @@ MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 CONVERGED_SOLVER_OPTIONS = DEFAULT_DIRECT_SOLVER_OPTIONS | {"snes_atol": 1e-12}
 
 # The columns of the QoI file: t, drag, lift, the tip displacement and the violation of det(F) = 1
-NUM_COLUMNS = 10
+NUM_COLUMNS = 8
 AREA_CHANGE = 5
 
 
@@ -196,7 +196,7 @@ def test_fsi2_incompressible_starts_from_initial_state(output_dirs, tmp_path):
         qoi_rtol=1e-6,
         qoi_column_rtol={"solid_area_change": 1.0},
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
-        start_row_new_columns=("drag_theta", "lift_theta"),
+        start_row_new_columns=("drag", "lift"),
     )
 
 
