@@ -11,7 +11,7 @@ dependencies:
   - python-gmsh
   - pyvista
   - adios2
-  - io4dolfinx >= 1.5.1
+  - io4dolfinx >= 2.1.0
   - pdbpp
   - pip
   - numpy >= 2.0
