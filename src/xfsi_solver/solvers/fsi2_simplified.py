@@ -149,16 +149,16 @@ def solve(
     mu_s / 3 (``xfsi_solver.tools.parameters.mooney_rivlin_3_coefficients``). The material has no further unknowns:
     its stress is condensed in v as that of the SVK solid. The smallest and largest J = det(F) of the solid and of
     the fluid mesh are measured at every QoI row, at the points of a lattice of degree 4 on each cell, and written
-    as the four columns after the tip displacement (``DET_F_QOI_HEADER``); with the Mooney-Rivlin solid they are
-    also printed. A J <= 0 in the solid or on the fluid mesh, with either material, raises ``RuntimeError`` after
-    its row is written. The drag and lift are those at t^{n+theta} = t - (1 - theta) dt, half a step before the time
-    of their row for theta near 1/2: the pressure of a step is that of t^{n+theta}, and they are computed with the
-    theta averages of v and u_f (see ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes them second order in
-    time; from v and u_f of t^{n+1} they would be first order. In the row of a start state they are those of the
-    state. The Mooney-Rivlin energy is not polynomial in u, and on the second-order FSI2 meshes UFL estimates degree
-    26 for its residual (14 for SVK), so give ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5
-    changed the tip displacement, drag and lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at
-    0.25 s per step against 0.45 s uncapped on 4 ranks.
+    as the four columns after the tip displacement (``DET_F_QOI_HEADER``). A J <= 0 in the solid or on the fluid
+    mesh, with either material, raises ``RuntimeError`` after its row is written. The drag and lift are those at
+    t^{n+theta} = t - (1 - theta) dt, half a step before the time of their row for theta near 1/2: the pressure of a
+    step is that of t^{n+theta}, and they are computed with the theta averages of v and u_f (see
+    ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes them second order in time; from v and u_f of t^{n+1}
+    they would be first order. In the row of a start state they are those of the state. The Mooney-Rivlin energy is
+    not polynomial in u, and on the second-order FSI2 meshes UFL estimates degree 26 for its residual (14 for SVK),
+    so give ``max_quadrature_degree``: on FSI2 over t in [16, 17], a cap of 5 changed the tip displacement, drag and
+    lift by less than 3e-5 of their amplitudes against a cap of 8 or none, at 0.25 s per step against 0.45 s
+    uncapped on 4 ranks.
 
     The output, the restart checkpoints and the snapshots are VTKHDF files of the same layout
     (``xfsi_solver.tools.vtkhdf``), each of which opens in ParaView: u, v and p at the nodes of the
@@ -811,9 +811,6 @@ def solve(
         J_solid, J_fluid = write_output(t, step)
         J_solid_per_step.append(J_solid)
         J_fluid_per_step.append(J_fluid)
-        if solid_material == "mooney_rivlin_3":
-            (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid_per_step[-1], J_fluid_per_step[-1]
-            PETSc.Sys.Print(f"J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
         if J_solid[0] <= 0.0 or J_fluid[0] <= 0.0:
             # A solid with det(F) <= 0 has passed through itself, and a fluid mesh with det(F) <= 0 has inverted
             # cells, on which the ALE terms change sign without failing. Close the output so it stays readable.

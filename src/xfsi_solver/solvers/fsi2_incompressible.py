@@ -28,9 +28,10 @@ from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import theta_value
 from xfsi_solver.tools.qoi import (
-    INCOMPRESSIBLE_QOI_HEADER,
+    DET_F_INCOMPRESSIBLE_QOI_HEADER,
     append_qoi_row,
     assemble_force,
+    deformation_jacobian_range,
     drag_lift_forms,
     find_point_dof,
     incompressibility_violation,
@@ -174,7 +175,9 @@ def solve(
     ``snapshot_dir``, while a restart keeps those up to the step it resumes from.
 
     The QoI file has, after the drag, lift and tip displacement, three measures of the violation of det(F) = 1 in
-    the solid, by ``xfsi_solver.tools.qoi.incompressibility_violation``. The drag and lift are those at t^{n+theta}
+    the solid, by ``xfsi_solver.tools.qoi.incompressibility_violation``, and the smallest and largest det(F) of
+    the solid and of the fluid mesh, sampled at the points of a lattice of degree 4 on each cell by
+    ``xfsi_solver.tools.qoi.deformation_jacobian_range``. The drag and lift are those at t^{n+theta}
     = t - (1 - theta) dt, half a step before the time of their row for theta near 1/2: the pressure of a step is
     that of t^{n+theta}, and they are computed with the theta averages of v and u_f (see
     ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes them second order in time; from v and u_f of t^{n+1}
@@ -393,6 +396,9 @@ def solve(
         max_quadrature_degree=max_quadrature_degree,
     )
     measure_incompressibility = incompressibility_violation(u_s, ufl.dx(domain=solid_mesh), all_cells(solid_mesh))
+    # The range of det(F) on the solid and on the fluid mesh, sampled at the points of a lattice on each cell
+    solid_J_range = deformation_jacobian_range(u_s, all_cells(solid_mesh))
+    fluid_J_range = deformation_jacobian_range(u_f, all_cells(fluid_mesh))
 
     def write_output(t, step):
         """Write the QoI row, and every output_every steps the output, of the state at time t."""
@@ -404,7 +410,9 @@ def solve(
         u_spot = point_value(u_s, spot_dof)
         drag = assemble_force(drag_forms, comm)
         lift = assemble_force(lift_forms, comm)
-        append_qoi_row(qoi_path, comm, t, drag, lift, u_spot, *measure_incompressibility())
+        append_qoi_row(
+            qoi_path, comm, t, drag, lift, u_spot, *measure_incompressibility(), *solid_J_range(), *fluid_J_range()
+        )
 
     # create Dirichlet boundary condition
 
@@ -856,7 +864,7 @@ def solve(
         solver.setInitialGuess(initial_guess)
 
     # Open qoi file on fresh runs, discard entries after the restart time if a restarted run.
-    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=INCOMPRESSIBLE_QOI_HEADER)
+    init_qoi_file(qoi_path, comm, restart, t, dt_val, header=DET_F_INCOMPRESSIBLE_QOI_HEADER)
     if newton_log_path is not None:
         newton_log = NewtonLog(newton_log_path, field_blocks(problem, ["v", "p", "p_S"]), comm, restart, t, dt_val)
         solver.setMonitor(newton_log)

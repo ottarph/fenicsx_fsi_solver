@@ -24,6 +24,7 @@ INCOMPRESSIBLE_QOI_HEADER = QOI_HEADER + "\tsolid_area_change\tdet_F_rms\tdet_F_
 # The smallest and largest det(F) of the solid and of the fluid mesh, see deformation_jacobian_range.
 DET_F_COLUMNS = "\tdet_F_solid_min\tdet_F_solid_max\tdet_F_fluid_min\tdet_F_fluid_max"
 DET_F_QOI_HEADER = QOI_HEADER + DET_F_COLUMNS
+DET_F_INCOMPRESSIBLE_QOI_HEADER = INCOMPRESSIBLE_QOI_HEADER + DET_F_COLUMNS
 # The 3d benchmark measures the displacement at the point B on the beam.
 QOI_HEADER_3D = "t\tdrag\tlift\tB_x\tB_y\tB_z"
 DET_F_QOI_HEADER_3D = QOI_HEADER_3D + DET_F_COLUMNS

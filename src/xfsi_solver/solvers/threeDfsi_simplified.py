@@ -200,12 +200,12 @@ def solve(
     solid, and its integrals are capped at ``max_quadrature_degree`` as the others are. The smallest and largest J =
     det(F) of the solid and of the fluid mesh are measured at every QoI row, at the points of a lattice of degree
     ``det_F_lattice_degree`` on each cell, and written as the four columns after the displacement of B
-    (``DET_F_QOI_HEADER_3D``); with the Mooney-Rivlin solid they are also printed. A J <= 0 in the solid or on the
-    fluid mesh, with either material, raises ``RuntimeError`` after its row is written. The drag and lift are those
-    at t^{n+theta} = t - (1 - theta) dt, half a step before the time of their row for theta near 1/2: the pressure
-    of a step is that of t^{n+theta}, and they are computed with the theta averages of v and u_f (see
-    ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes them second order in time; from v and u_f of t^{n+1}
-    they would be first order. In the row of a start state they are those of the state.
+    (``DET_F_QOI_HEADER_3D``). A J <= 0 in the solid or on the fluid mesh, with either material, raises
+    ``RuntimeError`` after its row is written. The drag and lift are those at t^{n+theta} = t - (1 - theta) dt, half
+    a step before the time of their row for theta near 1/2: the pressure of a step is that of t^{n+theta}, and they
+    are computed with the theta averages of v and u_f (see ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes
+    them second order in time; from v and u_f of t^{n+1} they would be first order. In the row of a start state they
+    are those of the state.
 
     Returns the statistics of the time steps of this run: the wall time of the time loop,
     ``elapsed_time``, ``num_steps``, ``num_newton_iterations``, ``num_linear_iterations``,
@@ -885,9 +885,6 @@ def solve(
         J_solid, J_fluid = write_output(t, step)
         J_solid_per_step.append(J_solid)
         J_fluid_per_step.append(J_fluid)
-        if solid_material == "mooney_rivlin_3":
-            (J_s_min, J_s_max), (J_f_min, J_f_max) = J_solid, J_fluid
-            PETSc.Sys.Print(f"  J: solid [{J_s_min:.6f}, {J_s_max:.6f}], fluid mesh [{J_f_min:.6f}, {J_f_max:.6f}]")
         if J_solid[0] <= 0.0 or J_fluid[0] <= 0.0:
             # A solid with det(F) <= 0 has passed through itself, and a fluid mesh with det(F) <= 0 has inverted
             # cells, on which the ALE terms change sign without failing. Close the output so it stays readable.

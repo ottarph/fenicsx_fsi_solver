@@ -31,9 +31,11 @@ MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 # restart, more than the 1e-6 the tests allow.
 CONVERGED_SOLVER_OPTIONS = DEFAULT_DIRECT_SOLVER_OPTIONS | {"snes_atol": 1e-12}
 
-# The columns of the QoI file: t, drag, lift, the tip displacement and the violation of det(F) = 1
-NUM_COLUMNS = 8
+# The columns of the QoI file: t, drag, lift, the tip displacement, the violation of det(F) = 1, and the
+# smallest and largest det(F) of the solid and of the fluid mesh
+NUM_COLUMNS = 12
 AREA_CHANGE = 5
+DET_F_RANGE = slice(8, 12)
 
 
 def test_fsi2_incompressible_solve(output_dirs):
@@ -62,6 +64,14 @@ def test_fsi2_incompressible_solve(output_dirs):
     assert np.all(np.abs(rows[:, AREA_CHANGE]) < 1e-12)
     assert np.all(rows[1:, AREA_CHANGE + 1 : AREA_CHANGE + 3] > 0.0)
     assert np.all(rows[:, AREA_CHANGE + 1 : AREA_CHANGE + 3] < 1e-6)
+    # The range of det(F) on the solid and on the fluid mesh: 1 at rest, then min <= max near 1, the solid's
+    # within its incompressibility violation
+    det_F = rows[:, DET_F_RANGE]
+    np.testing.assert_array_equal(det_F[0], 1.0)
+    assert np.all(det_F[:, 0] <= det_F[:, 1]) and np.all(det_F[:, 2] <= det_F[:, 3])
+    np.testing.assert_allclose(det_F[:, :2], 1.0, atol=1e-5)
+    np.testing.assert_allclose(det_F[:, 2:], 1.0, atol=1e-3)
+    assert np.any(det_F[1:] != 1.0)
     # The output at steps 0 and 4, in one VTKHDF file with u, v, p and p_S
     np.testing.assert_allclose(vtkhdf.output_times(output_path, MPI.COMM_WORLD), [0.0, 4 * dt_val])
     assert sorted(vtkhdf.point_data_names(output_path, MPI.COMM_WORLD)) == ["p", "p_S", "u", "v"]
