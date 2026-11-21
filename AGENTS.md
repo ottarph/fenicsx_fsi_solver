@@ -1,11 +1,15 @@
 # Environment
 
-Choose the Conda environment `xfsi_solver` at the start of each task.
-Then run commands using the selected environment, for example:
+The dependencies come from the conda environment `fenicsx-env` (`environment.yml`, plus `requirements-pip.txt`
+installed with `pip install --no-deps`). This package is installed editable in a virtualenv `.venv/` in the
+checkout, made from `fenicsx-env`'s Python with `--system-site-packages`; the README has the setup commands. Run
+every command through the conda environment with the venv's Python, for example:
 
 ```bash
-conda run -n xfsi_solver pytest
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest
 ```
+
+Never install anything else into `fenicsx-env` with pip, and always use `--no-deps`, so h5py stays conda's MPI build.
 
 # Tests
 

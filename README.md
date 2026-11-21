@@ -46,13 +46,39 @@ and handle the other similar terms fully implicitly. Furthermore we use the shif
 
 ## Installation
 
-The non-Python dependencies (``fenics-dolfinx``, ``mpich``, ``gmsh``, ``adios2``, ``scifem``, ...) are
-conda-only and are managed through ``environment.yml``. Create the ``xfsi_solver`` conda environment and
-install this package into it in editable mode:
+The dependencies (``fenics-dolfinx``, ``mpich``, ``gmsh``, ``adios2``, ``scifem``, the MPI build of
+``h5py``, ...) come from conda and are listed in ``environment.yml``. The few packages whose required
+versions are not on conda-forge yet are listed in ``requirements-pip.txt`` and are installed into the same
+conda environment with ``pip --no-deps``, so pip never replaces a conda package. This package itself is
+installed in editable mode into a virtualenv, ``.venv/`` in the repository root, that is built on the conda
+environment's Python and sees its packages through ``--system-site-packages``.
+
+Create the conda environment (here named ``fenicsx-env``) once:
 
 ```bash
-conda env create -n xfsi_solver -f environment.yml
-conda run -n xfsi_solver pip install -e ".[dev]"
+conda env create -n fenicsx-env -f environment.yml
+conda run -n fenicsx-env pip install --no-deps -r requirements-pip.txt
+```
+
+Then create the virtualenv in each checkout (also in each git worktree, which gets its own ``.venv/``):
+
+```bash
+~/miniforge3/envs/fenicsx-env/bin/python -m venv --system-site-packages .venv
+.venv/bin/pip install --no-deps -e .
+.venv/bin/pip check
+```
+
+Adjust the path to the conda environment's Python to your conda installation
+(``conda run -n fenicsx-env which python`` prints it). Run every command through the conda environment, so ``mpiexec`` is the
+conda environment's (matching its MPI build of dolfinx, PETSc and h5py) and its activation scripts and
+variables (``OMP_NUM_THREADS``, the MPI transport libraries) are set, but with the virtualenv's Python, as in
+the commands below. Alternatively,
+``conda activate fenicsx-env`` and then ``source .venv/bin/activate``.
+
+To check that ``h5py`` is the MPI build, which io4dolfinx needs to write checkpoints in parallel:
+
+```bash
+conda run -n fenicsx-env .venv/bin/python -c "import h5py; print(h5py.get_config().mpi)"
 ```
 
 ## Running the tests
@@ -61,20 +87,20 @@ conda run -n xfsi_solver pip install -e ".[dev]"
 generated locally first:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.scripts.create_test_meshes
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m xfsi_solver.scripts.create_test_meshes
 ```
 
 Then run the tests:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver pytest
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest
 ```
 
 The tests marked ``slow``, which run the 3d solvers, are left out by default. Run them with ``-m slow``,
 or the whole suite with ``-m ""``:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver pytest -m slow
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest -m slow
 ```
 
 Note the ``--no-capture-output`` flag: without it, ``conda run`` buffers the whole test run's output and
@@ -96,7 +122,7 @@ Each solver in either directory exposes a ``solve(...)`` function and a ``main()
 example arguments. Run one directly as a module, from the repository root:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.solvers.fsi2_harmonic
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m xfsi_solver.solvers.fsi2_harmonic
 ```
 
 Some solvers expect mesh/reference data to already exist under ``data/`` (generated via the scripts in
@@ -164,7 +190,7 @@ The monolithic FSI2 solvers in ``src/xfsi_solver/solvers/`` (all except ``dfg_2d
 stopped or crashed run from its latest checkpoint, pass ``restart=True`` or run, for example:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver mpiexec -n 24 python -m xfsi_solver.solvers.fsi2_harmonic --restart
+conda run --no-capture-output -n fenicsx-env mpiexec -n 24 .venv/bin/python -m xfsi_solver.solvers.fsi2_harmonic --restart
 ```
 
 A restart can use a different number of MPI ranks than the original run. It drops QoI rows written after the
@@ -183,7 +209,7 @@ QoI files, and ``data/fsi2_reference_split.txt``, with all columns of the FeatFl
    and place it at the repository root.
 2. Run:
    ```bash
-   conda run --no-capture-output -n xfsi_solver python -m xfsi_solver.scripts.prepare_FSI2_reference_values
+   conda run --no-capture-output -n fenicsx-env .venv/bin/python -m xfsi_solver.scripts.prepare_FSI2_reference_values
    ```
 
 ## Solver naming
