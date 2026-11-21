@@ -51,7 +51,7 @@ from mpi4py import MPI
 from scipy.spatial import cKDTree
 
 from xfsi_solver.tools import vtkhdf
-from xfsi_solver.tools.checkpoint import _ATTRIBUTE_KEYS, _ATTRIBUTES
+from xfsi_solver.tools.checkpoint import _ATTRIBUTE_KEYS, _ATTRIBUTES, BP_BACKEND
 
 # The variables of a VTX file that are not functions
 _VTX_MESH_VARIABLES = {
@@ -288,7 +288,7 @@ def convert_checkpoint(data: MeshData, path: str | Path, out_path: str | Path) -
     """
     comm = data.comm
     path = Path(path)
-    attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES)
+    attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES, backend=BP_BACKEND)
     if not _ATTRIBUTE_KEYS <= attrs.keys():
         return False
     if int(attrs["num_cells"][0]) != data.num_cells:
@@ -310,11 +310,11 @@ def convert_checkpoint(data: MeshData, path: str | Path, out_path: str | Path) -
                 f"{path} holds {name!r} with {num_values} values and {dofs_per_cell} per cell, which is "
                 f"{'not a' if not candidates else 'more than one'} Lagrange space of degree {_DEGREES} on the mesh"
             )
-        times = np.asarray(io4dolfinx.read_timestamps(path, comm, name))
+        times = np.asarray(io4dolfinx.read_timestamps(path, comm, name, backend=BP_BACKEND))
         if not np.any(np.isclose(times, t, rtol=1e-12, atol=0.0)):
             raise ValueError(f"{path} holds {name!r} at t = {times}, not at the time of the checkpoint, {t}")
         f = dolfinx.fem.Function(candidates[0], name=name)
-        io4dolfinx.read_function(path, f, time=t, name=name)
+        io4dolfinx.read_function(path, f, time=t, name=name, backend=BP_BACKEND)
         functions.append(f)
 
     layout = data.layout([])

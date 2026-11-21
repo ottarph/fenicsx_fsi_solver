@@ -1,7 +1,9 @@
-
 channels:
   - conda-forge
 
+# Conda provides Python and every dependency. The packages in requirements-pip.txt are not on conda-forge in the
+# required versions and are installed on top with `pip install --no-deps`. xfsi_solver itself is installed
+# editable into a virtualenv on this environment's Python; see the README.
 dependencies:
   - python
   - fenics-dolfinx >= 0.11
@@ -11,7 +13,9 @@ dependencies:
   - python-gmsh
   - pyvista
   - adios2
-  - io4dolfinx >= 1.5.1
+  # io4dolfinx reads and writes HDF5 in parallel, so h5py must be the MPI build.
+  - h5py =*=mpi_mpich*
+  - packaging
   - pdbpp
   - pip
   - numpy >= 2.0

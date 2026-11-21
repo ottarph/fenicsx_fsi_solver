@@ -1,15 +1,26 @@
 # Environment
 
-Choose the Conda environment `xfsi_solver` at the start of each task.
-Then run commands using the selected environment, for example:
+The dependencies come from the conda environment `fenicsx-env`, built from `environment.yml`, plus the packages
+in `requirements-pip.txt`, which are installed into it with `pip install --no-deps`. This package is installed
+editable in a virtualenv `.venv/` in the checkout, made from `fenicsx-env`'s Python with
+`--system-site-packages`. Run every command through the conda environment with the venv's Python, for example:
 
 ```bash
-conda run --no-capture-output -n xfsi_solver pytest
+conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest
 ```
 
-Without `--no-capture-output`, `conda run` buffers the whole child process's
-stdout/stderr and only prints it once the process exits, which hides
-progress on long-running commands (e.g. the test suite) until they finish.
+- Without `--no-capture-output`, `conda run` buffers the whole child process's stdout/stderr and only prints it once
+  the process exits, which hides progress on long-running commands (e.g. the test suite) until they finish.
+- Bare `python` or `pytest` resolve to the conda environment, which does not have this package installed. Always
+  use `.venv/bin/python`.
+- Each checkout and each git worktree has its own `.venv/`. If it is missing, create it (the README has the
+  commands):
+  ```bash
+  ~/miniforge3/envs/fenicsx-env/bin/python -m venv --system-site-packages .venv
+  .venv/bin/pip install --no-deps -e .
+  ```
+- Never install anything else into `fenicsx-env` with pip, and always use `--no-deps`: h5py must stay conda's MPI
+  build (`h5py.get_config().mpi` is `True`). Ask the user before changing `fenicsx-env`; other projects use it.
 
 # Tests
 
@@ -100,8 +111,8 @@ Use FEniCSx to solve fluid-structure interaction problems using the finite eleme
   output to a log file:
   ```bash
   OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 setsid nohup \
-      conda run --no-capture-output -n xfsi_solver \
-      mpirun -n <ranks> python -u <script> > output/logs/<run>.txt 2>&1 < /dev/null &
+      conda run --no-capture-output -n fenicsx-env \
+      mpirun -n <ranks> .venv/bin/python -u <script> > output/logs/<run>.txt 2>&1 < /dev/null &
   echo $! > output/logs/<run>.pid
   ```
   `setsid` is not available on macOS; use `nohup ... &` there.

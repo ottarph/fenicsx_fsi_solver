@@ -74,7 +74,7 @@ def test_fsi2_incompressible_solve(output_dirs):
     assert np.any(det_F[1:] != 1.0)
     # The output at steps 0 and 4, in one VTKHDF file with u, v, p and p_S
     np.testing.assert_allclose(vtkhdf.output_times(output_path, MPI.COMM_WORLD), [0.0, 4 * dt_val])
-    assert sorted(vtkhdf.point_data_names(output_path, MPI.COMM_WORLD)) == ["p", "p_S", "u", "v"]
+    assert sorted(vtkhdf.function_names(output_path, MPI.COMM_WORLD)) == ["p", "p_S", "u", "v"]
     check_solver_newton_log(output_dirs["qoi"] / "fsi2_incompressible_newton.txt", qoi_path, ["v", "p", "p_S"])
 
 

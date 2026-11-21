@@ -5,7 +5,7 @@
 """Restart checkpoints for time-stepping solvers, built on io4dolfinx.
 
 Functions are stored in the cell ordering of the input mesh file
-(``write_mesh_input_order`` / ``write_function_on_input_mesh``), so a restart
+(``on_input_mesh=True`` in io4dolfinx), so a restart
 reads the mesh from the same XDMF file as a fresh run and the number of MPI
 ranks may differ between the run that wrote the checkpoint and the restart
 (N-to-M). This only works for functions on meshes read from file: submeshes
@@ -73,6 +73,8 @@ _ATTRIBUTES = "checkpoint"
 _ATTRIBUTE_KEYS = {"t", "step", "dt", "num_cells"}
 _NUM_FILES = 2
 _SUFFIXES = {"bp": ".bp", "vtkhdf": vtkhdf.SUFFIX}
+# The io4dolfinx backend of the ``.bp`` files, given explicitly, as the default of io4dolfinx is h5py
+BP_BACKEND = "adios2"
 
 
 def _num_global_cells(mesh: dolfinx.mesh.Mesh) -> int:
@@ -96,6 +98,15 @@ def _remove(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def bp_holds(path: Path, comm, name: str) -> bool:
+    """Whether the ``.bp`` checkpoint ``path`` holds a function named ``name``."""
+    try:
+        io4dolfinx.read_timestamps(path, comm, name, backend=BP_BACKEND)
+    except KeyError:
+        return False
+    return True
+
+
 def _read_complete_attributes(path: Path, comm) -> dict[str, np.ndarray] | None:
     """Attributes of the checkpoint file ``path``, or None if it is missing or incomplete."""
     if not path.exists():
@@ -105,7 +116,7 @@ def _read_complete_attributes(path: Path, comm) -> dict[str, np.ndarray] | None:
         if path.suffix == vtkhdf.SUFFIX:
             attrs = vtkhdf.read_attributes(path, comm, _ATTRIBUTES)
         else:
-            attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES)
+            attrs = io4dolfinx.read_attributes(path, comm, _ATTRIBUTES, backend=BP_BACKEND)
     except Exception:  # noqa: BLE001
         return None
     return attrs if _ATTRIBUTE_KEYS <= attrs.keys() else None
@@ -218,12 +229,12 @@ class Checkpointer:
             self._layout.write_mesh(path, t, self._cell_tags)
             self._layout.write_functions(path, functions, t)
         else:
-            io4dolfinx.write_mesh_input_order(path, self.mesh)
+            io4dolfinx.write_mesh(path, self.mesh, backend=BP_BACKEND, on_input_mesh=True)
             for f in functions:
                 g, cells = self._on_parent(f)
                 if cells is not None:
                     self._copy_to_parent(g, f, cells)
-                io4dolfinx.write_function_on_input_mesh(path, g, time=t)
+                io4dolfinx.write_function(path, g, time=t, backend=BP_BACKEND, on_input_mesh=True)
         attrs = {
             "t": np.array([t], dtype=np.float64),
             "step": np.array([step], dtype=np.int64),
@@ -235,7 +246,7 @@ class Checkpointer:
         if path.suffix == vtkhdf.SUFFIX:
             vtkhdf.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
         else:
-            io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs)
+            io4dolfinx.write_attributes(path, self.mesh.comm, _ATTRIBUTES, attrs, backend=BP_BACKEND)
 
     def _latest(self) -> tuple[dict[str, np.ndarray], Path]:
         """Attributes and file of the latest complete checkpoint, of either format.
@@ -284,7 +295,7 @@ class Checkpointer:
                 f"not {_num_global_cells(self.mesh)}"
             )
         if path.suffix == vtkhdf.SUFFIX:
-            names = vtkhdf.point_data_names(path, self.mesh.comm)
+            names = vtkhdf.function_names(path, self.mesh.comm)
             stored = [f for f in functions if f.name not in optional or f.name in names]
             vtkhdf.read_functions(path, stored, t, self.mesh, self._submeshes)
         else:
@@ -296,10 +307,10 @@ class Checkpointer:
 
     def _read_bp(self, path: Path, functions: list[dolfinx.fem.Function], t: float, optional: Collection[str]) -> None:
         for f in functions:
-            if f.name in optional and len(io4dolfinx.read_timestamps(path, self.mesh.comm, f.name)) == 0:
+            if f.name in optional and not bp_holds(path, self.mesh.comm, f.name):
                 continue
             g, cells = self._on_parent(f)
-            io4dolfinx.read_function(path, g, time=t, name=f.name)
+            io4dolfinx.read_function(path, g, time=t, name=f.name, backend=BP_BACKEND)
             # Every dof of f, owned or ghost, is in a local submesh cell, and g has its ghost values from
             # read_function, so unlike in write, interpolating cell by cell sets all of f
             if cells is not None:

@@ -11,7 +11,7 @@ from test_checkpoint import ATOL, DT, FSI_MESHES, _assert_state, _fill, _setup
 
 from xfsi_solver.scripts.convert_to_vtkhdf import convert, group_outputs
 from xfsi_solver.tools import vtkhdf
-from xfsi_solver.tools.checkpoint import Checkpointer
+from xfsi_solver.tools.checkpoint import BP_BACKEND, Checkpointer
 
 TIMES = [0.1, 0.2, 0.3]
 
@@ -47,7 +47,7 @@ def check_converted(mesh_kind, directory):
     mesh, submeshes, functions = _setup(mesh_kind)
     path = directory / "pv" / "run.vtkhdf"
     np.testing.assert_allclose(vtkhdf.output_times(path, mesh.comm), TIMES)
-    assert sorted(vtkhdf.point_data_names(path, mesh.comm)) == ["p", "u", "v_s"]
+    assert sorted(vtkhdf.function_names(path, mesh.comm)) == ["p", "u", "v_s"]
     for t in TIMES:
         vtkhdf.read_functions(path, functions, t, mesh, submeshes)
         _assert_state(functions, t, ATOL["vtkhdf"])
@@ -139,8 +139,8 @@ def test_skips_incomplete_checkpoints_and_converted_files(tmp_path):
     # A checkpoint a run killed while writing it left without its attributes
     mesh, _, (u, _, _) = _setup("fsi_tri")
     incomplete = tmp_path / "killed" / "checkpoint_0.bp"
-    io4dolfinx.write_mesh_input_order(incomplete, mesh)
-    io4dolfinx.write_function_on_input_mesh(incomplete, u, time=0.0)
+    io4dolfinx.write_mesh(incomplete, mesh, backend=BP_BACKEND, on_input_mesh=True)
+    io4dolfinx.write_function(incomplete, u, time=0.0, backend=BP_BACKEND, on_input_mesh=True)
 
     written = convert(FSI_MESHES["fsi_tri"], [tmp_path])
     assert len(written) == 3

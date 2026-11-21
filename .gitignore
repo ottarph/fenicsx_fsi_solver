@@ -21,3 +21,4 @@ offline_docs
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.venv/

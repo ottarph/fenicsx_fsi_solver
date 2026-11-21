@@ -9,6 +9,7 @@ from restart_helpers import run_mpi_python
 
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.checkpoint import (
+    BP_BACKEND,
     Checkpointer,
     SnapshotWriter,
     check_start_options,
@@ -116,8 +117,8 @@ def _write_incomplete(mesh_kind, path, functions, t, file_format):
     """The file of a run killed while writing it: the mesh and only the first function, and no attributes."""
     mesh, submeshes, _ = _setup(mesh_kind)
     if file_format == "bp":
-        io4dolfinx.write_mesh_input_order(path, functions[0].function_space.mesh)
-        io4dolfinx.write_function_on_input_mesh(path, functions[0], time=t)
+        io4dolfinx.write_mesh(path, functions[0].function_space.mesh, backend=BP_BACKEND, on_input_mesh=True)
+        io4dolfinx.write_function(path, functions[0], time=t, backend=BP_BACKEND, on_input_mesh=True)
     else:
         layout = vtkhdf.PointDataLayout(functions[0].function_space.mesh)
         layout.write_mesh(path, t)
@@ -196,8 +197,8 @@ def test_latest_times_without_stored_t0(mesh_kind, tmp_path):
     u = functions[0]
     _fill([u], DT)
     path = tmp_path / "checkpoint_0.bp"
-    io4dolfinx.write_mesh_input_order(path, mesh)
-    io4dolfinx.write_function_on_input_mesh(path, u, time=DT)
+    io4dolfinx.write_mesh(path, mesh, backend=BP_BACKEND, on_input_mesh=True)
+    io4dolfinx.write_function(path, u, time=DT, backend=BP_BACKEND, on_input_mesh=True)
     num_cells = mesh.topology.index_map(mesh.topology.dim).size_global
     attrs = {
         "t": np.array([DT]),
@@ -205,7 +206,7 @@ def test_latest_times_without_stored_t0(mesh_kind, tmp_path):
         "dt": np.array([DT]),
         "num_cells": np.array([num_cells], dtype=np.int64),
     }
-    io4dolfinx.write_attributes(path, mesh.comm, "checkpoint", attrs)
+    io4dolfinx.write_attributes(path, mesh.comm, "checkpoint", attrs, backend=BP_BACKEND)
     assert Checkpointer(tmp_path, mesh).latest_times() == (DT, 0.0)
 
 

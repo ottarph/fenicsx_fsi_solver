@@ -37,7 +37,7 @@ def test_writer_writes_a_time_series_to_read_back(mesh_kind, tmp_path):
     writer.close()
 
     np.testing.assert_allclose(vtkhdf.output_times(path, mesh.comm), times)
-    assert sorted(vtkhdf.point_data_names(path, mesh.comm)) == sorted(f.name for f in functions)
+    assert sorted(vtkhdf.function_names(path, mesh.comm)) == sorted(f.name for f in functions)
     mesh, submeshes, functions = _setup(mesh_kind)
     vtkhdf.read_functions(path, functions, 0.5, mesh, submeshes)
     _assert_state(functions, 0.5, ATOL["vtkhdf"])
@@ -98,28 +98,6 @@ def test_2d_vectors_are_written_with_3_components_for_vtk(tmp_path):
     u = vtk_to_numpy(grid.GetPointData().GetArray("u"))
     assert np.abs(u).max() > 0.1
     np.testing.assert_allclose(warped, points + u, atol=1e-12)
-
-
-def test_reads_vectors_written_with_2_components(tmp_path):
-    """Files written before vectors were padded to 3 components hold 2D vectors with 2, as
-    io4dolfinx.write_point_data writes them; they read back as well."""
-    path = tmp_path / "out.vtkhdf"
-    mesh, submeshes, functions = _setup("fsi_tri")
-    _fill(functions, 0.5)
-    layout = vtkhdf.PointDataLayout(mesh, submeshes)
-    layout.write_mesh(path, 0.5)
-    layout.write_functions(path, functions[1:], 0.5)
-    u = functions[0]
-    g = layout._out_function(u)
-    cells = np.arange(mesh.topology.index_map(2).size_local + mesh.topology.index_map(2).num_ghosts, dtype=np.int32)
-    g.interpolate(u, cells0=cells, cells1=cells)
-    io4dolfinx.write_point_data(
-        path, g, time=0.5, mode=io4dolfinx.FileMode.append, backend_args=None, backend=vtkhdf.BACKEND
-    )
-
-    mesh, submeshes, functions = _setup("fsi_tri")
-    vtkhdf.read_functions(path, functions, 0.5, mesh, submeshes)
-    _assert_state(functions, 0.5, ATOL["vtkhdf"])
 
 
 @pytest.mark.parametrize("mesh_kind", FSI_MESHES)

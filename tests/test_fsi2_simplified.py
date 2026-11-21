@@ -75,7 +75,7 @@ def test_fsi2_simplified_solve(output_dirs):
     # The output at steps 0 and 4, in one VTKHDF file with u, v and p
     output_path = output_dirs["pv"] / "fsi2_simplified.vtkhdf"
     np.testing.assert_allclose(vtkhdf.output_times(output_path, MPI.COMM_WORLD), [0.0, 4 * dt_val])
-    assert sorted(vtkhdf.point_data_names(output_path, MPI.COMM_WORLD)) == ["p", "u", "v"]
+    assert sorted(vtkhdf.function_names(output_path, MPI.COMM_WORLD)) == ["p", "u", "v"]
     check_solver_newton_log(output_dirs["qoi"] / "fsi2_simplified_newton.txt", qoi_path, ["v", "p"])
 
 
