@@ -13,12 +13,15 @@ conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest
   the process exits, which hides progress on long-running commands (e.g. the test suite) until they finish.
 - Bare `python` or `pytest` resolve to the conda environment, which does not have this package installed. Always
   use `.venv/bin/python`.
-- Each checkout and each git worktree has its own `.venv/`. If it is missing, create it (the README has the
-  commands):
+- Each checkout and each git worktree has its own `.venv/`. If it is missing, or built on another environment,
+  create it (the README has the commands):
   ```bash
-  ~/miniforge3/envs/fenicsx-env/bin/python -m venv --system-site-packages .venv
+  ~/miniforge3/envs/fenicsx-env/bin/python -m venv --clear --system-site-packages .venv
   .venv/bin/pip install --no-deps -e .
+  readlink -f .venv/bin/python  # must be fenicsx-env's Python
   ```
+  Always pass `--clear`: over an existing `.venv/`, `venv` without it rewrites `pyvenv.cfg` but keeps the old
+  `bin/python` link, so the venv silently keeps running the interpreter it was first built on.
 - Never install anything else into `fenicsx-env` with pip, and always use `--no-deps`: h5py must stay conda's MPI
   build (`h5py.get_config().mpi` is `True`). Ask the user before changing `fenicsx-env`; other projects use it.
 

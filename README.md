@@ -63,10 +63,15 @@ conda run -n fenicsx-env pip install --no-deps -r requirements-pip.txt
 Then create the virtualenv in each checkout (also in each git worktree, which gets its own ``.venv/``):
 
 ```bash
-~/miniforge3/envs/fenicsx-env/bin/python -m venv --system-site-packages .venv
+~/miniforge3/envs/fenicsx-env/bin/python -m venv --clear --system-site-packages .venv
 .venv/bin/pip install --no-deps -e .
 .venv/bin/pip check
+readlink -f .venv/bin/python
 ```
+
+The last command must print the conda environment's Python. ``--clear`` matters when a ``.venv/`` already
+exists: without it, ``venv`` rewrites ``pyvenv.cfg`` but keeps the old ``bin/python`` link, so a virtualenv
+first built on another environment keeps running that environment's Python.
 
 Adjust the path to the conda environment's Python to your conda installation
 (``conda run -n fenicsx-env which python`` prints it). Run every command through the conda environment, so ``mpiexec`` is the
