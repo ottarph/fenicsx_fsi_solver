@@ -55,6 +55,90 @@ PHYSICAL_MARKERS = {
 NEST_GROUPS = ("v", "p", "u_s", "z_int", "u_int", "z_f", "u_f")
 
 
+def residual_forms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid):
+    """The UFL residual of the solver and its solid kinematic relation, without the forms of zero
+    coefficient that only widen the sparsity pattern.
+
+    ``functions`` is (u, v, p, z), ``old_functions`` (u_old, v_old), ``test_functions`` (du, dv, dp,
+    dz), and ``constants`` a dict of the UFL constants (or expressions) "rho_f", "nu_f", "rho_s",
+    "mu_s", "lambda_s", "dt" and "theta". ``dx_fluid`` and ``dx_solid`` are the measures of the fluid
+    and solid cells.
+
+    Returns ``(residual, kinematic)``: ``residual`` holds every equation as the solver assembles it,
+    before its interface rows of u are replaced, and ``kinematic`` is the solid kinematic relation,
+    rho_s [(u - u_old) / dt - theta v - (1 - theta) v_old] . du on the solid cells, which the solver
+    assembles into the rows of u on the solid cells, the interface included.
+    """
+    from xfsi_solver.fsi.materials import Fluid, Solid
+
+    u, v, p, z = functions
+    u_old, v_old = old_functions
+    du, dv, dp, dz = test_functions
+    rho_f, nu_f = constants["rho_f"], constants["nu_f"]
+    rho_s, mu_s, lambda_s = constants["rho_s"], constants["mu_s"], constants["lambda_s"]
+    dt, theta = constants["dt"], constants["theta"]
+    dim = u.ufl_shape[0]
+
+    def A_T(u, u_old, v, v_old):
+        F = ufl.Identity(dim) + ufl.grad(u)
+        J = ufl.det(F)
+        F_old = ufl.Identity(dim) + ufl.grad(u_old)
+        J_old = ufl.det(F_old)
+        J_mid = 0.5 * (J + J_old)
+
+        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
+
+        residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
+
+        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
+
+        return residual
+
+    def A_I(u, v, z):
+        F = ufl.Identity(dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = ufl.inner(z, dz) * dx_fluid
+        residual -= ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
+
+        residual += ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
+
+        residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
+
+        return residual
+
+    def A_E(u, v):
+        F = ufl.Identity(dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
+
+        residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+
+        # This one stays because the test function is dv, not du.
+        residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
+
+        return residual
+
+    def A_P(u, p):
+        F = ufl.Identity(dim) + ufl.grad(u)
+        J = ufl.det(F)
+
+        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
+
+        return residual
+
+    residual = A_T(u, u_old, v, v_old)
+    residual += A_I(u, v, z)
+    residual += A_P(u, p)
+    residual += theta * A_E(u, v)
+    residual += (1.0 - theta) * A_E(u_old, v_old)
+
+    kinematic = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
+
+    return residual, kinematic
+
+
 def solve(
     mesh_path,
     T,
@@ -364,67 +448,23 @@ def solve(
     # FLUID: Parabolic inflow on left side, no-slip on top, bottom, and obstacle, do-nothing on right side
     # SOLID: Homogeneous Dirichlet on left side
 
-    from xfsi_solver.fsi.materials import Fluid, Solid
-
     # create residual form
 
-    def A_T(u, u_old, v, v_old):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
-        F_old = ufl.Identity(mesh.geometry.dim) + ufl.grad(u_old)
-        J_old = ufl.det(F_old)
-        J_mid = 0.5 * (J + J_old)
+    constants = {
+        "rho_f": rho_f,
+        "nu_f": nu_f,
+        "rho_s": rho_s,
+        "mu_s": mu_s,
+        "lambda_s": lambda_s,
+        "dt": dt,
+        "theta": theta,
+    }
+    residual, res_miss_ufl = residual_forms(
+        (u, v, p, z), (u_old, v_old), (du, dv, dp, dz), constants, dx_fluid, dx_solid
+    )
 
-        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
-
-        residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
-
-        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
-
-        return residual
-
-    def A_I(u, v, z):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = ufl.inner(z, dz) * dx_fluid
-        residual -= ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
-
-        residual += ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
-        residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_fluid
-
-        residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
-
-        return residual
-
-    def A_E(u, v):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
-
-        residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        # This one stays because the test function is dv, not du.
-        residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        return residual
-
-    def A_P(u, p):
-        F = ufl.Identity(mesh.geometry.dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    residual = A_T(u, u_old, v, v_old)
-    residual += A_I(u, v, z)
-    residual += A_P(u, p)
-    residual += theta * A_E(u, v)
-    residual += (1.0 - theta) * A_E(u_old, v_old)
-
-    # Add in u_s with zero constants for correct sparsity patterns
+    # Add in u with zero constants for correct sparsity patterns
+    residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_fluid
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(v, du) * dx_solid
 
@@ -524,9 +564,7 @@ def solve(
     problem.A.setOption(PETSc.Mat.Option.KEEP_NONZERO_PATTERN, True)
 
     # The same cap as for the residual above, before the derivatives are taken.
-    res_miss_ufl = cap_quadrature_degree(
-        rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid, max_quadrature_degree
-    )
+    res_miss_ufl = cap_quadrature_degree(res_miss_ufl, max_quadrature_degree)
     res_miss = dolfinx.fem.form(res_miss_ufl)
     jac_uu = dolfinx.fem.form(ufl.derivative(res_miss_ufl, u, ufl.TrialFunction(U)))
     jac_uv = dolfinx.fem.form(ufl.derivative(res_miss_ufl, v, ufl.TrialFunction(V)))
