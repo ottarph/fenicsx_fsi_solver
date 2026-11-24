@@ -55,9 +55,14 @@ PHYSICAL_MARKERS = {
 NEST_GROUPS = ("v", "p", "u_s", "z_int", "u_int", "z_f", "u_f")
 
 
-def residual_forms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow=None):
-    """The UFL residual of the solver and its solid kinematic relation, without the forms of zero
-    coefficient that only widen the sparsity pattern.
+# The terms of the fluid rows, (v, p), on the fluid cells that depend on the displacement u, so that
+# their derivatives with respect to u are the fluid ALE derivatives (see ``residual_terms``).
+FLUID_ALE_TERMS = ("fluid inertia", "mesh transport", "fluid convection", "fluid viscous", "pressure", "mass")
+
+
+def residual_terms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow=None):
+    """The terms of the UFL residual of the solver by name, and its solid kinematic relation, without
+    the forms of zero coefficient that only widen the sparsity pattern.
 
     ``functions`` is (u, v, p, z), ``old_functions`` (u_old, v_old), ``test_functions`` (du, dv, dp,
     dz), and ``constants`` a dict of the UFL constants (or expressions) "rho_f", "nu_f", "rho_s",
@@ -69,11 +74,26 @@ def residual_forms(functions, old_functions, test_functions, constants, dx_fluid
     fluid pressure by p_outlet. The outflow boundary does not move, so n is that of the reference
     domain.
 
-    Returns ``(residual, kinematic)``: ``residual`` holds every equation as the solver assembles it,
-    before its interface rows of u are replaced, and ``kinematic`` is the solid kinematic relation,
-    rho_s [(u - u_old) / dt - theta v - (1 - theta) v_old] . du on the solid cells, which the solver
-    assembles into the rows of u on the solid cells, the interface included.
+    Returns a dict from name to form. The momentum equation (test function dv) has "fluid inertia",
+    rho_f J_mid (v - v_old) / dt; "mesh transport", -rho_f J grad(v) F^-1 (u - u_old) / dt; "solid
+    inertia"; "fluid convection", "fluid viscous" and "solid stress", each the theta-weighted sum of
+    the new and the old state; "pressure"; and with ``ds_outflow``, "outlet". The mass equation (dp)
+    is "mass", the equation of z (dz) is "z", and the mesh motion (du on the fluid cells) is "mesh
+    motion". "kinematic" is the solid kinematic relation, rho_s [(u - u_old) / dt - theta v - (1 -
+    theta) v_old] . du on the solid cells, which the solver assembles into the rows of u on the solid
+    cells, the interface included, in place of the other terms there. The terms of ``FLUID_ALE_TERMS``
+    are those of the fluid rows that depend on u.
     """
+    pieces = _residual_pieces(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow)
+    terms = {}
+    for name, form in pieces:
+        terms[name] = form if name not in terms else terms[name] + form
+    return terms
+
+
+def _residual_pieces(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow):
+    """The pieces of the residual as (name of their term, form), in the order in which the residual
+    sums them, which fixes the order of summation in its integrands."""
     from xfsi_solver.fsi.materials import Fluid, Solid
 
     u, v, p, z = functions
@@ -84,68 +104,123 @@ def residual_forms(functions, old_functions, test_functions, constants, dx_fluid
     dt, theta = constants["dt"], constants["theta"]
     dim = u.ufl_shape[0]
 
-    def A_T(u, u_old, v, v_old):
+    def kinematics(u):
         F = ufl.Identity(dim) + ufl.grad(u)
-        J = ufl.det(F)
-        F_old = ufl.Identity(dim) + ufl.grad(u_old)
-        J_old = ufl.det(F_old)
-        J_mid = 0.5 * (J + J_old)
+        return F, ufl.det(F)
 
-        residual = rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid
+    def convection(u, v):
+        F, J = kinematics(u)
+        return rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
 
-        residual -= rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid
+    def viscous(u, v):
+        F, J = kinematics(u)
+        return ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
 
-        residual += rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid
+    def solid_stress(u):
+        F, J = kinematics(u)
+        return ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
 
-        return residual
+    F, J = kinematics(u)
+    _, J_old = kinematics(u_old)
+    J_mid = 0.5 * (J + J_old)
 
-    def A_I(u, v, z):
-        F = ufl.Identity(dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = ufl.inner(z, dz) * dx_fluid
-        residual -= ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid
-
-        residual += ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid
-
-        residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
-
-        return residual
-
-    def A_E(u, v):
-        F = ufl.Identity(dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * v, dv) * dx_fluid
-
-        residual += ufl.inner(J * Fluid.NS_velocity(u, v, nu_f, rho_f) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        # This one stays because the test function is dv, not du.
-        residual += ufl.inner(J * Solid.STVK(u, lambda_s, mu_s) * ufl.inv(F).T, ufl.grad(dv)) * dx_solid
-
-        return residual
-
-    def A_P(u, p):
-        F = ufl.Identity(dim) + ufl.grad(u)
-        J = ufl.det(F)
-
-        residual = J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid
-
-        return residual
-
-    residual = A_T(u, u_old, v, v_old)
-    residual += A_I(u, v, z)
-    residual += A_P(u, p)
-    residual += theta * A_E(u, v)
-    residual += (1.0 - theta) * A_E(u_old, v_old)
-
+    pieces = [
+        ("fluid inertia", rho_f * J_mid * ufl.inner((v - v_old) / dt, dv) * dx_fluid),
+        ("mesh transport", -(rho_f * J * ufl.inner(ufl.grad(v) * ufl.inv(F) * ((u - u_old) / dt), dv) * dx_fluid)),
+        ("solid inertia", rho_s * ufl.inner((v - v_old) / dt, dv) * dx_solid),
+        ("z", ufl.inner(z, dz) * dx_fluid),
+        ("z", -(ufl.inner(ufl.grad(u), ufl.grad(dz)) * dx_fluid)),
+        ("mesh motion", ufl.inner(ufl.grad(z), ufl.grad(du)) * dx_fluid),
+        ("mass", ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid),
+        ("pressure", J * ufl.inner(Fluid.NS_pressure(p) * ufl.inv(F).T, ufl.grad(dv)) * dx_fluid),
+        ("fluid convection", theta * convection(u, v)),
+        ("fluid viscous", theta * viscous(u, v)),
+        ("solid stress", theta * solid_stress(u)),
+        ("fluid convection", (1.0 - theta) * convection(u_old, v_old)),
+        ("fluid viscous", (1.0 - theta) * viscous(u_old, v_old)),
+        ("solid stress", (1.0 - theta) * solid_stress(u_old)),
+    ]
     if ds_outflow is not None:
         n = ufl.FacetNormal(ds_outflow.ufl_domain())
-        residual += constants["p_outlet"] * ufl.inner(n, dv) * ds_outflow
+        pieces.append(("outlet", constants["p_outlet"] * ufl.inner(n, dv) * ds_outflow))
+    pieces.append(("kinematic", rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid))
+    return pieces
 
-    kinematic = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
 
+def residual_forms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow=None):
+    """The UFL residual of the solver and its solid kinematic relation, the sums of the terms of
+    ``residual_terms`` (which see for the arguments).
+
+    Returns ``(residual, kinematic)``: ``residual`` holds every equation as the solver assembles it,
+    before its interface rows of u are replaced, and ``kinematic`` is the solid kinematic relation,
+    which the solver assembles into the rows of u on the solid cells, the interface included.
+    """
+    pieces = _residual_pieces(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow)
+    residual = None
+    for name, form in pieces:
+        if name == "kinematic":
+            kinematic = form
+        else:
+            residual = form if residual is None else residual + form
     return residual, kinematic
+
+
+def bcs_rows_of(block_forms, bcs):
+    """The Dirichlet conditions of ``bcs`` by block of the rows of ``block_forms``, a list (one per
+    term) of lists of linear forms over the same spaces."""
+    first = next(iter(block_forms.values()))
+    return dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(first), bcs)
+
+
+class FluidALEDerivative:
+    """Assembles the derivatives with respect to u of the fluid terms of the (v, p) rows, term by
+    term, each in a matrix with the layout of the Jacobian, with the rows and columns of the Dirichlet
+    dofs zeroed, as in the Jacobian. ``forms`` maps the name of each term to its blocked bilinear
+    forms, with zero diagonal blocks for the layout."""
+
+    def __init__(self, forms: dict, bcs):
+        self.forms = forms
+        self.bcs = bcs
+        self.matrices = {name: dolfinx.fem.petsc.create_matrix(block) for name, block in forms.items()}
+
+    def assemble(self) -> dict:
+        """Assemble every term at the current state; returns the dict from name to matrix. Collective."""
+        for name, matrix in self.matrices.items():
+            matrix.zeroEntries()
+            dolfinx.fem.petsc.assemble_matrix(matrix, self.forms[name], bcs=self.bcs, diag=0.0)
+            matrix.assemble()
+        return self.matrices
+
+    def destroy(self) -> None:
+        for matrix in self.matrices.values():
+            matrix.destroy()
+
+
+class TermVectors:
+    """Assembles terms of the residual as vectors with the layout of the residual, with the entries
+    of the Dirichlet dofs zeroed. ``forms`` maps the name of each term to its blocked linear forms."""
+
+    def __init__(self, forms: dict, bcs_rows):
+        self.forms = forms
+        self.bcs_rows = bcs_rows
+        self.vectors = {
+            name: dolfinx.fem.petsc.create_vector(dolfinx.fem.extract_function_spaces(block))
+            for name, block in forms.items()
+        }
+
+    def assemble(self) -> dict:
+        """Assemble every term at the current state; returns the dict from name to vector. Collective."""
+        for name, vector in self.vectors.items():
+            with vector.localForm() as local:
+                local.set(0.0)
+            dolfinx.fem.petsc.assemble_vector(vector, self.forms[name])
+            vector.ghostUpdate(PETSc.InsertMode.ADD, PETSc.ScatterMode.REVERSE)
+            dolfinx.fem.petsc.set_bc(vector, self.bcs_rows, alpha=0.0)
+        return self.vectors
+
+    def destroy(self) -> None:
+        for vector in self.vectors.values():
+            vector.destroy()
 
 
 def solve(
@@ -187,6 +262,7 @@ def solve(
     snes_max_it=20,
     jacobian_callback=None,
     outlet_pressure=0.0,
+    outlet_pressure_ramp=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -272,9 +348,19 @@ def solve(
     With a nonzero ``outlet_pressure`` P0, in Pa, the outflow boundary has the traction -P0 n in place
     of the zero traction of the do-nothing condition, which shifts the fluid pressure by P0, as the mean
     pressure of the aneurysm runs, about 11.2 kPa, does there. The pressure of an initial state is not
-    shifted, so the first step takes the jump, which excites a lightly damped oscillation of the
-    pressure: from the t = 16 state of FSI2 at 11.2 kPa, its maximum still swings between about 11 and
-    17 kPa from step to step after 40 steps of dt = 0.0025.
+    shifted, so with ``outlet_pressure_ramp=None`` the first step takes the jump, which excites a
+    lightly damped oscillation of the pressure: from the t = 16 state of FSI2 at 11.2 kPa, its maximum
+    still swings between about 11 and 17 kPa from step to step after 40 steps of dt = 0.0025. With
+    ``outlet_pressure_ramp`` T_r, in s, the outlet pressure instead rises smoothly from 0 at the start
+    time t0 of the run to P0 at t0 + T_r, as P0 (1 - cos(pi (t - t0) / T_r)) / 2, and stays at P0.
+
+    With ``jacobian_callback``, the ``data`` of the ``NestView`` also has "fluid_ale", a
+    ``FluidALEDerivative`` that assembles the fluid ALE derivative C of the Jacobian, term by term:
+    the derivatives with respect to u of the terms of ``FLUID_ALE_TERMS``, in the layout of the
+    Jacobian. J - C is the Jacobian J_0 of fsi2_simplified, which neglects them; it keeps the solid
+    stress derivative, which shares the block (v, u_int) with C. It also has "momentum_terms", a
+    ``TermVectors`` that assembles the terms of the momentum equation as vectors in the layout of
+    the residual, to compare their sizes at the interface.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -477,15 +563,24 @@ def solve(
         "theta": theta,
         "p_outlet": dolfinx.fem.Constant(mesh, float(outlet_pressure)),
     }
-    residual, res_miss_ufl = residual_forms(
+
+    def outlet_pressure_at(t):
+        if outlet_pressure_ramp is None:
+            return outlet_pressure
+        s = min((t - t0) / outlet_pressure_ramp, 1.0)
+        return outlet_pressure * 0.5 * (1.0 - np.cos(np.pi * s))
+
+    residual_args = (
         (u, v, p, z),
         (u_old, v_old),
         (du, dv, dp, dz),
         constants,
         dx_fluid,
         dx_solid,
-        ds_outflow=ds(PHYSICAL_MARKERS["outflow"]) if outlet_pressure != 0.0 else None,
+        ds(PHYSICAL_MARKERS["outflow"]) if outlet_pressure != 0.0 else None,
     )
+    residual, res_miss_ufl = residual_forms(*residual_args)
+    terms = residual_terms(*residual_args)
 
     # Add in u with zero constants for correct sparsity patterns
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_fluid
@@ -662,6 +757,37 @@ def solve(
     ]
 
     bcs_post = [u_s_bc, *bcs]
+
+    if jacobian_callback is not None:
+        spaces = (U, V, P, Z)
+        diagonal = [zero_block(space, space) for space in spaces]
+
+        def term_blocks(name):
+            """The blocks of the term ``name`` over the test functions (du, dv, dp, dz), with the cap."""
+            blocks = list(ufl.extract_blocks(terms[name]))
+            blocks += [None] * (4 - len(blocks))
+            return [None if b is None else cap_quadrature_degree(b, max_quadrature_degree) for b in blocks]
+
+        fluid_ale_forms = {}
+        for name in FLUID_ALE_TERMS:
+            blocks = term_blocks(name)
+            forms = [[diagonal[i] if i == j else None for j in range(4)] for i in range(4)]
+            for i in (1, 2):
+                if blocks[i] is not None:
+                    derivative = ufl.derivative(blocks[i], u, ufl.TrialFunction(U))
+                    forms[i][0] = dolfinx.fem.form(derivative, entity_maps=entity_maps)
+            fluid_ale_forms[name] = forms
+        nest_data["fluid_ale"] = FluidALEDerivative(fluid_ale_forms, bcs_post)
+
+        zero_rows = [dolfinx.fem.form(ufl.ZeroBaseForm((test,))) for test in (du, dv, dp, dz)]
+        momentum_forms = {}
+        for name in terms:
+            blocks = term_blocks(name)
+            if blocks[1] is not None:
+                row = list(zero_rows)
+                row[1] = dolfinx.fem.form(blocks[1], entity_maps=entity_maps)
+                momentum_forms[name] = row
+        nest_data["momentum_terms"] = TermVectors(momentum_forms, bcs_rows_of(momentum_forms, bcs_post))
     bcs_rows = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(res_post), bcs_post)
     bcs_cols = dolfinx.fem.bcs_by_block(dolfinx.fem.extract_function_spaces(jac_post, 1), bcs_post)
 
@@ -803,6 +929,7 @@ def solve(
     while step < num_steps:
         t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
+        constants["p_outlet"].value = outlet_pressure_at(t)
         inflow_bc_func.x.scatter_forward()
 
         u_old.x.array[:] = u.x.array[:]
@@ -838,7 +965,8 @@ def solve(
         )
         print(f"  Initial guess: {initial_guess}")
         if outlet_pressure != 0.0:
-            print(f"  Outlet pressure: {outlet_pressure:g} Pa")
+            ramp = "at once" if outlet_pressure_ramp is None else f"over {outlet_pressure_ramp:g} s"
+            print(f"  Outlet pressure: {outlet_pressure:g} Pa, applied {ramp}")
 
     for writer in writers:
         writer.close()
@@ -888,6 +1016,9 @@ def solve(
         mesh_motion.destroy()
     if nest_view is not None:
         nest_view.destroy()
+    for name in ("fluid_ale", "momentum_terms"):
+        if name in nest_data:
+            nest_data[name].destroy()
 
     return
 
