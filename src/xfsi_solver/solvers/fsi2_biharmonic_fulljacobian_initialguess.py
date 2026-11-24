@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 """fsi2_biharmonic_fulljacobian with a prediction of the displacements as the initial guess of each
-Newton solve, set in an initial-guess hook of the SNES with a mesh motion solve, as fsi2_simplified does."""
+Newton solve, set in an initial-guess hook of the SNES with a mesh motion solve, as fsi2_simplified does.
+
+The Jacobian can also be copied, after each assembly, into a MatNest over the groups of dofs
+(v, p, u_s, z_int, u_int, z_f, u_f), for experiments on condensation (see ``jacobian_callback``)."""
 
 import sys
 import warnings
@@ -21,6 +24,7 @@ from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.matrix_nest import NestView
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, theta_value
 from xfsi_solver.tools.qoi import (
@@ -44,6 +48,9 @@ PHYSICAL_MARKERS = {
     "channel_side": 24,  # no-slip for fluid
     "solid_obstacle_interface": 25,  # homogeneous Dirichlet BC for solid
 }
+
+# The groups of dofs of the nest Jacobian, in the order of its blocks.
+NEST_GROUPS = ("v", "p", "u_s", "z_int", "u_int", "z_f", "u_f")
 
 
 def solve(
@@ -73,6 +80,7 @@ def solve(
     checkpoint_every=None,
     vtx_save_every=None,
     plot_matrices=False,
+    plot_matrices_dir=None,
     restart=False,
     initial_state_dir=None,
     max_quadrature_degree=None,
@@ -82,6 +90,7 @@ def solve(
     snes_atol=1.0e-7,
     snes_rtol=1.0e-12,
     snes_max_it=20,
+    jacobian_callback=None,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -116,11 +125,12 @@ def solve(
     ``relative_theta_shift = 1.0``.
 
     With ``plot_matrices=True``, a spy plot and a block norm plot of the Jacobian at the
-    final state are saved in
+    final state are saved in ``plot_matrices_dir``, by default
     ``output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian_initialguess/``, with the dofs ordered by
     the storage blocks [u, v, p, z], by the blocks of eq. (1) of
-    docs/restricted-iterative-solver.md, and in the order (v, p, u_S, z, u_I) in which the
-    fieldsplit of fsi2_biharmonic_mixed.py solves them. The matrix is gathered on rank 0.
+    docs/restricted-iterative-solver.md, in the order (v, p, u_S, z, u_I) in which the
+    fieldsplit of fsi2_biharmonic_mixed.py solves them, and by the groups of the nest Jacobian
+    (see ``jacobian_callback``). The matrix is gathered on rank 0.
 
     If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
@@ -146,6 +156,22 @@ def solve(
 
     ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES, for
     example a tight relative tolerance to follow the rate of the iterations over more of them.
+
+    With ``jacobian_callback``, the Jacobian is copied after each assembly, in every Newton
+    iteration, into a MatNest over the groups of dofs in ``NEST_GROUPS``, (v, p, u_s, z_int, u_int,
+    z_f, u_f): v and p all their dofs, u_s the dofs of u on the solid cells off the interface, u_int
+    and z_int the dofs of u and z on the solid-fluid interface, and u_f and z_f the other dofs of u
+    and z, those of the fluid cells off the interface, the outer fluid boundary included. Dofs with
+    Dirichlet conditions stay in their group, with their identity rows. The Jacobian is the one
+    Newton solves with: the interface rows of u hold the solid kinematic relation. Then
+    ``jacobian_callback(snes, nest_view)`` is called, with the SNES, whose ``getSolution()`` is the
+    iterate and ``getFunction()[0]`` its residual, and the
+    ``xfsi_solver.tools.matrix_nest.NestView``: its ``nest`` is the MatNest, ``block(row, col)``
+    gives a block by the names of its groups, and ``index_sets`` the rows of each group in the
+    global numbering of the Jacobian, which the nest keeps, so that it acts on the vectors of the
+    SNES. The nest is only a copy: Newton still solves with the assembled Jacobian, by MUMPS LU, so
+    changes to it do not change the run. The callback must be collective, as the blocks are
+    distributed.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -511,6 +537,40 @@ def solve(
     off_own, _ = problem.b.getAttr("_blocks")
     rows_d = (J_mat.getOwnershipRange()[0] + off_own[0] + dofs_d[:num_owned_d]).astype(PETSc.IntType)
 
+    # The groups of NEST_GROUPS, as the global rows of the owned dofs in each. locate_dofs_topological
+    # also finds the owned dofs on entities that only other ranks have marked, so each group has all
+    # its owned rows.
+    fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
+    fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+        facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+    )
+    first_row = J_mat.getOwnershipRange()[0]
+
+    def owned_rows(block: int, space: dolfinx.fem.FunctionSpace, dofs: np.ndarray | None = None) -> np.ndarray:
+        """The global rows of the owned dofs among the (blocked) local ``dofs`` of ``space``, all
+        of them if None, which is block ``block`` of [u, v, p, z]."""
+        num_owned = space.dofmap.index_map.size_local
+        dofs = np.arange(num_owned) if dofs is None else dofs[dofs < num_owned]
+        bs = space.dofmap.index_map_bs
+        return (first_row + off_own[block] + bs * dofs[:, None] + np.arange(bs)).ravel().astype(PETSc.IntType)
+
+    solid_dofs_u = dolfinx.fem.locate_dofs_topological(U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"]))
+    interface_dofs_z = dolfinx.fem.locate_dofs_topological(
+        Z, fluid_mesh.topology.dim - 1, fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"])
+    )
+    all_dofs_u = np.arange(U.dofmap.index_map.size_local)
+    all_dofs_z = np.arange(Z.dofmap.index_map.size_local)
+    groups = {
+        "v": owned_rows(1, V),
+        "p": owned_rows(2, P),
+        "u_s": owned_rows(0, U, np.setdiff1d(solid_dofs_u, dofs_interface)),
+        "z_int": owned_rows(3, Z, interface_dofs_z),
+        "u_int": owned_rows(0, U, dofs_interface),
+        "z_f": owned_rows(3, Z, np.setdiff1d(all_dofs_z, interface_dofs_z)),
+        "u_f": owned_rows(0, U, np.setdiff1d(all_dofs_u, np.union1d(solid_dofs_u, dofs_interface))),
+    }
+    nest_view = None  # made at the first assembly of the Jacobian, since blocks are only taken of an assembled matrix
+
     def zero_block(test_space, trial_space, **kwargs):
         return dolfinx.fem.form(
             ufl.ZeroBaseForm((ufl.TestFunction(test_space), ufl.TrialFunction(trial_space))),
@@ -548,6 +608,13 @@ def solve(
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
+        if jacobian_callback is not None:
+            nonlocal nest_view
+            if nest_view is None:
+                nest_view = NestView(J, [groups[name] for name in NEST_GROUPS], list(NEST_GROUPS))
+            else:
+                nest_view.update()
+            jacobian_callback(snes, nest_view)
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
@@ -606,7 +673,6 @@ def solve(
         U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U"])
         u_f = dolfinx.fem.Function(U_f, name="u_f")
         u_f_mesh_bc_func = dolfinx.fem.Function(U_f)
-        fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
         u_f_mesh_bc_dofs = dolfinx.fem.locate_dofs_topological(
             U_f, fluid_mesh.topology.dim - 1, dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
         )
@@ -628,9 +694,7 @@ def solve(
         fluid_interface_dofs = dolfinx.fem.locate_dofs_topological(
             U_f,
             fluid_mesh.topology.dim - 1,
-            dolfinx.mesh.transfer_meshtags_to_submesh(facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map).find(
-                PHYSICAL_MARKERS["solid_fluid_interface"]
-            ),
+            fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
             remote=True,
         )
         interface_u_f = unrolled(fluid_interface_dofs)
@@ -714,27 +778,30 @@ def solve(
         fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
         post_jacobian(problem.x, J_mat)
 
-        # Global rows of the owned dofs of each block in [u, v, p, z], and the owned u dofs
-        # supported on solid cells, which are u_S in eq. (1); the others are u_I.
-        first_row = J_mat.getOwnershipRange()[0]
-        rows_u, rows_v, rows_p, rows_z = (first_row + np.arange(off_own[k], off_own[k + 1]) for k in range(4))
-        bs = U.dofmap.index_map_bs
-        solid_dofs = dolfinx.fem.locate_dofs_topological(
-            U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["solid"])
-        )
-        u_solid = np.isin(np.arange(len(rows_u)), (bs * solid_dofs[:, None] + np.arange(bs)).ravel())
+        # The owned u dofs supported on solid cells, the interface included, are u_S in eq. (1); the
+        # others are u_I.
+        rows_u = np.union1d(np.union1d(groups["u_s"], groups["u_int"]), groups["u_f"])
+        rows_z = np.union1d(groups["z_int"], groups["z_f"])
+        rows_u_solid = np.union1d(groups["u_s"], groups["u_int"])
+        rows_v, rows_p, rows_u_fluid = groups["v"], groups["p"], groups["u_f"]
         partitions = {
             "storage": ([rows_u, rows_v, rows_p, rows_z], ["$u$", "$v$", "$p$", "$z$"]),
             "eq1": (
-                [rows_u[u_solid], rows_v, rows_p, rows_z, rows_u[~u_solid]],
+                [rows_u_solid, rows_v, rows_p, rows_z, rows_u_fluid],
                 ["$u_S$", "$v$", "$p$", "$z$", "$u_I$"],
             ),
             "split": (
-                [rows_v, rows_p, rows_u[u_solid], rows_z, rows_u[~u_solid]],
+                [rows_v, rows_p, rows_u_solid, rows_z, rows_u_fluid],
                 ["$v$", "$p$", "$u_S$", "$z$", "$u_I$"],
             ),
+            "nest": (
+                [groups[name] for name in NEST_GROUPS],
+                ["$v$", "$p$", "$u_s$", "$z_{int}$", "$u_{int}$", "$z_f$", "$u_f$"],
+            ),
         }
-        plot_matrix_blocks(J_mat, partitions, "Full Jacobian", matrix_blocks_dir(__file__), t)
+        if plot_matrices_dir is None:
+            plot_matrices_dir = matrix_blocks_dir(__file__)
+        plot_matrix_blocks(J_mat, partitions, "Full Jacobian", plot_matrices_dir, t)
 
     # Destroying the MUMPS factorization is collective, so destroy it on all ranks here instead of leaving it
     # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
@@ -742,6 +809,8 @@ def solve(
     solver.destroy()
     if predict_displacements:
         mesh_motion.destroy()
+    if nest_view is not None:
+        nest_view.destroy()
 
     return
 

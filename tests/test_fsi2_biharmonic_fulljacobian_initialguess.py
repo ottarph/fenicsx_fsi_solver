@@ -4,7 +4,7 @@ from newton_log_helpers import check_solver_newton_log
 from restart_helpers import check_restart_reproduces_continuous_run, check_start_from_initial_state
 
 from xfsi_solver.solvers import fsi2_biharmonic_fulljacobian
-from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian_initialguess import solve
+from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian_initialguess import NEST_GROUPS, solve
 from xfsi_solver.tools.newton_log import read_newton_log
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
@@ -13,8 +13,7 @@ MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 ELEMENTS = {"u": ("Lagrange", 2, (2,)), "v": ("Lagrange", 2, (2,)), "p": ("Lagrange", 1), "z": ("Lagrange", 2, (2,))}
 
 
-@pytest.mark.parametrize("mesh_motion_scaling", [None, 1.0e-9], ids=["unscaled", "scaled"])
-def test_fsi2_biharmonic_fulljacobian_initialguess_solve(output_dirs, mesh_motion_scaling):
+def test_fsi2_biharmonic_fulljacobian_initialguess_solve(output_dirs):
     dt_val = 0.0025
     name = "fsi2_biharmonic_fulljacobian_initialguess"
     solve(
@@ -25,7 +24,6 @@ def test_fsi2_biharmonic_fulljacobian_initialguess_solve(output_dirs, mesh_motio
         output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
         qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
         vtx_save_every=4,
-        mesh_motion_scaling=mesh_motion_scaling,
         newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
     )
 
@@ -36,6 +34,56 @@ def test_fsi2_biharmonic_fulljacobian_initialguess_solve(output_dirs, mesh_motio
         ["u", "v", "p", "z"],
         always_assembled=True,
     )
+
+
+def test_fsi2_biharmonic_fulljacobian_initialguess_nest_jacobian(output_dirs):
+    calls = []
+
+    def callback(snes, nest_view):
+        J = snes.getJacobian()[0]
+        assert nest_view.names == list(NEST_GROUPS)
+        # The nest keeps the numbering of the Jacobian, so it acts on the same vectors.
+        x = J.createVecRight()
+        x.setRandom()
+        expected, result = J.createVecLeft(), J.createVecLeft()
+        J.mult(x, expected)
+        nest_view.nest.mult(x, result)
+        assert np.allclose(result.array, expected.array, rtol=1e-12, atol=1e-12 * expected.norm())
+
+        def norm(row, col):
+            block = nest_view.block(row, col)
+            return 0.0 if block is None else block.norm()
+
+        # The interface rows of u hold only the solid kinematic relation, in u_s, u_int and v.
+        for col in ["p", "z_int", "z_f", "u_f"]:
+            assert norm("u_int", col) == 0.0
+        assert norm("u_int", "u_int") > 0.0 and norm("u_int", "v") > 0.0
+        # The mesh motion rows do not reach the solid off the interface, nor v and p.
+        for row in ["z_int", "z_f", "u_f"]:
+            assert nest_view.block(row, "u_s") is None
+            assert nest_view.block(row, "v") is None and nest_view.block(row, "p") is None
+        sizes = {name: index_set.getSize() for name, index_set in zip(NEST_GROUPS, nest_view.index_sets, strict=True)}
+        assert sum(sizes.values()) == J.getSize()[0]
+        # u and z have the same element, on both sides of the same interface.
+        assert sizes["u_int"] == sizes["z_int"] > 0
+        calls.append(sizes)
+
+    dt_val = 0.0025
+    name = "nest"
+    solve(
+        mesh_path=MESH,
+        T=2 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / f"{name}.bp"),
+        output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+        newton_log_path=str(output_dirs["qoi"] / f"{name}_newton.txt"),
+        jacobian_callback=callback,
+    )
+    # Once per Newton iteration, with the same groups.
+    log = read_newton_log(output_dirs["qoi"] / f"{name}_newton.txt")
+    assert len(calls) == np.sum(log["it"] > 0)
+    assert all(sizes == calls[0] for sizes in calls)
 
 
 def run(solve_function, output_dirs, name, num_steps, **kwargs):
