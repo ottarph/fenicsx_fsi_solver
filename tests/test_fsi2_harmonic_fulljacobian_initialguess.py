@@ -12,6 +12,7 @@ from xfsi_solver.tools.condensation import (
     condense_u_s,
     count_nonzeros,
     drop_ale_derivatives,
+    use_schur_solve,
 )
 from xfsi_solver.tools.newton_log import read_newton_log
 
@@ -153,6 +154,28 @@ def test_fsi2_harmonic_fulljacobian_initialguess_J_0_converges_to_the_same_state
     # From rest the fluid ALE derivatives are small but not zero, so J_0 needs at least as many iterations.
     assert len(dropped) == np.sum(log_J_0["it"] > 0) and max(dropped) > 0.0
     assert len(log_J_0) >= len(log)
+
+
+@pytest.mark.parametrize("inverse", ["exact", "diagonal"])
+def test_fsi2_harmonic_fulljacobian_initialguess_schur_mesh_solve(output_dirs, inverse):
+    # Condensing u_int and u_f out in the linear solver changes the Newton steps only with the diagonal
+    # inverse, so both converge to the state that LU of the whole Jacobian gives. The diagonal one
+    # converges linearly and stops just below snes_atol, where LU has overshot, so with the default
+    # snes_atol = 1e-7 the QoIs from rest differ by up to 4e-3 of the largest value of a column. With
+    # 1e-11 both are converged far enough to agree to 1e-5.
+    pc_types = []
+
+    def schur(snes, nest_view):
+        use_schur_solve(snes, nest_view, ["u_int", "u_f"], inverse)
+        pc_types.append(snes.getKSP().getPC().getType())
+
+    qoi, _ = run(output_dirs, "lu", 3, condense_solid=True, snes_atol=1e-11)
+    qoi_schur, _ = run(output_dirs, "schur", 3, condense_solid=True, snes_atol=1e-11, jacobian_callback=schur)
+    assert set(pc_types) == {"fieldsplit"}
+    for column in range(1, qoi.shape[1]):
+        np.testing.assert_allclose(
+            qoi_schur[:, column], qoi[:, column], rtol=0, atol=1e-5 * np.abs(qoi[:, column]).max()
+        )
 
 
 def test_fsi2_harmonic_fulljacobian_initialguess_restart_reproduces_continuous_run(output_dirs, tmp_path):

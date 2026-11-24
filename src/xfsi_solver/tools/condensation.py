@@ -444,3 +444,88 @@ def diagonal_schur_mesh_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> 
     _report(snes, nest_view, "diagonal-Schur condensed u_int, u_f", list(MESH_GROUPS), S, S_blocks, elapsed)
     for obj in (S, *made):
         obj.destroy()
+
+
+def use_schur_solve(snes: PETSc.SNES, nest_view: NestView, eliminated: list[str], inverse: str) -> None:
+    """Make the linear solver of ``snes`` a block factorization of the Jacobian that condenses the
+    groups ``eliminated`` out, as ``condense_schur`` does, instead of LU of the whole Jacobian. The
+    Jacobian itself is not changed. Does nothing once the solver is set up so.
+
+    It is PETSc's PCFIELDSPLIT of type Schur with the full factorization, with the eliminated dofs E
+    as the first split, A = J[E, E], solved by MUMPS LU, and the other dofs as the second, whose
+    Schur complement S = D - C A^-1 B is applied as a matrix-free operator. The preconditioner of S is
+    S_diag = D - C diag(A)^-1 B (``selfp``), factorized by MUMPS LU, which is the matrix of
+    ``condense_schur(..., "diagonal")``. With ``inverse="exact"``, S is solved by GMRES preconditioned
+    by S_diag to a relative tolerance of 1e-12, so the Newton step is that of the whole Jacobian, up
+    to that tolerance. With ``inverse="diagonal"``, S is replaced by S_diag, applied once, so the step
+    is that of the Jacobian with S_diag as its Schur complement, and Newton converges only linearly.
+    The Schur solves print their iterations and why they stopped. Collective.
+    """
+    if inverse not in ("exact", "diagonal"):
+        raise ValueError(f"inverse must be 'exact' or 'diagonal', not {inverse!r}")
+    pc = snes.getKSP().getPC()
+    if pc.getType() == PETSc.PC.Type.FIELDSPLIT:
+        return
+    comm = nest_view.mat.getComm()
+    index_sets = dict(zip(nest_view.names, nest_view.index_sets, strict=True))
+    rest = [name for name in nest_view.names if name not in eliminated]
+
+    def union(names: list[str]) -> PETSc.IS:
+        rows = np.sort(np.concatenate([index_sets[name].getIndices() for name in names]))
+        return PETSc.IS().createGeneral(rows.astype(PETSc.IntType), comm=comm)
+
+    prefix = pc.getOptionsPrefix() or ""
+    options = PETSc.Options()
+    for split in ("eliminated", "rest"):
+        options[f"{prefix}fieldsplit_{split}_pc_type"] = "lu"
+        options[f"{prefix}fieldsplit_{split}_pc_factor_mat_solver_type"] = "mumps"
+        options[f"{prefix}fieldsplit_{split}_mat_mumps_icntl_14"] = 80
+    options[f"{prefix}fieldsplit_eliminated_ksp_type"] = "preonly"
+    if inverse == "diagonal":
+        options[f"{prefix}fieldsplit_rest_ksp_type"] = "preonly"
+    else:
+        options[f"{prefix}fieldsplit_rest_ksp_type"] = "gmres"
+        options[f"{prefix}fieldsplit_rest_ksp_gmres_restart"] = 200
+        options[f"{prefix}fieldsplit_rest_ksp_rtol"] = 1e-12
+        options[f"{prefix}fieldsplit_rest_ksp_atol"] = 0.0
+        options[f"{prefix}fieldsplit_rest_ksp_max_it"] = 200
+        options[f"{prefix}fieldsplit_rest_ksp_converged_reason"] = None
+    pc.setType(PETSc.PC.Type.FIELDSPLIT)
+    pc.setFieldSplitIS(("eliminated", union(eliminated)), ("rest", union(rest)))
+    pc.setFieldSplitType(PETSc.PC.CompositeType.SCHUR)
+    pc.setFieldSplitSchurFactType(PETSc.PC.FieldSplitSchurFactType.FULL)
+    pc.setFieldSplitSchurPreType(PETSc.PC.FieldSplitSchurPreType.SELFP)
+
+
+def schur_mesh_solve_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Solve the Newton systems by condensing u_int and u_f out exactly, with ``use_schur_solve``:
+    the Newton steps are those of the whole Jacobian."""
+    use_schur_solve(snes, nest_view, list(MESH_GROUPS), "exact")
+
+
+def diagonal_schur_mesh_solve_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Solve the Newton systems by condensing u_int and u_f out with the inverse of the diagonal of
+    J[E, E] in the Schur complement, with ``use_schur_solve``: an approximate Newton method."""
+    use_schur_solve(snes, nest_view, list(MESH_GROUPS), "diagonal")
+
+
+def plot_schur_complement(
+    nest_view: NestView, eliminated: list[str], inverse: str, output_dir, t: float, label: str
+) -> None:
+    """Save a spy plot and a block norm plot of the Schur complement that ``condense_schur`` gives,
+    by the groups left, as ``spy_<label>.png`` and ``block_norms_<label>.png`` in ``output_dir``, with
+    ``xfsi_solver.tools.matrix_blocks.plot_matrix_blocks``. Collective; the matrix is gathered on
+    rank 0, so only for small problems."""
+    from xfsi_solver.tools.matrix_blocks import plot_matrix_blocks
+
+    S, _, made = condense_schur(nest_view, eliminated, inverse)
+    rest = [name for name in nest_view.names if name not in eliminated]
+    matrix = S.convert("aij", out=PETSc.Mat())
+    rows = [index_set.getIndices() for index_set in S.getNestISs()[0]]
+    names = ["$" + name.replace("_int", "_{int}") + "$" for name in rest]
+    eliminated_names = ", ".join(eliminated)
+    plot_matrix_blocks(
+        matrix, {label: (rows, names)}, f"Schur complement of {eliminated_names} ({inverse})", output_dir, t
+    )
+    for obj in (matrix, S, *made):
+        obj.destroy()
