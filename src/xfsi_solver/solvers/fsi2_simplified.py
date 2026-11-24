@@ -96,6 +96,7 @@ def solve(
     predict_displacements=True,
     skip_dirichlet_lifting=True,
     snes_converged_reason_on=True,
+    interface_ale=False,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -207,6 +208,15 @@ def solve(
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
     test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
+
+    With ``interface_ale=True``, the Jacobian also holds the derivatives of the momentum and mass
+    equations with respect to the interface displacement, through the interface dofs of u_f, which the
+    kinematic relation sets to u_f_old + dt * (theta * v + (1 - theta) * v_old): theta * dt * C K, with
+    C the derivative of the residual with respect to u_f and K the map from v to the interface dofs of
+    u_f, at the same nodes. The derivatives through the interior of the fluid mesh, which the mesh
+    motion moves with the interface, are still left out. The added entries couple dofs that share a
+    cell, so they fit the pattern of the Jacobian. Only with a fieldsplit ``solver_options``, whose
+    Jacobian is a nest matrix. Each assembly of the Jacobian then also assembles C.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -645,6 +655,8 @@ def solve(
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        if interface_ale:
+            add_interface_ale(J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
@@ -713,6 +725,54 @@ def solve(
     v_dof_of_u_f[U_f.dofmap.list[fluid_cells]] = V.dofmap.list[fluid_parent_cells]
     interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
+
+    if interface_ale:
+        if not use_fieldsplit:
+            raise ValueError("interface_ale needs a fieldsplit solver_options, whose Jacobian is a nest matrix")
+        # C, the derivatives of the momentum and mass residuals with respect to u_f.
+        du_f = ufl.TrialFunction(U_f)
+        ale_forms = [
+            dolfinx.fem.form(ufl.derivative(residual_blocks[i], u_f, du_f), entity_maps=entity_maps) for i in (0, 1)
+        ]
+        ale_matrices = [dolfinx.fem.petsc.create_matrix(form) for form in ale_forms]
+        # The v dofs with Dirichlet conditions, whose rows and columns of the Jacobian stay as they are.
+        v_free = dolfinx.fem.Function(V)
+        v_free.x.array[:] = 1.0
+        for bc in bcs:
+            v_free.x.array[bc.dof_indices()[0]] = 0.0
+        # K: each owned interface dof of u_f to the dof of v at the same node, times theta * dt, without the
+        # Dirichlet dofs of v.
+        num_owned_u_f = U_f.dofmap.index_map.size_local * block_size_u
+        owned = (interface_u_f < num_owned_u_f) & (v_free.x.array[interface_v] == 1.0)
+        rows, cols = interface_u_f[owned], interface_v[owned]
+        order = np.argsort(rows)
+        rows, cols = rows[order], cols[order]
+        cols_global = (
+            block_size_u * V.dofmap.index_map.local_to_global((cols // block_size_u).astype(np.int32))
+            + cols % block_size_u
+        ).astype(PETSc.IntType)
+        indptr = np.zeros(num_owned_u_f + 1, dtype=PETSc.IntType)
+        np.add.at(indptr, rows + 1, 1)
+        indptr = np.cumsum(indptr).astype(PETSc.IntType)
+        K_interface = PETSc.Mat().createAIJ(
+            ((num_owned_u_f, None), (num_v, None)),
+            csr=(indptr, cols_global, np.full(len(cols_global), theta_val * dt_val)),
+            comm=comm,
+        )
+
+        def add_interface_ale(J: PETSc.Mat) -> None:
+            """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, with the rows of
+            the Dirichlet dofs of v left out."""
+            for i, (form, C) in enumerate(zip(ale_forms, ale_matrices, strict=True)):
+                C.zeroEntries()
+                dolfinx.fem.petsc.assemble_matrix(C, form)
+                C.assemble()
+                CK = C.matMult(K_interface)
+                if i == 0:
+                    CK.diagonalScale(L=v_free.x.petsc_vec)
+                J.getNestSubMatrix(i, 0).axpy(1.0, CK, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
+                CK.destroy()
+            J.assemble()
 
     def update_displacements() -> None:
         """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
