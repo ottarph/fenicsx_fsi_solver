@@ -39,6 +39,9 @@ from ufl_units import Quantity, expand, factorize, get_dimension
 
 from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian_initialguess import residual_forms
 
+# The marker of the outflow boundary, as in the solver.
+OUTFLOW = 23
+
 # Physical constants of FSI2, in SI units, as the solver's defaults.
 PHYSICAL = {
     "rho_f": (1.0e3, un.kg / un.m**3),
@@ -69,9 +72,22 @@ REFERENCE = {
 # which are derived from them.
 PI_QUANTITIES = ("L", "U_ref", "V_ref", "rho_f", "nu_f", "rho_s", "mu_s", "lambda_s", "dt")
 
+# FSI2 with the outlet traction -p_outlet n of the solver's ``outlet_pressure``, at the mean pressure
+# of the aneurysm runs, which shifts the fluid pressure by p_outlet.
+PHYSICAL_OUTLET = {**PHYSICAL, "p_outlet": (11.2e3, un.Pa)}
+REFERENCE_OUTLET = {**REFERENCE, "P_ref": (11.2e3 + 1.0e3, un.Pa)}
+
+# The cases of ``main``: the physical constants, the reference scales and the quantities of the Pi
+# analysis of each.
+CASES = {
+    "FSI2": (PHYSICAL, REFERENCE, PI_QUANTITIES),
+    "FSI2, outlet pressure 11.2 kPa": (PHYSICAL_OUTLET, REFERENCE_OUTLET, (*PI_QUANTITIES, "p_outlet")),
+}
+
 
 def build_equations(physical=PHYSICAL, reference=REFERENCE):
-    """The equations of the residual on plain UFL meshes, with the mapping and the quantities.
+    """The equations of the residual on plain UFL meshes, with the mapping and the quantities. With
+    "p_outlet" in ``physical``, the momentum equation has the outlet traction.
 
     Returns ``(equations, mapping, quantities)``: ``equations`` a dict from the name of each
     equation to its UFL form, ``mapping`` the substitution of the unit-carrying scales for the
@@ -92,8 +108,15 @@ def build_equations(physical=PHYSICAL, reference=REFERENCE):
     du, dv, dp, dz = ufl.TestFunctions(W)
     constants = {name: ufl.Constant(mesh) for name in physical}
     dx = ufl.Measure("dx", domain=mesh)
+    ds_outflow = ufl.Measure("ds", domain=mesh)(OUTFLOW) if "p_outlet" in physical else None
     residual, kinematic = residual_forms(
-        (u, v, p, z), (u_old, v_old), (du, dv, dp, dz), constants, dx_fluid=dx(2), dx_solid=dx(1)
+        (u, v, p, z),
+        (u_old, v_old),
+        (du, dv, dp, dz),
+        constants,
+        dx_fluid=dx(2),
+        dx_solid=dx(1),
+        ds_outflow=ds_outflow,
     )
     blocks = ufl.extract_blocks(residual)
     equations = {
@@ -165,20 +188,23 @@ def pi_groups(physical=PHYSICAL, reference=REFERENCE, names=PI_QUANTITIES):
     return result
 
 
-SUBDOMAINS = {1: "solid", 2: "fluid"}
+SUBDOMAINS = {1: "solid", 2: "fluid", OUTFLOW: "outflow"}
 
 
 def main():
-    results = analyze()
-    for name, (dimension, terms) in results.items():
-        largest = max(size for _, _, size in terms)
-        print(f"\n{name}: consistent, dimension {dimension}, largest term {largest:.3g}")
-        for subdomain, factor, size in terms:
-            print(f"  {SUBDOMAINS.get(subdomain, subdomain):5s}  {size:10.3g}  {size / largest:9.2e}  {factor}")
+    for case, (physical, reference, names) in CASES.items():
+        print(f"\n===== {case} =====")
+        results = analyze(physical, reference)
+        for name, (dimension, terms) in results.items():
+            largest = max(size for _, _, size in terms)
+            print(f"\n{name}: consistent, dimension {dimension}, largest term {largest:.3g}")
+            for subdomain, factor, size in terms:
+                where = SUBDOMAINS.get(subdomain, subdomain)
+                print(f"  {where:7s}  {size:10.3g}  {size / largest:9.2e}  {factor}")
 
-    print("\nDimensionless groups:")
-    for expression, value in pi_groups():
-        print(f"  {value:10.3g}  {expression}")
+        print("\nDimensionless groups:")
+        for expression, value in pi_groups(physical, reference, names):
+            print(f"  {value:10.3g}  {expression}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import ufl  # noqa: E402
 from ufl_units import InconsistentDimensions, get_dimension  # noqa: E402
 
 from xfsi_solver.scripts.dimensional_analysis_fsi2_biharmonic import (  # noqa: E402
+    CASES,
+    OUTFLOW,
     analyze,
     build_equations,
     pi_groups,
@@ -51,3 +53,14 @@ def test_pi_groups():
     values = sorted(value for _, value in pi_groups())
     # U_ref / L, 1 / Re, rho_s / rho_f, mu_s / (rho_f V^2), lambda_s / (rho_f V^2), V dt / L.
     assert values == pytest.approx(sorted([0.8, 0.01, 10.0, 500.0, 2000.0, 0.025]))
+
+
+def test_outlet_pressure_case():
+    physical, reference, names = CASES["FSI2, outlet pressure 11.2 kPa"]
+    dimension, terms = analyze(physical, reference)["v (momentum)"]
+    assert dimension == "mass^1 time^-2"
+    # The outlet traction is one more term of the momentum equation, on the outflow boundary.
+    assert len(terms) == 11
+    assert [size for subdomain, _, size in terms if subdomain == OUTFLOW] == pytest.approx([0.1 * 11.2e3])
+    values = [value for _, value in pi_groups(physical, reference, names)]
+    assert any(value == pytest.approx(11.2) for value in values)
