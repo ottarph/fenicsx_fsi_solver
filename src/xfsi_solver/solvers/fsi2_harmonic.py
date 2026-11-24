@@ -65,6 +65,7 @@ def solve(
     vtx_save_every=None,
     restart=False,
     initial_state_dir=None,
+    move_reference_domain=False,
     max_quadrature_degree=None,
     snes_converged_reason_on=True,
 ):
@@ -87,6 +88,16 @@ def solve(
     the time of that checkpoint, the run writes its own QoI file, VTX output and checkpoints,
     and it only reads from ``initial_state_dir``. A restart of such a run continues it from
     the same ``t0``.
+
+    With ``move_reference_domain=True``, the mesh motion acts on the displacement since the start
+    state instead of on the whole displacement: the mesh equation is that of u - u_ref, with u_ref
+    the u of the start state, fixed through the run. The start state then satisfies the mesh
+    equation, so a run from the state of a solver with another mesh motion, such as fsi2_simplified,
+    starts without a jump in the mesh velocity (u - u_old) / dt in the fluid. The other equations
+    still use the whole displacement u. u_ref is stored in the checkpoints and read back on a
+    restart, which must also pass ``move_reference_domain=True``; a restart without it would measure
+    the mesh motion against the original domain again. On a run from rest, u_ref = 0, and the run is
+    the same as without it.
 
     The function spaces are given by ``elements``, a dict from the name of each function space in the
     solver (U, V, P) to the element tuple passed to ``dolfinx.fem.functionspace``; the default is
@@ -205,6 +216,9 @@ def solve(
 
     u, v, p = dolfinx.fem.Function(U, name="u"), dolfinx.fem.Function(V, name="v"), dolfinx.fem.Function(P, name="p")
     u_old, v_old = dolfinx.fem.Function(U), dolfinx.fem.Function(V)
+    # The u of the start state, which the mesh motion is measured against with
+    # move_reference_domain=True, set once the start state is read
+    u_ref = dolfinx.fem.Function(U, name="u_ref")
 
     du, dv, dp = ufl.TestFunctions(W)
 
@@ -303,8 +317,10 @@ def solve(
         alpha_u0 = dolfinx.fem.Constant(mesh, 1e-9)
         alpha_u = alpha_u0
 
-        residual = ufl.inner(alpha_u * ufl.grad(u), ufl.grad(du)) * dx_fluid
-        residual -= ufl.inner(alpha_u * ufl.grad(u) * normal, du) * ds_interface_fluid
+        # Of the displacement since the start state with move_reference_domain
+        u_mesh = u - u_ref if move_reference_domain else u
+        residual = ufl.inner(alpha_u * ufl.grad(u_mesh), ufl.grad(du)) * dx_fluid
+        residual -= ufl.inner(alpha_u * ufl.grad(u_mesh) * normal, du) * ds_interface_fluid
 
         residual += ufl.div(J * ufl.inv(F) * v) * dp * dx_fluid
 
@@ -373,10 +389,14 @@ def solve(
         },
     )
 
+    # The checkpoints of a run with move_reference_domain also hold u_ref, which a restart reads
+    # back; a run from another run's state takes u_ref from u instead.
+    checkpointed = [u, v, p, u_ref] if move_reference_domain else [u, v, p]
+
     # (t, step) are the time and number of completed steps of the current state
     t, step, checkpointer, (output_path, output_path_p) = load_start_state(
         mesh,
-        [u, v, p],
+        checkpointed if restart else [u, v, p],
         t0=t0,
         T=T,
         dt=dt_val,
@@ -389,6 +409,8 @@ def solve(
         output_paths=[output_path, output_path_p],
         write_vtx=vtx_save_every is not None,
     )
+    if move_reference_domain and not restart:
+        u_ref.x.array[:] = u.x.array
 
     writers = []
     if vtx_save_every is not None:
@@ -452,7 +474,7 @@ def solve(
         write_output(t, step)
 
         if checkpoint_every is not None and step % checkpoint_every == 0:
-            checkpointer.write([u, v, p], t, step, dt_val, t0)
+            checkpointer.write(checkpointed, t, step, dt_val, t0)
 
     end = timer()
     if comm.rank == 0:
@@ -473,6 +495,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--restart", action="store_true", help="continue from the latest checkpoint")
     parser.add_argument("--initial-state-dir", help="start from the latest checkpoint of another run in this directory")
+    parser.add_argument(
+        "--move-reference-domain",
+        action="store_true",
+        help="measure the mesh motion against the start state; pass it again on a restart",
+    )
     args = parser.parse_args()
 
     mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
@@ -500,6 +527,7 @@ def main():
         max_quadrature_degree=max_quadrature_degree,
         restart=restart,
         initial_state_dir=initial_state_dir,
+        move_reference_domain=args.move_reference_domain,
     )
 
     if comm.rank == 0:
