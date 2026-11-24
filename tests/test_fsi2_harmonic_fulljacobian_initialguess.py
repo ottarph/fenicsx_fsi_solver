@@ -53,13 +53,12 @@ def test_fsi2_harmonic_fulljacobian_initialguess_without_options_is_fulljacobian
 
 
 def test_fsi2_harmonic_fulljacobian_initialguess_options_converge_to_the_same_state(output_dirs):
-    # The predictions only change the initial guess, and the condensation only the solid
+    # The prediction only changes the initial guess, and the condensation only the solid
     # displacement in the solid stress, which the linear kinematic relation equals from the first
     # Newton step on. So all runs agree within the Newton tolerance.
     qoi, log = run(output_dirs, "previous", 4, predict_displacements=False)
     variants = [
         ("predicted", {}),
-        ("solid_only", {"extend_prediction_to_fluid": False}),
         ("condensed", {"condense_solid": True}),
     ]
     for name, kwargs in variants:

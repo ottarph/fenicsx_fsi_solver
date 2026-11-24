@@ -86,7 +86,6 @@ def solve(
     max_quadrature_degree=None,
     newton_log_path=None,
     predict_displacements=True,
-    extend_prediction_to_fluid=True,
     condense_solid=False,
     snes_converged_reason_on=True,
     snes_atol=1.0e-7,
@@ -170,17 +169,16 @@ def solve(
 
     With ``predict_displacements=True``, the default, the initial guess of each Newton solve is not
     the state of the previous step but u = u_old + dt * v_old at the dofs of the solid cells, the
-    interface included, with v and p of the previous step. With v = v_old, this solves the solid
-    kinematic relation, which the rows of u on the solid hold, exactly. With
-    ``extend_prediction_to_fluid=True``, the default, u on the fluid is u_old plus the harmonic
-    extension of the increment dt * v_old on the interface, zero on the outer boundary, so the
-    predicted u also satisfies the mesh equation, when u_old does. With False, u on the fluid stays
-    u_old, and the fluid cells at the interface are deformed by the jump of the predicted increment
-    there: from the fsi2_simplified snapshots at t = 10 and 16 on mesh_sec, Newton then diverges in
-    the first step, as it does not without the prediction. The extension is solved on the fluid
-    submesh, by MUMPS LU, factorized once for the whole run. The prediction is set in an
-    initial-guess hook of the SNES, which runs once per Newton solve, before the residual of the
-    initial guess is evaluated. It needs the same element for u and v.
+    interface included, and on the fluid u_old plus the harmonic extension of the increment
+    dt * v_old on the interface, zero on the outer boundary, with v and p of the previous step. With
+    v = v_old, this solves the solid kinematic relation, which the rows of u on the solid hold, and,
+    when u_old does, the mesh equation, exactly. The fluid has to move with the solid: predicting the
+    solid alone, with u_old on the fluid, deforms the fluid cells at the interface by the jump of the
+    increment there, and from the fsi2_simplified snapshots at t = 10 and 16 on mesh_sec Newton then
+    diverges in the first step. The extension is solved on the fluid submesh, by MUMPS LU, factorized
+    once for the whole run. The prediction is set in an initial-guess hook of the SNES, which runs
+    once per Newton solve, before the residual of the initial guess is evaluated. It needs the same
+    element for u and v.
 
     With ``condense_solid=True``, the solid stress of the momentum equation at the new time is taken
     at u_old + dt * (theta * v + (1 - theta) * v_old) instead of at u, as the solid kinematic
@@ -706,53 +704,51 @@ def solve(
 
         solid_u = unrolled(solid_dofs_u)
 
-        if extend_prediction_to_fluid:
-            # The increment w of the fluid displacement lives on the fluid submesh, with the element of
-            # u, zero on the outer fluid boundary and dt * v_old on the interface. The dofmaps of the
-            # fluid cells give the dof of u at each local dof of w. Every dof of w on a rank lies in one
-            # of its fluid cells, so this covers the owned and ghost dofs.
-            U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U"])
-            w = dolfinx.fem.Function(U_f, name="w")
-            w_bc_func = dolfinx.fem.Function(U_f)
-            fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
-            w_bc = dolfinx.fem.dirichletbc(
-                w_bc_func,
-                dolfinx.fem.locate_dofs_topological(
-                    U_f, fluid_mesh.topology.dim - 1, dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
-                ),
+        # The increment w of the fluid displacement lives on the fluid submesh, with the element of
+        # u, zero on the outer fluid boundary and dt * v_old on the interface. The dofmaps of the
+        # fluid cells give the dof of u at each local dof of w. Every dof of w on a rank lies in one
+        # of its fluid cells, so this covers the owned and ghost dofs.
+        U_f = dolfinx.fem.functionspace(fluid_mesh, elements["U"])
+        w = dolfinx.fem.Function(U_f, name="w")
+        w_bc_func = dolfinx.fem.Function(U_f)
+        fluid_mesh.topology.create_connectivity(fluid_mesh.topology.dim - 1, fluid_mesh.topology.dim)
+        w_bc = dolfinx.fem.dirichletbc(
+            w_bc_func,
+            dolfinx.fem.locate_dofs_topological(
+                U_f, fluid_mesh.topology.dim - 1, dolfinx.mesh.exterior_facet_indices(fluid_mesh.topology)
+            ),
+        )
+        extension = harmonic_mesh_motion(
+            w,
+            [w_bc],
+            petsc_options_prefix="fsi2_harmonic_fulljacobian_initialguess_extension_",
+            max_quadrature_degree=max_quadrature_degree,
+        )
+        fluid_cells = all_cells(fluid_mesh)
+        fluid_parent_cells = fluid_cell_map.sub_topology_to_topology(fluid_cells, inverse=False)
+        u_dof_of_w = np.empty(U_f.dofmap.index_map.size_local + U_f.dofmap.index_map.num_ghosts, dtype=np.int32)
+        u_dof_of_w[U_f.dofmap.list[fluid_cells]] = U.dofmap.list[fluid_parent_cells]
+        u_of_w = unrolled(u_dof_of_w)  # the dof of u at each unrolled dof of w
+        fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
+            facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
+        )
+        interface_w = unrolled(
+            dolfinx.fem.locate_dofs_topological(
+                U_f,
+                fluid_mesh.topology.dim - 1,
+                fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
+                remote=True,
             )
-            extension = harmonic_mesh_motion(
-                w,
-                [w_bc],
-                petsc_options_prefix="fsi2_harmonic_fulljacobian_initialguess_extension_",
-                max_quadrature_degree=max_quadrature_degree,
-            )
-            fluid_cells = all_cells(fluid_mesh)
-            fluid_parent_cells = fluid_cell_map.sub_topology_to_topology(fluid_cells, inverse=False)
-            u_dof_of_w = np.empty(U_f.dofmap.index_map.size_local + U_f.dofmap.index_map.num_ghosts, dtype=np.int32)
-            u_dof_of_w[U_f.dofmap.list[fluid_cells]] = U.dofmap.list[fluid_parent_cells]
-            u_of_w = unrolled(u_dof_of_w)  # the dof of u at each unrolled dof of w
-            fluid_facet_tags = dolfinx.mesh.transfer_meshtags_to_submesh(
-                facet_tags, fluid_mesh, fluid_vertex_map, fluid_cell_map
-            )
-            interface_w = unrolled(
-                dolfinx.fem.locate_dofs_topological(
-                    U_f,
-                    fluid_mesh.topology.dim - 1,
-                    fluid_facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]),
-                    remote=True,
-                )
-            )
+        )
 
         def predict(snes: PETSc.SNES, x: PETSc.Vec) -> None:
             """Set the initial guess x of the Newton solve to the predicted displacement, with v and p
             of the previous step. Called by SNES before the residual of the initial guess, when the
             functions still hold the previous step."""
-            if extend_prediction_to_fluid:
-                # From v_old, not u: a rank may hold an interface dof only through a fluid cell.
-                w_bc_func.x.array[interface_w] = dt_val * v_old.x.array[u_of_w[interface_w]]
-                extension.solve()
-                u.x.array[u_of_w] = u_old.x.array[u_of_w] + w.x.array
+            # From v_old, not u: a rank may hold an interface dof only through a fluid cell.
+            w_bc_func.x.array[interface_w] = dt_val * v_old.x.array[u_of_w[interface_w]]
+            extension.solve()
+            u.x.array[u_of_w] = u_old.x.array[u_of_w] + w.x.array
             u.x.array[solid_u] = u_old.x.array[solid_u] + dt_val * v_old.x.array[solid_u]
             u.x.scatter_forward()
             dolfinx.fem.petsc.assign([u, v, p], x)
@@ -806,9 +802,7 @@ def solve(
         print(f"\nSolver setup:\n  Quadrature degree: {quadrature_description(max_quadrature_degree)}")
         initial_guess = "the previous step"
         if predict_displacements:
-            initial_guess = "u = u_old + dt * v_old on the solid" + (
-                ", and its harmonic extension on the fluid" if extend_prediction_to_fluid else ""
-            )
+            initial_guess = "u = u_old + dt * v_old on the solid, and its harmonic extension on the fluid"
         print(f"  Initial guess: {initial_guess}")
         print(f"  Solid displacement condensed out of the solid stress: {condense_solid}")
 
@@ -841,7 +835,7 @@ def solve(
     # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
     # plotted the matrices.
     solver.destroy()
-    if predict_displacements and extend_prediction_to_fluid:
+    if predict_displacements:
         extension.destroy()
     if nest_view is not None:
         nest_view.destroy()
