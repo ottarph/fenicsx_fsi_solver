@@ -24,7 +24,9 @@ from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
 from xfsi_solver.tools.condensation import (  # noqa: F401
     J_0_jacobian_hook,
+    diagonal_schur_mesh_jacobian_hook,
     exact_solid_condensation_hook,
+    schur_mesh_jacobian_hook,
     schur_u_s_jacobian_hook,
 )
 from xfsi_solver.tools.convergence import check_converged
@@ -904,6 +906,8 @@ def main():
         jacobian_callback=J_0_jacobian_hook,
         # jacobian_callback=schur_u_s_jacobian_hook,
         # jacobian_callback=exact_solid_condensation_hook,
+        # jacobian_callback=schur_mesh_jacobian_hook,  # about 65 s and 70M nonzeros per Jacobian on mesh_sec
+        # jacobian_callback=diagonal_schur_mesh_jacobian_hook,
         plot_matrices=True,
     )
 

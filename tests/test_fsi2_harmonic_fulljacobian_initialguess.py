@@ -7,8 +7,10 @@ from xfsi_solver.solvers import fsi2_harmonic_fulljacobian
 from xfsi_solver.solvers.fsi2_harmonic_fulljacobian_initialguess import NEST_GROUPS, solve
 from xfsi_solver.tools.condensation import (
     check_condensation,
+    condense_schur,
     condense_solid_exact,
     condense_u_s,
+    count_nonzeros,
     drop_ale_derivatives,
 )
 from xfsi_solver.tools.newton_log import read_newton_log
@@ -107,14 +109,27 @@ def test_fsi2_harmonic_fulljacobian_initialguess_nest_condensations(output_dirs,
         exact_error = check_condensation(nest_view, ["u_s", "u_int"], S)
         for obj in (S, *made):
             obj.destroy()
-        errors.append((schur_error, exact_error, relation_error))
+        # The mesh displacement, u_int and u_f, exactly and with the diagonal of J[E, E] as its
+        # inverse, which is only an approximation, but keeps S sparse.
+        mesh_errors, mesh_nonzeros = {}, {}
+        for inverse in ("exact", "diagonal"):
+            S, S_blocks, made = condense_schur(nest_view, ["u_int", "u_f"], inverse)
+            mesh_errors[inverse] = check_condensation(nest_view, ["u_int", "u_f"], S)
+            mesh_nonzeros[inverse] = count_nonzeros(S_blocks)
+            for obj in (S, *made):
+                obj.destroy()
+        errors.append((schur_error, exact_error, relation_error, mesh_errors, mesh_nonzeros))
 
     run(output_dirs, "nest", 2, condense_solid=condense_solid, jacobian_callback=callback)
     assert len(errors) > 0
-    for schur_error, exact_error, relation_error in errors:
+    for schur_error, exact_error, relation_error, mesh_errors, mesh_nonzeros in errors:
         assert schur_error < 1e-12
         assert exact_error < 1e-9
         assert relation_error < 1e-14
+        assert mesh_errors["exact"] < 1e-12
+        # On this mesh 7e-3 (with condense_solid) and 4e-2 (without) from the exact Schur complement.
+        assert 1e-4 < mesh_errors["diagonal"] < 0.1
+        assert mesh_nonzeros["diagonal"] <= mesh_nonzeros["exact"]
 
 
 def test_fsi2_harmonic_fulljacobian_initialguess_J_0_converges_to_the_same_state(output_dirs):

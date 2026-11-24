@@ -30,7 +30,7 @@ def human_count(n: float) -> str:
     return f"{n:.0f}"
 
 
-def _nonzeros(blocks) -> float:
+def count_nonzeros(blocks) -> float:
     """The number of entries in the patterns of ``blocks``, a list of lists of Mats or None. Collective."""
     return sum(
         block.getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)["nz_used"] for row in blocks for block in row if block is not None
@@ -81,54 +81,100 @@ def _schur_blocks(nest_view: NestView, rest: list[str], updates: dict) -> tuple[
     return blocks, made
 
 
-def condense_u_s(nest_view: NestView, drop_tol: float = 1e-14) -> tuple[PETSc.Mat, list, list[PETSc.Mat]]:
-    """Condense u_s out of the nest Jacobian: the Schur complement S = D - C A^-1 B of
-    A = J[u_s, u_s], with B = J[u_s, rest], C = J[rest, u_s] and D = J[rest, rest], as a MatNest over
-    the other groups of the nest, in their order and with the contiguous layout of a nest.
+def condense_schur(
+    nest_view: NestView, eliminated: list[str], inverse: str = "exact", drop_tol: float = 1e-14
+) -> tuple[PETSc.Mat, list, list[PETSc.Mat]]:
+    """Condense the groups ``eliminated`` out of the nest Jacobian J: the Schur complement
+    S = D - C A^-1 B of A = J[E, E], with E the dofs of the eliminated groups, B = J[E, rest],
+    C = J[rest, E] and D = J[rest, rest], as a MatNest over the other groups of the nest, in their
+    order and with the contiguous layout of a nest.
 
-    Only the blocks of S that u_s couples to change: (v, v), (v, u_int), (u_int, v) and (u_int,
-    u_int). The others are the blocks of the nest Jacobian themselves. A^-1 B is computed by MUMPS LU
-    of A on the columns of B that have entries, as a dense matrix, whose entries below ``drop_tol``
-    times its largest are dropped before it is multiplied by C, so that round-off does not fill S.
+    With ``inverse="exact"``, A^-1 B is computed by MUMPS LU of A on the columns of B that have
+    entries, as a dense matrix, whose entries below ``drop_tol`` times its largest are dropped before
+    it is multiplied by C, so that round-off does not fill S. With ``inverse="diagonal"``, A^-1 is
+    replaced by the inverse of the diagonal of A, as PETSc's MAT_SCHUR_COMPLEMENT_AINV_DIAG does, so
+    A^-1 B is B with its rows scaled, and S keeps a sparse pattern: C B. Only the blocks of S in which
+    C and B have nonzero values change; the others are the blocks of the nest Jacobian themselves.
     Collective. Returns S, its blocks (None where zero) and the matrices made here, which the caller
     destroys with S.
     """
-    rest = [name for name in nest_view.names if name != "u_s"]
-    comm = nest_view.mat.getComm()
-    ksp = _lu(nest_view.block("u_s", "u_s"))
+    if inverse not in ("exact", "diagonal"):
+        raise ValueError(f"inverse must be 'exact' or 'diagonal', not {inverse!r}")
+    J = nest_view.mat
+    comm = J.getComm()
+    index_sets = dict(zip(nest_view.names, nest_view.index_sets, strict=True))
+    rest = [name for name in nest_view.names if name not in eliminated]
+    E = PETSc.IS().createGeneral(
+        np.sort(np.concatenate([index_sets[name].getIndices() for name in eliminated])).astype(PETSc.IntType),
+        comm=comm,
+    )
+    A = J.createSubMatrix(E, E)
+    # The blocks of C and B with nonzero values; their patterns can hold zeros, such as the fluid
+    # entries of the restricted interface rows.
+    C = {}
+    for a in rest:
+        block = J.createSubMatrix(index_sets[a], E)
+        if block.norm() == 0.0:
+            block.destroy()
+        else:
+            C[a] = block
+    if inverse == "exact":
+        ksp = _lu(A)
+    else:
+        inverse_diagonal = A.getDiagonal()
+        inverse_diagonal.reciprocal()
+
     updates = {}  # (a, b): C_a A^-1 B_b, for the blocks of S that change
     for b in rest:
-        B = nest_view.block("u_s", b)
-        if B is None:
+        B = J.createSubMatrix(E, index_sets[b])
+        if B.norm() == 0.0 or not C:
+            B.destroy()
             continue
-        rows = PETSc.IS().createStride(B.getLocalSize()[0], B.getOwnershipRange()[0], 1, comm=comm)
-        cols = _nonzero_columns(B)
-        B_dense = B.createSubMatrix(rows, cols).convert("dense")  # converted in place
-        X = B_dense.duplicate()
-        ksp.matSolve(B_dense, X)
-        values = X.getDenseArray(readonly=False)
-        largest = comm.tompi4py().allreduce(np.abs(values).max(initial=0.0), op=MPI.MAX)
-        values[np.abs(values) < drop_tol * largest] = 0.0
-        X.assemble()
-        X_sparse = X.convert("aij", out=PETSc.Mat())
-        # Q puts the columns of X back at the columns of B they were taken from.
-        num_cols = cols.getLocalSize()
-        Q = PETSc.Mat().createAIJ(
-            ((num_cols, None), (B.getLocalSize()[1], None)),
-            csr=(np.arange(num_cols + 1, dtype=PETSc.IntType), cols.getIndices(), np.ones(num_cols)),
-            comm=comm,
-        )
-        for a in rest:
-            C = nest_view.block(a, "u_s")
-            if C is not None:
-                CX = C.matMult(X_sparse)
+        if inverse == "exact":
+            rows = PETSc.IS().createStride(B.getLocalSize()[0], B.getOwnershipRange()[0], 1, comm=comm)
+            cols = _nonzero_columns(B)
+            B_dense = B.createSubMatrix(rows, cols).convert("dense")  # converted in place
+            X = B_dense.duplicate()
+            ksp.matSolve(B_dense, X)
+            values = X.getDenseArray(readonly=False)
+            largest = comm.tompi4py().allreduce(np.abs(values).max(initial=0.0), op=MPI.MAX)
+            values[np.abs(values) < drop_tol * largest] = 0.0
+            X.assemble()
+            X_sparse = X.convert("aij", out=PETSc.Mat())
+            # Q puts the columns of X back at the columns of B they were taken from.
+            num_cols = cols.getLocalSize()
+            Q = PETSc.Mat().createAIJ(
+                ((num_cols, None), (B.getLocalSize()[1], None)),
+                csr=(np.arange(num_cols + 1, dtype=PETSc.IntType), cols.getIndices(), np.ones(num_cols)),
+                comm=comm,
+            )
+            for a, C_a in C.items():
+                CX = C_a.matMult(X_sparse)
                 updates[(a, b)] = CX.matMult(Q)
                 CX.destroy()
-        for obj in (rows, cols, B_dense, X, X_sparse, Q):
-            obj.destroy()
-    ksp.destroy()
+            for obj in (rows, cols, B_dense, X, X_sparse, Q):
+                obj.destroy()
+        else:
+            X = B.duplicate(copy=True)
+            X.diagonalScale(L=inverse_diagonal)
+            for a, C_a in C.items():
+                updates[(a, b)] = C_a.matMult(X)
+            X.destroy()
+        B.destroy()
+    for obj in (E, A, *C.values()):
+        obj.destroy()
+    if inverse == "exact":
+        ksp.destroy()
+    else:
+        inverse_diagonal.destroy()
     blocks, made = _schur_blocks(nest_view, rest, updates)
     return PETSc.Mat().createNest(blocks, comm=comm), blocks, made
+
+
+def condense_u_s(nest_view: NestView, drop_tol: float = 1e-14) -> tuple[PETSc.Mat, list, list[PETSc.Mat]]:
+    """Condense u_s out of the nest Jacobian exactly, by ``condense_schur``. Only the blocks of S
+    that u_s couples to change: (v, v), (v, u_int), (u_int, v) and (u_int, u_int)."""
+    return condense_schur(nest_view, ["u_s"], "exact", drop_tol)
 
 
 SOLID_GROUPS = ("u_s", "u_int")
@@ -266,9 +312,9 @@ def _report(snes, nest_view, label, eliminated, S, S_blocks, elapsed, extra=""):
     """Check the condensation S and print the error and the nonzeros of J, D and S on rank 0."""
     error = check_condensation(nest_view, eliminated, S)
     rest = [name for name in nest_view.names if name not in eliminated]
-    nnz_J = _nonzeros(nest_view.blocks)
-    nnz_D = _nonzeros([[nest_view.block(a, b) for b in rest] for a in rest])
-    nnz_S = _nonzeros(S_blocks)
+    nnz_J = count_nonzeros(nest_view.blocks)
+    nnz_D = count_nonzeros([[nest_view.block(a, b) for b in rest] for a in rest])
+    nnz_S = count_nonzeros(S_blocks)
     num_dofs = sum(nest_view.index_sets[nest_view.names.index(name)].getSize() for name in eliminated)
     if nest_view.mat.getComm().getRank() == 0:
         print(
@@ -361,3 +407,40 @@ def J_0_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
             f" |dropped| / |J| = {relative:.1e}",
             flush=True,
         )
+
+
+MESH_GROUPS = ("u_int", "u_f")
+
+
+def schur_mesh_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Condense u_int and u_f, the displacement columns of the (v, p) rows apart from u_s, out of the
+    Jacobian exactly, with ``condense_schur``, check it with ``check_condensation`` and print the
+    error and the nonzeros, on rank 0.
+
+    With ``condense_solid=True`` in fsi2_harmonic_fulljacobian_initialguess, J[E, E] is block lower
+    triangular: the kinematic rows of u_int, and the mesh rows of u_f, which depend on u_int. So
+    A^-1 B extends the interface motion that v gives into the fluid by the mesh equation, and S holds
+    the derivative of the fluid rows through that extension: the exact Jacobian of (v, p, u_s) with
+    the mesh as a function of them, dense between the fluid rows and the interface columns.
+    """
+    start = timer()
+    S, S_blocks, made = condense_schur(nest_view, list(MESH_GROUPS), "exact")
+    elapsed = timer() - start
+    _report(snes, nest_view, "Schur condensed u_int, u_f", list(MESH_GROUPS), S, S_blocks, elapsed)
+    for obj in (S, *made):
+        obj.destroy()
+
+
+def diagonal_schur_mesh_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """``schur_mesh_jacobian_hook`` with the inverse of the diagonal of J[E, E] in place of its
+    inverse. The error that ``check_condensation`` prints is then how far S is from the exact Schur
+    complement. With the diagonal, B is only scaled: the u_f rows of B are zero, since the mesh
+    equation does not reach (v, p, u_s), so only the interface rows remain, and S holds the direct
+    derivative of the fluid rows with respect to the interface displacement, not that through the
+    extension into the fluid."""
+    start = timer()
+    S, S_blocks, made = condense_schur(nest_view, list(MESH_GROUPS), "diagonal")
+    elapsed = timer() - start
+    _report(snes, nest_view, "diagonal-Schur condensed u_int, u_f", list(MESH_GROUPS), S, S_blocks, elapsed)
+    for obj in (S, *made):
+        obj.destroy()
