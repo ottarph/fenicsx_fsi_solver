@@ -606,9 +606,12 @@ def test_fsi2_simplified_stops_on_an_inverted_fluid_mesh(output_dirs, monkeypatc
     assert rows[-1, 7] == -0.25 and rows[1, 7] > 0.99
 
 
-def test_fsi2_simplified_interface_ale_converges_to_the_same_state(output_dirs):
-    # The interface ALE terms only change the Jacobian, so the converged QoIs are those without them.
+@pytest.mark.parametrize("solver", ["iterative", "direct"])
+def test_fsi2_simplified_interface_ale_converges_to_the_same_state(output_dirs, solver):
+    # The interface ALE terms only change the Jacobian, so the converged QoIs are those without them, with
+    # the fieldsplit and with MUMPS LU, which then factorizes a nest Jacobian.
     dt_val = 0.0025
+    base = {"iterative": DEFAULT_ITERATIVE_SOLVER_OPTIONS, "direct": DEFAULT_DIRECT_SOLVER_OPTIONS}[solver]
     converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
 
     def run(name, interface_ale):
@@ -619,22 +622,9 @@ def test_fsi2_simplified_interface_ale_converges_to_the_same_state(output_dirs):
             dt_val=dt_val,
             output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
             qoi_path=str(qoi_path),
-            solver_options=DEFAULT_ITERATIVE_SOLVER_OPTIONS | converged,
+            solver_options=base | converged,
             interface_ale=interface_ale,
         )
         return np.loadtxt(qoi_path, ndmin=2)
 
     np.testing.assert_allclose(run("ale", True), run("J_0", False), rtol=1e-6, atol=0)
-
-
-def test_fsi2_simplified_interface_ale_needs_a_fieldsplit(output_dirs):
-    with pytest.raises(ValueError, match="interface_ale needs a fieldsplit"):
-        solve(
-            mesh_path=MESH,
-            T=0.0025,
-            dt_val=0.0025,
-            output_path=str(output_dirs["pv"] / "direct.vtkhdf"),
-            qoi_path=str(output_dirs["qoi"] / "direct.txt"),
-            solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS,
-            interface_ale=True,
-        )

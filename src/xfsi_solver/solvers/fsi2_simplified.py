@@ -216,9 +216,11 @@ def solve(
     C the derivative of the residual with respect to u_f and K the map from v to the interface dofs of
     u_f, at the same nodes. The derivatives through the interior of the fluid mesh, which the mesh
     motion moves with the interface, are still left out. The added entries couple dofs that share a
-    cell, so they fit the pattern of the Jacobian. Only with a fieldsplit ``solver_options``, whose
-    Jacobian is a nest matrix. Each assembly of the Jacobian then also assembles C, on the fluid cells
-    with a dof on the interface only, since only these fill the columns of C that K takes.
+    cell, so they fit the pattern of the Jacobian. They are added to the blocks of a nest Jacobian, so
+    with ``interface_ale`` the Jacobian is a nest matrix with any ``solver_options``; a direct solver
+    such as MUMPS LU factorizes the nest as it is. Each assembly of the Jacobian then also assembles C,
+    on the fluid cells with a dof on the interface only, since only these fill the columns of C that K
+    takes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -533,7 +535,8 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     # The fieldsplit preconditioner takes the (v, v) and (p, p) blocks of the Jacobian, which a nest
-    # matrix holds as separate matrices. MUMPS also works on nest matrices.
+    # matrix holds as separate matrices, and interface_ale adds to its (v, v) and (p, v) blocks. MUMPS
+    # also works on nest matrices.
     use_fieldsplit = solver_options.get("pc_type") == "fieldsplit"
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocks,
@@ -542,7 +545,7 @@ def solve(
         bcs=bcs,
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
-        kind="nest" if use_fieldsplit else None,
+        kind="nest" if use_fieldsplit or interface_ale else None,
         petsc_options=solver_options
         if snes_converged_reason_on
         else {key: value for key, value in solver_options.items() if key != "snes_converged_reason"},
@@ -729,8 +732,6 @@ def solve(
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
 
     if interface_ale:
-        if not use_fieldsplit:
-            raise ValueError("interface_ale needs a fieldsplit solver_options, whose Jacobian is a nest matrix")
         # C, the derivatives of the momentum and mass residuals with respect to u_f, assembled only on the
         # fluid cells with a dof on the interface: K takes only the interface columns of C, and only these
         # cells fill them. The cells are found from the dofs of v on the interface, owned or ghost, which
