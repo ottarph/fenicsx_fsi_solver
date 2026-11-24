@@ -815,6 +815,162 @@ def solve(
     return
 
 
+# Define callbacks here
+
+
+def _nonzero_columns(mat: PETSc.Mat) -> PETSc.IS:
+    """The columns of ``mat`` with an entry in its pattern on any rank, each in the IS on the rank
+    that owns it in the column layout of ``mat``. Collective."""
+    comm = mat.getComm()
+    _, cols, _ = mat.getValuesCSR()
+    cols = np.unique(np.concatenate(comm.tompi4py().allgather(np.unique(cols))))
+    start, end = mat.getOwnershipRangeColumn()
+    return PETSc.IS().createGeneral(cols[(cols >= start) & (cols < end)].astype(PETSc.IntType), comm=comm)
+
+
+def condense_u_s(
+    nest_view: NestView, drop_tol: float = 1e-14
+) -> tuple[PETSc.Mat, list[list[PETSc.Mat | None]], PETSc.KSP, list[PETSc.Mat]]:
+    """Condense u_s out of the nest Jacobian: the Schur complement S = D - C A^-1 B of
+    A = J[u_s, u_s], with B = J[u_s, rest], C = J[rest, u_s] and D = J[rest, rest], as a MatNest over
+    the other groups of ``NEST_GROUPS``, in their order and with the contiguous layout of a nest.
+
+    Only the blocks of S that u_s couples to change: (v, v), (v, u_int), (u_int, v) and (u_int,
+    u_int). The others are the blocks of the nest Jacobian themselves. A^-1 B is computed by MUMPS LU
+    of A on the columns of B that have entries, as a dense matrix, whose entries below ``drop_tol``
+    times its largest are dropped before it is multiplied by C, so that round-off does not fill S.
+    Collective. Returns S, its blocks (None where zero), the KSP that solves with A, and the
+    matrices made here, which the caller destroys with S and the KSP.
+    """
+    rest = [name for name in NEST_GROUPS if name != "u_s"]
+    A = nest_view.block("u_s", "u_s")
+    comm = A.getComm()
+    ksp = PETSc.KSP().create(comm)
+    ksp.setOperators(A)
+    ksp.setType("preonly")
+    ksp.getPC().setType("lu")
+    ksp.getPC().setFactorSolverType("mumps")
+    ksp.setUp()
+
+    made = []
+    updates = {}  # (a, b): C_a A^-1 B_b, for the blocks of S that change
+    for b in rest:
+        B = nest_view.block("u_s", b)
+        if B is None:
+            continue
+        rows = PETSc.IS().createStride(B.getLocalSize()[0], B.getOwnershipRange()[0], 1, comm=comm)
+        cols = _nonzero_columns(B)
+        B_dense = B.createSubMatrix(rows, cols).convert("dense")  # converted in place
+        X = B_dense.duplicate()
+        ksp.matSolve(B_dense, X)
+        values = X.getDenseArray(readonly=False)
+        largest = comm.tompi4py().allreduce(np.abs(values).max(initial=0.0), op=MPI.MAX)
+        values[np.abs(values) < drop_tol * largest] = 0.0
+        X.assemble()
+        X_sparse = X.convert("aij", out=PETSc.Mat())
+        # Q puts the columns of X back at the columns of B they were taken from.
+        num_cols = cols.getLocalSize()
+        Q = PETSc.Mat().createAIJ(
+            ((num_cols, None), (B.getLocalSize()[1], None)),
+            csr=(np.arange(num_cols + 1, dtype=PETSc.IntType), cols.getIndices(), np.ones(num_cols)),
+            comm=comm,
+        )
+        for a in rest:
+            C = nest_view.block(a, "u_s")
+            if C is not None:
+                CX = C.matMult(X_sparse)
+                updates[(a, b)] = CX.matMult(Q)
+                CX.destroy()
+        for obj in (rows, cols, B_dense, X, X_sparse, Q):
+            obj.destroy()
+
+    blocks = []
+    for a in rest:
+        row = []
+        for b in rest:
+            block = nest_view.block(a, b)
+            if (a, b) in updates:
+                update = updates.pop((a, b))
+                if block is None:
+                    update.scale(-1.0)
+                    block = update
+                else:
+                    block = block.duplicate(copy=True)
+                    block.axpy(-1.0, update, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
+                    update.destroy()
+                made.append(block)
+            row.append(block)
+        blocks.append(row)
+    return PETSc.Mat().createNest(blocks, comm=comm), blocks, ksp, made
+
+
+def J_0_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Condense u_s out of the Jacobian with ``condense_u_s`` and check it: for a random x and
+    y = J x, the condensed matrix must map the other groups of x to y_rest - C A^-1 y_s. Prints the
+    relative error of that and the nonzeros before and after, on rank 0."""
+    start = timer()
+    S, S_blocks, ksp, made = condense_u_s(nest_view)
+    elapsed = timer() - start
+
+    J = nest_view.mat
+    x, y = J.createVecs()
+    x.setRandom()
+    J.mult(x, y)
+    index_sets = dict(zip(nest_view.names, nest_view.index_sets, strict=True))
+    y_s = y.getSubVector(index_sets["u_s"])
+    w = y_s.duplicate()
+    ksp.solve(y_s, w)  # A^-1 y_s
+    y.restoreSubVector(index_sets["u_s"], y_s)
+
+    # The vectors of S are plain vectors, with the groups at the index sets of the nest.
+    x_rest, Sx = S.createVecs()
+    expected = Sx.duplicate()
+    rest = [name for name in NEST_GROUPS if name != "u_s"]
+    S_index_sets, _ = S.getNestISs()
+    for name, S_is in zip(rest, S_index_sets, strict=True):
+        for full, condensed in ((x, x_rest), (y, expected)):
+            sub, condensed_sub = full.getSubVector(index_sets[name]), condensed.getSubVector(S_is)
+            sub.copy(condensed_sub)
+            if condensed is expected and nest_view.block(name, "u_s") is not None:
+                Cw = condensed_sub.duplicate()
+                nest_view.block(name, "u_s").mult(w, Cw)
+                condensed_sub.axpy(-1.0, Cw)
+                Cw.destroy()
+            full.restoreSubVector(index_sets[name], sub)
+            condensed.restoreSubVector(S_is, condensed_sub)
+    S.mult(x_rest, Sx)
+    Sx.axpy(-1.0, expected)
+    error = Sx.norm() / expected.norm()
+
+    def nonzeros(rows, cols):
+        return sum(
+            nest_view.block(a, b).getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)["nz_used"]
+            for a in rows
+            for b in cols
+            if nest_view.block(a, b) is not None
+        )
+
+    nnz_J = nonzeros(NEST_GROUPS, NEST_GROUPS)
+    nnz_rest = nonzeros(rest, rest)
+    nnz_S = sum(
+        block.getInfo(PETSc.Mat.InfoType.GLOBAL_SUM)["nz_used"]
+        for row in S_blocks
+        for block in row
+        if block is not None
+    )
+    if J.getComm().getRank() == 0:
+        print(
+            f"  condensed u_s ({index_sets['u_s'].getSize()} dofs) in {elapsed:.3f} s"
+            f" at it {snes.getIterationNumber()}:"
+            f" |S x - (y_rest - C A^-1 y_s)| / |...| = {error:.2e}, nonzeros {nnz_J:.0f} in J,"
+            f" {nnz_rest:.0f} in D, {nnz_S:.0f} in S",
+            flush=True,
+        )
+
+    for obj in (S, ksp, x, y, w, x_rest, Sx, expected, *made):
+        obj.destroy()
+
+
 def main():
     import argparse
 
@@ -825,7 +981,7 @@ def main():
 
     mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
     dt_val = 0.0025
-    T = 16.0 + 20 * dt_val
+    T = 16.0 + 2 * dt_val
     output_path = "output/pv/fsi2_biharmonic_fulljacobian_initialguess.bp"
     output_path_p = "output/pv/fsi2_biharmonic_fulljacobian_initialguess_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_fulljacobian_initialguess.txt"
@@ -851,6 +1007,9 @@ def main():
         max_quadrature_degree=max_quadrature_degree,
         restart=restart,
         initial_state_dir=initial_state_dir,
+        plot_matrices=False,
+        plot_matrices_dir="./",
+        jacobian_callback=J_0_jacobian_hook,
     )
 
     if MPI.COMM_WORLD.rank == 0:
