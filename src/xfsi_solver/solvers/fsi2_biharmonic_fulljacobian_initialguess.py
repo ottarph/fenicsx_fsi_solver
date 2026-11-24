@@ -8,6 +8,7 @@ Newton solve, set in an initial-guess hook of the SNES with a mesh motion solve,
 The Jacobian can also be copied, after each assembly, into a MatNest over the groups of dofs
 (v, p, u_s, z_int, u_int, z_f, u_f), for experiments on condensation (see ``jacobian_callback``)."""
 
+import gc
 import sys
 import warnings
 from timeit import default_timer as timer
@@ -812,7 +813,12 @@ def solve(
 
     # Destroying the MUMPS factorization is collective, so destroy it on all ranks here instead of leaving it
     # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
-    # plotted the matrices.
+    # plotted the matrices. Collect garbage first, on all ranks at once, so that no rank keeps a petsc4py
+    # wrapper of the SNES, its KSP or PC alive in a reference cycle, which a later collection would destroy
+    # on that rank alone, and reset the KSP, which destroys the factorizations of its PC, also those of a
+    # fieldsplit set up by jacobian_callback, at the same point on all ranks, whatever still refers to it.
+    gc.collect()
+    solver.getKSP().reset()
     solver.destroy()
     if predict_displacements:
         mesh_motion.destroy()
