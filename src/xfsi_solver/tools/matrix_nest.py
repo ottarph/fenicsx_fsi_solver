@@ -26,9 +26,12 @@ class NestView:
     true hangs.
     Call :meth:`update` after ``mat`` is assembled again with the same pattern, and
     :meth:`destroy` on all ranks when done.
+
+    ``data`` is anything the caller attaches for the users of the view, such as maps between the
+    dofs of the groups, kept as the dict ``data``.
     """
 
-    def __init__(self, mat: PETSc.Mat, groups: list[np.ndarray], names: list[str]):
+    def __init__(self, mat: PETSc.Mat, groups: list[np.ndarray], names: list[str], data: dict | None = None):
         if len(groups) != len(names):
             raise ValueError(f"{len(groups)} groups but {len(names)} names")
         comm = mat.getComm()
@@ -38,6 +41,7 @@ class NestView:
             raise ValueError("The groups must partition the owned rows of the matrix")
         self.mat = mat
         self.names = list(names)
+        self.data = dict(data or {})
         self.index_sets = [PETSc.IS().createGeneral(np.sort(g).astype(PETSc.IntType), comm=comm) for g in groups]
         self.blocks = []
         for isrow in self.index_sets:
