@@ -16,7 +16,7 @@ references/
 *_vsc.md
 
 .claude
-offline_docs
+.vscode
 
 *.egg-info/
 .pytest_cache/

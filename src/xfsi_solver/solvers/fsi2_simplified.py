@@ -913,7 +913,7 @@ def main():
     mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
     run_name = "fsi2_simplified"
     dt_val = 0.0025
-    T = 16.0 + 10 * dt_val
+    T = 16.0 + 200 * dt_val
     output_path = f"output/pv/{run_name}.vtkhdf"
     qoi_path = f"output/qoi/{run_name}.txt"
     newton_log_path = f"output/qoi/{run_name}_newton.txt"

@@ -75,7 +75,6 @@ def solve(
     plot_matrices=False,
     restart=False,
     initial_state_dir=None,
-    mesh_motion_scaling=None,
     max_quadrature_degree=None,
     newton_log_path=None,
     predict_displacements=True,
@@ -104,15 +103,6 @@ def solve(
     and it only reads from ``initial_state_dir``. A restart of such a run continues it from
     the same ``t0``.
 
-    With ``mesh_motion_scaling`` (e.g. ``1e-9``), the mesh-motion rows (the z block
-    and the fluid-only u rows) of the Jacobian are scaled by this factor before
-    MUMPS factorizes it. With restricted test functions these rows are decoupled
-    from the interface, so the scaling does not change the Newton step, but it
-    reduces the pivoting in MUMPS, see
-    32bd021:notes/restricted-test-functions/solver-time.md. The residual and Jacobian
-    seen by SNES stay unscaled, so the convergence tests see the unscaled
-    residual. With ``None``, the Jacobian is factorized as it is.
-
     The function spaces are given by ``elements``, a dict from the name of each space ("U", "V", "P", "Z") to
     the element passed to ``dolfinx.fem.functionspace``. The default is quadratic vector Lagrange for
     u, v, z and linear Lagrange for p.
@@ -126,7 +116,7 @@ def solve(
     ``relative_theta_shift = 1.0``.
 
     With ``plot_matrices=True``, a spy plot and a block norm plot of the Jacobian at the
-    final state, without the row scaling, are saved in
+    final state are saved in
     ``output/figures/matrix_blocks/fsi2_biharmonic_fulljacobian_initialguess/``, with the dofs ordered by
     the storage blocks [u, v, p, z], by the blocks of eq. (1) of
     docs/restricted-iterative-solver.md, and in the order (v, p, u_S, z, u_I) in which the
@@ -419,15 +409,12 @@ def solve(
     # Cap the quadrature degree before the Jacobian is derived from the residual, so that it keeps the cap.
     residual_blocked = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocked]
 
-    if mesh_motion_scaling is None:
-        pc_options = {
-            "pc_type": "lu",
-            "pc_factor_mat_solver_type": "mumps",
-            "mat_mumps_icntl_14": 80,
-            "mat_mumps_cntl_1": 1e-4,
-        }
-    else:
-        pc_options = {"pc_type": "none"}  # Replaced by the ScaledLU shell preconditioner below.
+    pc_options = {
+        "pc_type": "lu",
+        "pc_factor_mat_solver_type": "mumps",
+        "mat_mumps_icntl_14": 80,
+        "mat_mumps_cntl_1": 1e-4,
+    }
 
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocked,
@@ -452,7 +439,7 @@ def solve(
     # (t, step) are the time and number of completed steps of the current state
     t, step, checkpointer, (output_path, output_path_p) = load_start_state(
         mesh,
-        [u, v, p, z],
+        [u, v, p],
         t0=t0,
         T=T,
         dt=dt_val,
@@ -561,9 +548,6 @@ def solve(
         pre_jacobian(x, J)
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         post_jacobian(x, J)
-        if mesh_motion_scaling is not None:
-            J.copy(P, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
-            P.diagonalScale(L=d_vec)
 
     def pre_residual(x: PETSc.Vec, b: PETSc.Vec) -> None:
         pass
@@ -595,70 +579,7 @@ def solve(
         fem_residual(snes, x, b, *res_args, **res_kargs)
         post_residual(x, b)  # u is now updated and b assembled (BCs applied)
 
-    if mesh_motion_scaling is None:
-        solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
-    else:
-        # Row scaling for the mesh-motion equations, used only in the factorization.
-        n_u_own = U.dofmap.index_map.size_local * U.dofmap.index_map_bs
-
-        def unroll(dofs, bs=U.dofmap.index_map_bs):
-            return (bs * dofs[:, None] + np.arange(bs)).ravel()
-
-        u_fluid_rows = unroll(
-            dolfinx.fem.locate_dofs_topological(U, mesh.topology.dim, cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"]))
-        )
-        u_fluid_rows = np.setdiff1d(u_fluid_rows, dofs_d)  # interface rows hold the solid equation
-        for bc in (u_f_bc, u_s_bc):  # Dirichlet rows hold x - g
-            u_fluid_rows = np.setdiff1d(u_fluid_rows, bc.dof_indices()[0])
-        u_fluid_rows = u_fluid_rows[u_fluid_rows < n_u_own]  # owned rows only
-
-        d_vec = problem.b.duplicate()
-        d_vec.set(1.0)
-        d_vec.array_w[off_own[0] + u_fluid_rows] = mesh_motion_scaling
-        d_vec.array_w[off_own[3] : off_own[4]] = mesh_motion_scaling
-
-        class ScaledLU:
-            """Shell preconditioner applying (D*J)^-1 D = J^-1 with LU of D*J."""
-
-            def __init__(self, options_prefix: str):
-                self.lu = PETSc.KSP().create(comm)
-                self.lu.setOptionsPrefix(options_prefix)
-                opts = PETSc.Options(options_prefix)
-                opts["ksp_type"] = "preonly"
-                opts["pc_type"] = "lu"
-                opts["pc_factor_mat_solver_type"] = "mumps"
-                opts["mat_mumps_icntl_14"] = 80
-                self.lu.setFromOptions()
-                self.tmp = d_vec.duplicate()
-
-            def setUp(self, pc: PETSc.PC) -> None:
-                _, P = pc.getOperators()
-                self.lu.setOperators(P)
-                self.lu.setUp()
-
-            def apply(self, pc: PETSc.PC, r: PETSc.Vec, y: PETSc.Vec) -> None:
-                self.tmp.pointwiseMult(r, d_vec)
-                self.lu.solve(self.tmp, y)
-                # Report a failed factorization or solve to the outer KSP, which
-                # otherwise takes y as a valid preconditioned residual
-                if self.lu.getConvergedReason() < 0:
-                    reason = self.lu.getPC().getFailedReason()
-                    pc.setFailedReason(reason if reason != 0 else PETSc.PC.FailedReason.SUBPC_ERROR)
-
-        pc = solver.getKSP().getPC()
-        pc.setType(PETSc.PC.Type.PYTHON)
-        scaled_lu = ScaledLU(f"{solver.getOptionsPrefix()}scaled_lu_")
-        pc.setPythonContext(scaled_lu)
-
-        # Preconditioner matrix D*J, factorized by MUMPS instead of J. J is
-        # assembled once first, so that P gets J's final parallel layout and can
-        # be refilled with a same-nonzero-pattern copy in every Newton iteration.
-        dolfinx.fem.petsc.assign([u, v, p, z], problem.x)
-        fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
-        post_jacobian(problem.x, J_mat)
-        P_scaled = J_mat.duplicate(copy=True)
-
-        solver.setJacobian(wrapped_jacobian, J_mat, P_scaled)
+    solver.setJacobian(wrapped_jacobian, J_mat, P_mat)
     solver.setFunction(wrapped_residual, b_vec)
 
     if predict_displacements:
@@ -819,8 +740,6 @@ def solve(
     # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
     # plotted the matrices.
     solver.destroy()
-    if mesh_motion_scaling is not None:
-        scaled_lu.lu.destroy()
     if predict_displacements:
         mesh_motion.destroy()
 
@@ -836,20 +755,19 @@ def main():
     args = parser.parse_args()
 
     mesh_path = "data/meshes/fsi2/mesh_sec.xdmf"
-    T = 15.5
     dt_val = 0.0025
+    T = 16.0 + 20 * dt_val
     output_path = "output/pv/fsi2_biharmonic_fulljacobian_initialguess.bp"
     output_path_p = "output/pv/fsi2_biharmonic_fulljacobian_initialguess_p.bp"
     qoi_path = "output/qoi/fsi2_biharmonic_fulljacobian_initialguess.txt"
     newton_log_path = "output/qoi/fsi2_biharmonic_fulljacobian_initialguess_newton.txt"
     checkpoint_dir = "output/checkpoints/fsi2_biharmonic_fulljacobian_initialguess"
-    checkpoint_every = 100
-    vtx_save_every = 4
-    mesh_motion_scaling = None
-    # mesh_motion_scaling = 1.0e-9
+    checkpoint_every = None
+    vtx_save_every = None
     max_quadrature_degree = None  # Default None, no cap.
     restart = args.restart
     initial_state_dir = args.initial_state_dir
+    initial_state_dir = "output/snapshots/fsi2_simplified/t16.0000"
     solve(
         mesh_path=mesh_path,
         T=T,
@@ -861,7 +779,6 @@ def main():
         checkpoint_dir=checkpoint_dir,
         checkpoint_every=checkpoint_every,
         vtx_save_every=vtx_save_every,
-        mesh_motion_scaling=mesh_motion_scaling,
         max_quadrature_degree=max_quadrature_degree,
         restart=restart,
         initial_state_dir=initial_state_dir,
