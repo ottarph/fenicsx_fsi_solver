@@ -13,6 +13,8 @@ dependencies = ["numpy>=2.0", "scipy", "matplotlib", "tqdm"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.11"]
+# The dimensional analysis of xfsi_solver.scripts.dimensional_analysis_fsi2_biharmonic.
+units = ["ufl-units>=1.0", "sympy"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
