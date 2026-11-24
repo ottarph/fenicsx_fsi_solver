@@ -10,6 +10,7 @@ import dolfinx.fem.forms
 import dolfinx.fem.petsc
 import numpy as np
 import ufl
+import ufl.algorithms
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
@@ -216,7 +217,8 @@ def solve(
     u_f, at the same nodes. The derivatives through the interior of the fluid mesh, which the mesh
     motion moves with the interface, are still left out. The added entries couple dofs that share a
     cell, so they fit the pattern of the Jacobian. Only with a fieldsplit ``solver_options``, whose
-    Jacobian is a nest matrix. Each assembly of the Jacobian then also assembles C.
+    Jacobian is a nest matrix. Each assembly of the Jacobian then also assembles C, on the fluid cells
+    with a dof on the interface only, since only these fill the columns of C that K takes.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -729,10 +731,34 @@ def solve(
     if interface_ale:
         if not use_fieldsplit:
             raise ValueError("interface_ale needs a fieldsplit solver_options, whose Jacobian is a nest matrix")
-        # C, the derivatives of the momentum and mass residuals with respect to u_f.
+        # C, the derivatives of the momentum and mass residuals with respect to u_f, assembled only on the
+        # fluid cells with a dof on the interface: K takes only the interface columns of C, and only these
+        # cells fill them. The cells are found from the dofs of v on the interface, owned or ghost, which
+        # remote=True finds also where the rank holds the interface only at a vertex.
+        interface_nodes = dolfinx.fem.locate_dofs_topological(
+            V, mesh.topology.dim - 1, facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]), remote=True
+        )
+        on_interface = np.zeros(V.dofmap.index_map.size_local + V.dofmap.index_map.num_ghosts, dtype=bool)
+        on_interface[interface_nodes] = True
+        fluid_parent_cells_all = cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
+        ale_cells = np.sort(fluid_parent_cells_all[on_interface[V.dofmap.list[fluid_parent_cells_all]].any(axis=1)])
+        ale_cell_tag = 1000
+        ale_cell_tags = dolfinx.mesh.meshtags(
+            mesh, mesh.topology.dim, ale_cells.astype(np.int32), np.full(len(ale_cells), ale_cell_tag, dtype=np.int32)
+        )
+
+        def on_interface_cells(form: ufl.Form) -> ufl.Form:
+            """``form``, a derivative of the residual with respect to u_f, integrated over ale_cells only."""
+            # Expanding the derivatives drops the integrals that do not depend on u_f, those of the solid.
+            integrals = ufl.algorithms.expand_derivatives(form).integrals()
+            if any(i.integral_type() != "cell" or i.subdomain_id() != PHYSICAL_MARKERS["ALE_fluid"] for i in integrals):
+                raise ValueError("The derivatives with respect to u_f should only have fluid cell integrals")
+            return ufl.Form([i.reconstruct(subdomain_id=ale_cell_tag, subdomain_data=ale_cell_tags) for i in integrals])
+
         du_f = ufl.TrialFunction(U_f)
         ale_forms = [
-            dolfinx.fem.form(ufl.derivative(residual_blocks[i], u_f, du_f), entity_maps=entity_maps) for i in (0, 1)
+            dolfinx.fem.form(on_interface_cells(ufl.derivative(residual_blocks[i], u_f, du_f)), entity_maps=entity_maps)
+            for i in (0, 1)
         ]
         ale_matrices = [dolfinx.fem.petsc.create_matrix(form) for form in ale_forms]
         # The v dofs with Dirichlet conditions, whose rows and columns of the Jacobian stay as they are.
