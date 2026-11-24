@@ -27,6 +27,7 @@ from xfsi_solver.tools.condensation import (  # noqa: F401
     J_0_jacobian_hook,
     diagonal_schur_mesh_jacobian_hook,
     exact_solid_condensation_hook,
+    interface_ale_jacobian_hook,
     schur_mesh_jacobian_hook,
     schur_u_s_jacobian_hook,
 )
@@ -910,6 +911,7 @@ def main():
         move_reference_domain=True,
         condense_solid=condense_solid,
         jacobian_callback=J_0_jacobian_hook,
+        # jacobian_callback=interface_ale_jacobian_hook,  # J_0 with the ALE derivatives at the interface kept
         # jacobian_callback=schur_u_s_jacobian_hook,
         # jacobian_callback=exact_solid_condensation_hook,
         # jacobian_callback=schur_mesh_jacobian_hook,  # about 65 s and 70M nonzeros per Jacobian on mesh_sec

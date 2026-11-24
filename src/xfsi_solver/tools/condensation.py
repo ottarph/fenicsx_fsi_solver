@@ -360,10 +360,10 @@ FLUID_ROWS = ("v", "p")
 DISPLACEMENT_GROUPS = ("u_s", "u_int", "u_f")
 
 
-def drop_ale_derivatives(nest_view: NestView) -> float:
-    """Zero the derivatives of the momentum and mass equations with respect to the displacement, the
-    blocks (v, p) x (u_s, u_int, u_f), in the Jacobian itself, ``nest_view.mat``, which Newton solves
-    with, and copy it into the nest again.
+def drop_ale_derivatives(nest_view: NestView, columns: tuple[str, ...] = DISPLACEMENT_GROUPS) -> float:
+    """Zero the derivatives of the momentum and mass equations with respect to the displacement groups
+    ``columns``, by default all of them, the blocks (v, p) x (u_s, u_int, u_f), in the Jacobian itself,
+    ``nest_view.mat``, which Newton solves with, and copy it into the nest again.
 
     With ``condense_solid=True`` in fsi2_harmonic_fulljacobian_initialguess, the solid stress is a
     function of v, so these blocks hold only the fluid ALE derivatives: those of the geometry, J and
@@ -374,15 +374,19 @@ def drop_ale_derivatives(nest_view: NestView) -> float:
     for (v, p) and sets the displacement from v after each linear solve, with the mesh motion of
     the solver. Without ``condense_solid``, the solid stress derivative is dropped too.
 
+    With ``columns=("u_f",)``, only the derivatives with respect to the interior fluid mesh are
+    dropped, and those with respect to the interface displacement are kept (see
+    ``interface_ale_jacobian_hook``).
+
     The entries are zeroed as J - D_r J D_c, with D_r and D_c the diagonal masks of the rows of v, p
-    and of the columns of u, so the pattern of J is kept. Collective. Returns the Frobenius norm of
+    and of the columns of ``columns``, so the pattern of J is kept. Collective. Returns the Frobenius norm of
     what was dropped relative to that of J.
     """
     J = nest_view.mat
     index_sets = dict(zip(nest_view.names, nest_view.index_sets, strict=True))
     start = J.getOwnershipRange()[0]
     row_mask, col_mask = J.createVecs()
-    for mask, names in ((row_mask, FLUID_ROWS), (col_mask, DISPLACEMENT_GROUPS)):
+    for mask, names in ((row_mask, FLUID_ROWS), (col_mask, columns)):
         mask.set(0.0)
         for name in names:
             mask.array[index_sets[name].getIndices() - start] = 1.0
@@ -404,6 +408,29 @@ def J_0_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
     if nest_view.mat.getComm().getRank() == 0:
         print(
             f"  J_0 at it {snes.getIterationNumber()}: dropped (v, p) x (u_s, u_int, u_f),"
+            f" |dropped| / |J| = {relative:.1e}",
+            flush=True,
+        )
+
+
+def interface_ale_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Drop the derivatives of the momentum and mass equations with respect to the interior fluid
+    mesh, (v, p) x u_f, and keep those with respect to the interface displacement, (v, p) x u_int,
+    with ``drop_ale_derivatives``, and print what was dropped, on rank 0.
+
+    With ``condense_solid=True`` in fsi2_harmonic_fulljacobian_initialguess, LU of this Jacobian
+    gives the Newton step of the condensation of (u_s, u_int, u_f) in which u_s and u_int are
+    eliminated exactly, by the kinematic relation, du = theta dt dv + M^-1 r on the solid, and the
+    extension of the interface motion into the fluid, -K_ff^-1 K_fi, is dropped from the Schur
+    complement: S = D - C_int K, with K the dof injection from v times -theta dt, as
+    ``condense_solid_exact`` forms it. So the fluid rows keep their ALE derivatives in the cells at the
+    interface, and lose those through the interior mesh the interface drags along. The mesh rows are
+    still solved exactly in each step, as with J_0.
+    """
+    relative = drop_ale_derivatives(nest_view, ("u_f",))
+    if nest_view.mat.getComm().getRank() == 0:
+        print(
+            f"  interface ALE at it {snes.getIterationNumber()}: dropped (v, p) x u_f,"
             f" |dropped| / |J| = {relative:.1e}",
             flush=True,
         )

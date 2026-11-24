@@ -156,6 +156,32 @@ def test_fsi2_harmonic_fulljacobian_initialguess_J_0_converges_to_the_same_state
     assert len(log_J_0) >= len(log)
 
 
+def test_fsi2_harmonic_fulljacobian_initialguess_interface_ale_converges_to_the_same_state(output_dirs):
+    # Dropping only (v, p) x u_f keeps the ALE derivatives with respect to the interface displacement,
+    # so Newton converges to the same state as with the full Jacobian, and no slower than with J_0.
+    dropped, kept = [], []
+
+    def interface_ale(snes, nest_view):
+        dropped.append(drop_ale_derivatives(nest_view, ("u_f",)))
+        for row in ["v", "p"]:
+            block = nest_view.block(row, "u_f")
+            assert block is None or block.norm() == 0.0
+        # Zero at rest, where v, p and the displacement are all zero.
+        kept.append(nest_view.block("v", "u_int").norm())
+
+    qoi, _ = run(output_dirs, "full", 4, condense_solid=True)
+    _, log_J_0 = run(
+        output_dirs, "J_0", 4, condense_solid=True, jacobian_callback=lambda snes, nv: drop_ale_derivatives(nv)
+    )
+    qoi_interface, log = run(output_dirs, "interface", 4, condense_solid=True, jacobian_callback=interface_ale)
+    for column in range(1, qoi.shape[1]):
+        np.testing.assert_allclose(
+            qoi_interface[:, column], qoi[:, column], rtol=0, atol=1e-5 * np.abs(qoi[:, column]).max()
+        )
+    assert max(dropped) > 0.0 and max(kept) > 0.0
+    assert len(log) <= len(log_J_0)
+
+
 @pytest.mark.parametrize("inverse", ["exact", "diagonal"])
 def test_fsi2_harmonic_fulljacobian_initialguess_schur_mesh_solve(output_dirs, inverse):
     # Condensing u_int and u_f out in the linear solver changes the Newton steps only with the diagonal
