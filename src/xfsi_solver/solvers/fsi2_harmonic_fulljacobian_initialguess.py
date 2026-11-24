@@ -209,7 +209,12 @@ def solve(
     a copy: Newton still solves with the assembled Jacobian, by MUMPS LU. The callback must be
     collective, as the blocks are distributed.
 
-    ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES.
+    ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES, with
+    the defaults of fsi2_simplified. The momentum equation is multiplied by dt, as in fsi2_simplified,
+    and the mass, mesh and solid kinematic equations are not, so the tolerances apply to the same
+    norm of the momentum and mass residuals there. fsi2_harmonic_fulljacobian does not multiply it,
+    so with the same tolerances its Newton solves stop later. With a direct solver, the scaling does
+    not change the Newton steps.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -458,14 +463,17 @@ def solve(
 
         return residual
 
-    residual = A_T(u, u_old, v, v_old)
-    residual += A_I(u, v)
-    residual += A_P(u, p)
     # With condense_solid, the solid displacement of the solid stress is condensed out by the solid
     # kinematic relation, (u - u_old) / dt = theta * v + (1 - theta) * v_old.
     u_solid = u_old + dt * (theta * v + (1.0 - theta) * v_old) if condense_solid else u
-    residual += theta * A_E(u, v, u_solid)
-    residual += (1.0 - theta) * A_E(u_old, v_old, u_old)
+    # The momentum equation is multiplied by dt, and the mass equation and the mesh equation are not, as
+    # in FSIForms.build_residual of fsi2_simplified, so that the SNES tolerances measure the same norm.
+    momentum = A_T(u, u_old, v, v_old)
+    momentum += A_P(u, p)
+    momentum += theta * A_E(u, v, u_solid)
+    momentum += (1.0 - theta) * A_E(u_old, v_old, u_old)
+    residual = dt * momentum
+    residual += A_I(u, v)
 
     # Add in u_s with zero constants for correct sparsity patterns
     residual += dolfinx.fem.Constant(mesh, 0.0) * ufl.inner(u, du) * dx_solid
