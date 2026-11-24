@@ -352,7 +352,9 @@ def solve(
     lightly damped oscillation of the pressure: from the t = 16 state of FSI2 at 11.2 kPa, its maximum
     still swings between about 11 and 17 kPa from step to step after 40 steps of dt = 0.0025. With
     ``outlet_pressure_ramp`` T_r, in s, the outlet pressure instead rises smoothly from 0 at the start
-    time t0 of the run to P0 at t0 + T_r, as P0 (1 - cos(pi (t - t0) / T_r)) / 2, and stays at P0.
+    time t0 of the run to P0 at t0 + T_r, as P0 (1 - cos(pi (t - t0) / T_r)) / 2, and stays at P0. From
+    the t = 16 state at 11.2 kPa, a ramp of 0.1 s leaves no oscillation that Newton notices: after it,
+    the Newton contraction with the full Jacobian is that at zero outlet pressure.
 
     With ``jacobian_callback``, the ``data`` of the ``NestView`` also has "fluid_ale", a
     ``FluidALEDerivative`` that assembles the fluid ALE derivative C of the Jacobian, term by term:
