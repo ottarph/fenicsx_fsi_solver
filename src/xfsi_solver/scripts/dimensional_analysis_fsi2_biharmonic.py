@@ -52,13 +52,17 @@ PHYSICAL = {
 
 # Reference scales of FSI2: the cylinder diameter, the amplitude of the vertical tip displacement
 # (about 0.08 m), the mean inflow speed, which is also about the largest speed of the solid, the
-# dynamic pressure of the inflow, and z = Laplacian of u of the displacement over the length.
+# dynamic pressure of the inflow, and for z = Laplacian of u the displacement over the square of the
+# thickness of the bar, 0.02 m, not of L: z is largest at the solid-fluid interface, where the
+# displacement of the bar is taken up over a distance of about its thickness. At t = 16 of FSI2 on
+# mesh_sec (|u| <= 0.036 m), z reaches about 340 on the interface and 130 off it, |v| 2.2 m/s and
+# |p| 2.1e3 Pa.
 REFERENCE = {
     "L": (0.1, un.m),
     "U_ref": (0.08, un.m),
     "V_ref": (1.0, un.m / un.s),
     "P_ref": (1.0e3, un.Pa),
-    "Z_ref": (0.08 / 0.1**2, 1 / un.m),
+    "Z_ref": (0.08 / 0.02**2, 1 / un.m),
 }
 
 # The quantities of the Buckingham Pi analysis: those that define the problem, not P_ref and Z_ref,
