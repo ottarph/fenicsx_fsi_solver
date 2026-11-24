@@ -31,3 +31,21 @@ def test_block_scales_hook(output_dirs):
     for block in ("v,u_s", "u_s,u_s", "z_f,u_f", "u_f,z_f"):
         stats = record["jacobian"][block]
         assert stats["nnz"] > 0 and 0.0 < stats["geomean"] <= stats["max"]
+
+
+def test_outlet_pressure_shifts_pressure(output_dirs):
+    records = []
+    dt_val = 0.0025
+    name = "block_scales_outlet"
+    solve(
+        mesh_path=MESH,
+        T=dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / f"{name}.bp"),
+        output_path_p=str(output_dirs["pv"] / f"{name}_p.bp"),
+        qoi_path=str(output_dirs["qoi"] / f"{name}.txt"),
+        jacobian_callback=block_scales_hook(records),
+        outlet_pressure=11.2e3,
+    )
+    # From rest, the pressure of the first Newton update is about the outlet pressure everywhere.
+    assert records[-1]["state"]["p"]["max"] > 1.0e4

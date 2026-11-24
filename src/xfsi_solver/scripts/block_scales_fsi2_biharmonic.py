@@ -101,6 +101,7 @@ def main():
     parser.add_argument("--dt", type=float, default=0.0025)
     parser.add_argument("--steps", type=int, default=3)
     parser.add_argument("--t0", type=float, default=16.0)
+    parser.add_argument("--outlet-pressure", type=float, default=0.0, help="the solver's outlet_pressure, in Pa")
     parser.add_argument("--out", required=True, help="the JSON file of the records")
     args = parser.parse_args()
 
@@ -119,6 +120,7 @@ def main():
         newton_log_path=f"{stem}_newton.txt",
         initial_state_dir=args.initial_state_dir,
         jacobian_callback=block_scales_hook(records),
+        outlet_pressure=args.outlet_pressure,
     )
     # Split the records into time steps at each Newton iteration 0.
     for record in records:
@@ -135,6 +137,7 @@ def main():
                     "groups": list(NEST_GROUPS),
                     "cell_sizes": sizes,
                     "dt": args.dt,
+                    "outlet_pressure": args.outlet_pressure,
                     "steps": [
                         {"t": t, "iterations": step} for t, step in zip(step_times, records_by_step, strict=True)
                     ],

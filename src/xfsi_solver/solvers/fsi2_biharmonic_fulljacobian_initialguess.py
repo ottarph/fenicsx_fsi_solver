@@ -55,7 +55,7 @@ PHYSICAL_MARKERS = {
 NEST_GROUPS = ("v", "p", "u_s", "z_int", "u_int", "z_f", "u_f")
 
 
-def residual_forms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid):
+def residual_forms(functions, old_functions, test_functions, constants, dx_fluid, dx_solid, ds_outflow=None):
     """The UFL residual of the solver and its solid kinematic relation, without the forms of zero
     coefficient that only widen the sparsity pattern.
 
@@ -63,6 +63,11 @@ def residual_forms(functions, old_functions, test_functions, constants, dx_fluid
     dz), and ``constants`` a dict of the UFL constants (or expressions) "rho_f", "nu_f", "rho_s",
     "mu_s", "lambda_s", "dt" and "theta". ``dx_fluid`` and ``dx_solid`` are the measures of the fluid
     and solid cells.
+
+    With ``ds_outflow``, the measure of the outflow boundary, the momentum equation gets the outlet
+    traction -p_outlet n there, with p_outlet the constant ``constants["p_outlet"]``, which shifts the
+    fluid pressure by p_outlet. The outflow boundary does not move, so n is that of the reference
+    domain.
 
     Returns ``(residual, kinematic)``: ``residual`` holds every equation as the solver assembles it,
     before its interface rows of u are replaced, and ``kinematic`` is the solid kinematic relation,
@@ -134,6 +139,10 @@ def residual_forms(functions, old_functions, test_functions, constants, dx_fluid
     residual += theta * A_E(u, v)
     residual += (1.0 - theta) * A_E(u_old, v_old)
 
+    if ds_outflow is not None:
+        n = ufl.FacetNormal(ds_outflow.ufl_domain())
+        residual += constants["p_outlet"] * ufl.inner(n, dv) * ds_outflow
+
     kinematic = rho_s * ufl.inner((u - u_old) / dt - theta * v - (1 - theta) * v_old, du) * dx_solid
 
     return residual, kinematic
@@ -177,6 +186,7 @@ def solve(
     snes_rtol=1.0e-12,
     snes_max_it=20,
     jacobian_callback=None,
+    outlet_pressure=0.0,
 ):
     """Solve the FSI2 benchmark up to time ``T``, in ``round((T - t0) / dt_val)`` time
     steps, writing the initial state at ``t0`` as the first QoI row and, with
@@ -258,6 +268,13 @@ def solve(
     SNES. The nest is only a copy: Newton still solves with the assembled Jacobian, by MUMPS LU, so
     changes to it do not change the run. The callback must be collective, as the blocks are
     distributed.
+
+    With a nonzero ``outlet_pressure`` P0, in Pa, the outflow boundary has the traction -P0 n in place
+    of the zero traction of the do-nothing condition, which shifts the fluid pressure by P0, as the mean
+    pressure of the aneurysm runs, about 11.2 kPa, does there. The pressure of an initial state is not
+    shifted, so the first step takes the jump, which excites a lightly damped oscillation of the
+    pressure: from the t = 16 state of FSI2 at 11.2 kPa, its maximum still swings between about 11 and
+    17 kPa from step to step after 40 steps of dt = 0.0025.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -458,9 +475,16 @@ def solve(
         "lambda_s": lambda_s,
         "dt": dt,
         "theta": theta,
+        "p_outlet": dolfinx.fem.Constant(mesh, float(outlet_pressure)),
     }
     residual, res_miss_ufl = residual_forms(
-        (u, v, p, z), (u_old, v_old), (du, dv, dp, dz), constants, dx_fluid, dx_solid
+        (u, v, p, z),
+        (u_old, v_old),
+        (du, dv, dp, dz),
+        constants,
+        dx_fluid,
+        dx_solid,
+        ds_outflow=ds(PHYSICAL_MARKERS["outflow"]) if outlet_pressure != 0.0 else None,
     )
 
     # Add in u with zero constants for correct sparsity patterns
@@ -813,6 +837,8 @@ def solve(
             else "the previous step"
         )
         print(f"  Initial guess: {initial_guess}")
+        if outlet_pressure != 0.0:
+            print(f"  Outlet pressure: {outlet_pressure:g} Pa")
 
     for writer in writers:
         writer.close()
