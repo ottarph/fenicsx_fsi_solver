@@ -279,7 +279,7 @@ def _report(snes, nest_view, label, eliminated, S, S_blocks, elapsed, extra=""):
         )
 
 
-def J_0_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+def schur_u_s_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
     """Condense u_s out of the Jacobian with ``condense_u_s``, check it with ``check_condensation``
     and print the error and the nonzeros before and after, on rank 0."""
     start = timer()
@@ -308,3 +308,56 @@ def exact_solid_condensation_hook(snes: PETSc.SNES, nest_view: NestView) -> None
     )
     for obj in (S, *made):
         obj.destroy()
+
+
+FLUID_ROWS = ("v", "p")
+DISPLACEMENT_GROUPS = ("u_s", "u_int", "u_f")
+
+
+def drop_ale_derivatives(nest_view: NestView) -> float:
+    """Zero the derivatives of the momentum and mass equations with respect to the displacement, the
+    blocks (v, p) x (u_s, u_int, u_f), in the Jacobian itself, ``nest_view.mat``, which Newton solves
+    with, and copy it into the nest again.
+
+    With ``condense_solid=True`` in fsi2_harmonic_fulljacobian_initialguess, the solid stress is a
+    function of v, so these blocks hold only the fluid ALE derivatives: those of the geometry, J and
+    F^-1, and of the mesh velocity, (u - u_old) / dt. What is left is J_0 of eq. (3) of
+    docs/restricted-iterative-solver.md: (v, p) no longer depend on the displacement, and the
+    displacement rows, the solid kinematic relation and the mesh equation, are linear, so each Newton
+    step solves them exactly for the new v. This is the Jacobian of fsi2_simplified, which solves
+    for (v, p) and sets the displacement from v after each linear solve, with the mesh motion of
+    the solver. Without ``condense_solid``, the solid stress derivative is dropped too.
+
+    The entries are zeroed as J - D_r J D_c, with D_r and D_c the diagonal masks of the rows of v, p
+    and of the columns of u, so the pattern of J is kept. Collective. Returns the Frobenius norm of
+    what was dropped relative to that of J.
+    """
+    J = nest_view.mat
+    index_sets = dict(zip(nest_view.names, nest_view.index_sets, strict=True))
+    start = J.getOwnershipRange()[0]
+    row_mask, col_mask = J.createVecs()
+    for mask, names in ((row_mask, FLUID_ROWS), (col_mask, DISPLACEMENT_GROUPS)):
+        mask.set(0.0)
+        for name in names:
+            mask.array[index_sets[name].getIndices() - start] = 1.0
+    dropped = J.duplicate(copy=True)
+    dropped.diagonalScale(L=row_mask, R=col_mask)
+    norm_dropped, norm_J = dropped.norm(), J.norm()
+    J.axpy(-1.0, dropped, structure=PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+    for obj in (dropped, row_mask, col_mask):
+        obj.destroy()
+    nest_view.update()
+    return norm_dropped / norm_J
+
+
+def J_0_jacobian_hook(snes: PETSc.SNES, nest_view: NestView) -> None:
+    """Make the Jacobian Newton solves with J_0, by ``drop_ale_derivatives``, and print what was
+    dropped, on rank 0. With ``condense_solid=True`` in fsi2_harmonic_fulljacobian_initialguess, this
+    gives the Newton iteration of fsi2_simplified, with harmonic mesh motion."""
+    relative = drop_ale_derivatives(nest_view)
+    if nest_view.mat.getComm().getRank() == 0:
+        print(
+            f"  J_0 at it {snes.getIterationNumber()}: dropped (v, p) x (u_s, u_int, u_f),"
+            f" |dropped| / |J| = {relative:.1e}",
+            flush=True,
+        )

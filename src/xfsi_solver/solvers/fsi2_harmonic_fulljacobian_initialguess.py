@@ -22,7 +22,11 @@ from petsc4py import PETSc
 from xfsi_solver.mesh_motion import harmonic_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
-from xfsi_solver.tools.condensation import J_0_jacobian_hook, exact_solid_condensation_hook  # noqa: F401
+from xfsi_solver.tools.condensation import (  # noqa: F401
+    J_0_jacobian_hook,
+    exact_solid_condensation_hook,
+    schur_u_s_jacobian_hook,
+)
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.matrix_nest import NestView
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
@@ -154,7 +158,8 @@ def solve(
     by the storage blocks [u, v, p], by the blocks (u_S, v, p, u_I) of the harmonic version
     of eq. (1) of docs/restricted-iterative-solver.md, in the order (v, p, u_S, u_I) in which
     the fieldsplit of fsi2_harmonic_condensed.py solves them, and by the groups of the nest
-    Jacobian (see ``jacobian_callback``). The matrix is gathered on rank 0.
+    Jacobian (see ``jacobian_callback``). It is the Jacobian Newton would solve with there, after
+    ``jacobian_callback``, which is called once more for it. The matrix is gathered on rank 0.
 
     If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
     Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
@@ -812,9 +817,10 @@ def solve(
     if plot_matrices:
         from xfsi_solver.tools.matrix_blocks import matrix_blocks_dir, plot_matrix_blocks
 
+        # The Jacobian Newton would solve with at the final state, after jacobian_callback, which may
+        # change it, such as J_0_jacobian_hook.
         dolfinx.fem.petsc.assign([u, v, p], problem.x)
-        fem_jacobian(solver, problem.x, J_mat, P_mat, *jac_args, **jac_kargs)
-        post_jacobian(problem.x, J_mat)
+        wrapped_jacobian(solver, problem.x, J_mat, P_mat)
 
         # The owned u dofs supported on solid cells, the interface included, are u_S in eq. (1); the
         # others are u_I.
@@ -829,7 +835,8 @@ def solve(
         }
         if plot_matrices_dir is None:
             plot_matrices_dir = matrix_blocks_dir(__file__)
-        plot_matrix_blocks(J_mat, partitions, "Full Jacobian", plot_matrices_dir, t)
+        title = "Full Jacobian" if jacobian_callback is None else f"Jacobian after {jacobian_callback.__name__}"
+        plot_matrix_blocks(J_mat, partitions, title, plot_matrices_dir, t)
 
     # Destroying the MUMPS factorization is collective, so destroy it on all ranks here instead of leaving it
     # to garbage collection, which can run at different points on different ranks, such as after rank 0 has
@@ -862,8 +869,10 @@ def main():
     checkpoint_every = None
     vtx_save_every = None
     max_quadrature_degree = None  # Default None, no cap.
-    condense_solid = False
-    # condense_solid = True
+    # With condense_solid and J_0_jacobian_hook, the Newton iteration is that of fsi2_simplified, with
+    # harmonic mesh motion.
+    condense_solid = True
+    # condense_solid = False
     restart = args.restart
     # A snapshot of the biharmonic mesh motion of fsi2_simplified, so the mesh motion is measured
     # against its domain, with move_reference_domain.
@@ -885,7 +894,9 @@ def main():
         move_reference_domain=True,
         condense_solid=condense_solid,
         jacobian_callback=J_0_jacobian_hook,
+        # jacobian_callback=schur_u_s_jacobian_hook,
         # jacobian_callback=exact_solid_condensation_hook,
+        plot_matrices=True,
     )
 
     if MPI.COMM_WORLD.rank == 0:

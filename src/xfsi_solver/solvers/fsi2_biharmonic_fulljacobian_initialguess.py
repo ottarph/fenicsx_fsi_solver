@@ -23,7 +23,7 @@ from petsc4py import PETSc
 from xfsi_solver.mesh_motion import biharmonic_mixed_mesh_motion
 from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools.checkpoint import check_start_options, load_start_state, start_time
-from xfsi_solver.tools.condensation import J_0_jacobian_hook, exact_solid_condensation_hook  # noqa: F401
+from xfsi_solver.tools.condensation import exact_solid_condensation_hook, schur_u_s_jacobian_hook  # noqa: F401
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.matrix_nest import NestView
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
@@ -867,7 +867,7 @@ def main():
         initial_state_dir=initial_state_dir,
         plot_matrices=False,
         plot_matrices_dir="./",
-        jacobian_callback=J_0_jacobian_hook,
+        jacobian_callback=schur_u_s_jacobian_hook,
         # jacobian_callback=exact_solid_condensation_hook,
     )
 

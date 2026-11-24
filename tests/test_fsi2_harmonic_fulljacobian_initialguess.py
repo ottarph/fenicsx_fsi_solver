@@ -5,7 +5,12 @@ from restart_helpers import check_restart_reproduces_continuous_run, check_start
 
 from xfsi_solver.solvers import fsi2_harmonic_fulljacobian
 from xfsi_solver.solvers.fsi2_harmonic_fulljacobian_initialguess import NEST_GROUPS, solve
-from xfsi_solver.tools.condensation import check_condensation, condense_solid_exact, condense_u_s
+from xfsi_solver.tools.condensation import (
+    check_condensation,
+    condense_solid_exact,
+    condense_u_s,
+    drop_ale_derivatives,
+)
 from xfsi_solver.tools.newton_log import read_newton_log
 
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
@@ -105,6 +110,29 @@ def test_fsi2_harmonic_fulljacobian_initialguess_nest_condensations(output_dirs,
         assert schur_error < 1e-12
         assert exact_error < 1e-9
         assert relation_error < 1e-14
+
+
+def test_fsi2_harmonic_fulljacobian_initialguess_J_0_converges_to_the_same_state(output_dirs):
+    # Dropping the ALE derivatives of (v, p) only changes the Jacobian, so with the solid condensed in
+    # UFL, Newton converges, more slowly, to the same state as with the full Jacobian. The (v, p)
+    # block is then the Jacobian of fsi2_simplified, and the displacement rows only follow it.
+    dropped = []
+
+    def J_0(snes, nest_view):
+        dropped.append(drop_ale_derivatives(nest_view))
+        for row in ["v", "p"]:
+            for col in ["u_s", "u_int", "u_f"]:
+                block = nest_view.block(row, col)
+                assert block is None or block.norm() == 0.0
+        assert nest_view.block("v", "v").norm() > 0.0
+
+    qoi, log = run(output_dirs, "full", 4, condense_solid=True)
+    qoi_J_0, log_J_0 = run(output_dirs, "J_0", 4, condense_solid=True, jacobian_callback=J_0)
+    for column in range(1, qoi.shape[1]):
+        np.testing.assert_allclose(qoi_J_0[:, column], qoi[:, column], rtol=0, atol=1e-6 * np.abs(qoi[:, column]).max())
+    # From rest the fluid ALE derivatives are small but not zero, so J_0 needs at least as many iterations.
+    assert len(dropped) == np.sum(log_J_0["it"] > 0) and max(dropped) > 0.0
+    assert len(log_J_0) >= len(log)
 
 
 def test_fsi2_harmonic_fulljacobian_initialguess_restart_reproduces_continuous_run(output_dirs, tmp_path):
