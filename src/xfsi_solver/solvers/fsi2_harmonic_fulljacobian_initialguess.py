@@ -99,6 +99,7 @@ def solve(
     snes_atol=1.0e-7,
     snes_rtol=1.0e-12,
     snes_max_it=20,
+    snes_stol=1.0e-8,
     jacobian_callback=None,
 ):
     """Solve the FSI2 benchmark with harmonic mesh motion and restricted displacement test
@@ -213,8 +214,10 @@ def solve(
     a copy: Newton still solves with the assembled Jacobian, by MUMPS LU. The callback must be
     collective, as the blocks are distributed.
 
-    ``snes_atol``, ``snes_rtol`` and ``snes_max_it`` are the stopping tolerances of the SNES, with
-    the defaults of fsi2_simplified. The momentum equation is multiplied by dt, as in fsi2_simplified,
+    ``snes_atol``, ``snes_rtol``, ``snes_max_it`` and ``snes_stol`` are the stopping tolerances of the
+    SNES, with the defaults of fsi2_simplified, and PETSc's for ``snes_stol``, which stops Newton once
+    the update is smaller than ``snes_stol`` times the solution; 0 turns that test off, to follow
+    the residual to a strict ``snes_atol``. The momentum equation is multiplied by dt, as in fsi2_simplified,
     and the mass, mesh and solid kinematic equations are not, so the tolerances apply to the same
     norm of the momentum and mass residuals there. fsi2_harmonic_fulljacobian does not multiply it,
     so with the same tolerances its Newton solves stop later. With a direct solver, the scaling does
@@ -512,6 +515,7 @@ def solve(
             "snes_max_it": snes_max_it,
             "snes_atol": snes_atol,
             "snes_rtol": snes_rtol,
+            "snes_stol": snes_stol,
             "snes_error_if_not_converged": False,
             "ksp_error_if_not_converged": False,
             # "snes_monitor": "ascii:output/logs/fsi2_harmonic_fulljacobian_initialguess_snes_log.txt",
