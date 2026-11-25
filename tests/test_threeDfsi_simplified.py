@@ -88,7 +88,10 @@ def test_threeDfsi_simplified_interface_ale_converges_to_the_same_state(output_d
     )
     assert J_0.shape == direct.shape == iterative.shape == (3, NUM_COLUMNS)
     np.testing.assert_allclose(direct, J_0, rtol=1e-6, atol=0)
-    np.testing.assert_allclose(iterative, J_0, rtol=1e-6, atol=0)
+    # B_y is about 200 times smaller than B_x and B_z, so the iterative solve's residual differences show in
+    # it relative to its own size: 1.1e-15 in -7.6e-10 at the first step. atol is 1e-6 of the largest
+    # displacement of B, and far below the drag, lift and det(F).
+    np.testing.assert_allclose(iterative, J_0, rtol=1e-6, atol=1e-6 * np.abs(J_0[:, 3:6]).max())
 
 
 @pytest.mark.slow
