@@ -10,7 +10,6 @@ import dolfinx.fem.forms
 import dolfinx.fem.petsc
 import numpy as np
 import ufl
-import ufl.algorithms
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as comm
 from petsc4py import PETSc
@@ -26,6 +25,7 @@ from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.interface_ale import InterfaceALE, interface_ale_description
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
@@ -668,7 +668,7 @@ def solve(
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
         if interface_ale:
-            add_interface_ale(J)
+            interface_ale_terms.add(J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
@@ -739,125 +739,22 @@ def solve(
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
 
     if interface_ale:
-        # C, the derivatives of the momentum and mass residuals with respect to u_f, assembled only on the
-        # fluid cells with a dof on the interface: K takes only the interface columns of C, and only these
-        # cells fill them. The cells are found from the dofs of v on the interface, owned or ghost, which
-        # remote=True finds also where the rank holds the interface only at a vertex.
-        interface_nodes = dolfinx.fem.locate_dofs_topological(
-            V, mesh.topology.dim - 1, facet_tags.find(PHYSICAL_MARKERS["solid_fluid_interface"]), remote=True
+        interface_ale_terms = InterfaceALE(
+            residual_blocks,
+            u_f,
+            V,
+            cell_tags,
+            facet_tags,
+            PHYSICAL_MARKERS["ALE_fluid"],
+            PHYSICAL_MARKERS["solid_fluid_interface"],
+            entity_maps,
+            bcs,
+            interface_u_f,
+            interface_v,
+            theta_val,
+            dt_val,
+            quadrature_degree=interface_ale_quadrature_degree,
         )
-        on_interface = np.zeros(V.dofmap.index_map.size_local + V.dofmap.index_map.num_ghosts, dtype=bool)
-        on_interface[interface_nodes] = True
-        fluid_parent_cells_all = cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
-        ale_cells = np.sort(fluid_parent_cells_all[on_interface[V.dofmap.list[fluid_parent_cells_all]].any(axis=1)])
-        ale_cell_tag = 1000
-        # Checked on all ranks together, so that either all of them raise or none does.
-        if mesh.comm.allreduce(bool(np.any(cell_tags.values == ale_cell_tag)), op=MPI.LOR):
-            raise ValueError(f"The cell tag {ale_cell_tag}, used for the interface ALE cells, is already in use")
-        ale_cell_tags = dolfinx.mesh.meshtags(
-            mesh, mesh.topology.dim, ale_cells.astype(np.int32), np.full(len(ale_cells), ale_cell_tag, dtype=np.int32)
-        )
-
-        def on_interface_cells(form: ufl.Form) -> ufl.Form:
-            """``form``, a derivative of the residual with respect to u_f, integrated over ale_cells only."""
-            # Expanding the derivatives drops the integrals that do not depend on u_f, those of the solid.
-            integrals = ufl.algorithms.expand_derivatives(form).integrals()
-            if any(i.integral_type() != "cell" or i.subdomain_id() != PHYSICAL_MARKERS["ALE_fluid"] for i in integrals):
-                raise ValueError("The derivatives with respect to u_f should only have fluid cell integrals")
-            metadata = (
-                {}
-                if interface_ale_quadrature_degree is None
-                else {"quadrature_degree": interface_ale_quadrature_degree}
-            )
-            return ufl.Form(
-                [
-                    i.reconstruct(
-                        subdomain_id=ale_cell_tag, subdomain_data=ale_cell_tags, metadata=i.metadata() | metadata
-                    )
-                    for i in integrals
-                ]
-            )
-
-        du_f = ufl.TrialFunction(U_f)
-        ale_forms = [
-            dolfinx.fem.form(on_interface_cells(ufl.derivative(residual_blocks[i], u_f, du_f)), entity_maps=entity_maps)
-            for i in (0, 1)
-        ]
-        ale_matrices = [dolfinx.fem.petsc.create_matrix(form) for form in ale_forms]
-        # The v dofs with Dirichlet conditions, whose rows and columns of the Jacobian stay as they are.
-        v_free = dolfinx.fem.Function(V)
-        v_free.x.array[:] = 1.0
-        for bc in bcs:
-            v_free.x.array[bc.dof_indices()[0]] = 0.0
-        # K: each owned interface dof of u_f to the dof of v at the same node, without the Dirichlet dofs of
-        # v. It is used only to find where the entries of C go in J, below.
-        num_owned_u_f = U_f.dofmap.index_map.size_local * block_size_u
-        owned = (interface_u_f < num_owned_u_f) & (v_free.x.array[interface_v] == 1.0)
-        rows, cols = interface_u_f[owned], interface_v[owned]
-        order = np.argsort(rows)
-        rows, cols = rows[order], cols[order]
-        cols_global = (
-            block_size_u * V.dofmap.index_map.local_to_global((cols // block_size_u).astype(np.int32))
-            + cols % block_size_u
-        ).astype(PETSc.IntType)
-        indptr = np.zeros(num_owned_u_f + 1, dtype=PETSc.IntType)
-        np.add.at(indptr, rows + 1, 1)
-        indptr = np.cumsum(indptr).astype(PETSc.IntType)
-        K_interface = PETSc.Mat().createAIJ(
-            ((num_owned_u_f, None), (num_v, None)),
-            csr=(indptr, cols_global, np.ones(len(cols_global))),
-            comm=comm,
-        )
-        # Where theta * dt * C K goes in J, for each of the two blocks: the positions in the CSR values of C
-        # of the entries of C K, and C K's CSR row pointer and global columns. Set at the first Jacobian.
-        ale_targets: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
-        ale_num_entries: list[int] = []  # of C, to check that its pattern stays the same
-
-        def find_ale_targets(C: PETSc.Mat, C_indptr: np.ndarray, C_cols: np.ndarray, i: int) -> None:
-            """Find where the entries of C K are in C and in J. C K is C with each interface column moved to
-            the column of v at the same node and the other columns dropped, and the pattern of C does not
-            change, so this is done once. A copy of C whose values are the positions of its entries, plus 1,
-            is multiplied by K: each column of K has at most one entry, a 1, so each entry of the product is
-            exactly one entry of the copy. PETSc's product also finds the columns of v of the interface
-            columns of C held by other ranks."""
-            C_positions = C.duplicate(copy=False)
-            C_positions.setValuesCSR(C_indptr, C_cols, np.arange(1, len(C_cols) + 1, dtype=PETSc.ScalarType))
-            C_positions.assemble()
-            CK = C_positions.matMult(K_interface)
-            CK_indptr, CK_cols, CK_positions = CK.getValuesCSR()
-            CK.destroy()
-            C_positions.destroy()
-            # Checked on all ranks together, so that either all of them raise or none does.
-            if comm.allreduce(bool(np.any(CK_positions < 1)), op=MPI.LOR):
-                raise RuntimeError("Each entry of C K should be one entry of C")
-            num_rows = len(CK_indptr) - 1
-            rows = np.repeat(np.arange(num_rows), np.diff(CK_indptr))
-            # The rows of the Dirichlet dofs of v in the (v, v) block stay as they are.
-            keep = v_free.x.array[rows] == 1.0 if i == 0 else np.ones(len(rows), dtype=bool)
-            ale_indptr = np.zeros(num_rows + 1, dtype=PETSc.IntType)
-            ale_indptr[1:] = np.cumsum(np.bincount(rows[keep], minlength=num_rows))
-            ale_targets.append(
-                (np.rint(CK_positions[keep]).astype(np.int64) - 1, ale_indptr, CK_cols[keep].astype(PETSc.IntType))
-            )
-
-        def add_interface_ale(J: PETSc.Mat) -> None:
-            """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, with the rows of
-            the Dirichlet dofs of v left out, as theta * dt times the entries of C in the interface columns."""
-            for i, (form, C) in enumerate(zip(ale_forms, ale_matrices, strict=True)):
-                C.zeroEntries()
-                dolfinx.fem.petsc.assemble_matrix(C, form)
-                C.assemble()
-                C_indptr, C_cols, C_values = C.getValuesCSR()
-                if len(ale_targets) == i:
-                    find_ale_targets(C, C_indptr, C_cols, i)
-                    ale_num_entries.append(len(C_values))
-                elif comm.allreduce(len(C_values) != ale_num_entries[i], op=MPI.LOR):
-                    raise RuntimeError("The pattern of C has changed since the first Jacobian")
-                positions, ale_indptr, ale_cols = ale_targets[i]
-                J.getNestSubMatrix(i, 0).setValuesCSR(
-                    ale_indptr, ale_cols, theta_val * dt_val * C_values[positions], addv=PETSc.InsertMode.ADD_VALUES
-                )
-            J.assemble()
 
     def update_displacements() -> None:
         """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
@@ -1002,12 +899,6 @@ def solve(
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
-    if not interface_ale:
-        interface_ale_description = "off"
-    elif interface_ale_quadrature_degree is None:
-        interface_ale_description = "on, integrated with the quadrature of the residual"
-    else:
-        interface_ale_description = f"on, integrated with quadrature degree {interface_ale_quadrature_degree}"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -1015,7 +906,7 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
-            f"  Interface ALE: {interface_ale_description}\n"
+            f"  Interface ALE: {interface_ale_description(interface_ale, interface_ale_quadrature_degree)}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
@@ -1038,6 +929,8 @@ def solve(
     # on different ranks.
     solver.destroy()
     mesh_motion.destroy()
+    if interface_ale:
+        interface_ale_terms.destroy()
 
     return {
         "elapsed_time": end - start,
