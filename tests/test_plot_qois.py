@@ -10,6 +10,8 @@ import pytest  # noqa: E402
 
 from xfsi_solver.scripts.plot_qois import (  # noqa: E402
     FIGURE_DIR,
+    DET_F_QOI_LABELS_3D,
+    FSI2_DET_F_QOI_LABELS,
     FSI2_QOI_LABELS,
     INCOMPRESSIBLE_QOI_LABELS,
     LAGRANGE_QOI_LABELS,
@@ -18,6 +20,9 @@ from xfsi_solver.scripts.plot_qois import (  # noqa: E402
     plot_run_qois,
 )
 from xfsi_solver.tools.qoi import (  # noqa: E402
+    DET_F_INCOMPRESSIBLE_QOI_HEADER,
+    DET_F_QOI_HEADER,
+    DET_F_QOI_HEADER_3D,
     INCOMPRESSIBLE_QOI_HEADER,
     LAGRANGE_QOI_HEADER,
     QOI_HEADER,
@@ -105,10 +110,12 @@ def test_plot_qoi_rejects_a_qoi_not_in_the_header(qoi_files):
     [
         (FSI2_QOI_LABELS, QOI_HEADER),
         (LAGRANGE_QOI_LABELS, LAGRANGE_QOI_HEADER),
-        (INCOMPRESSIBLE_QOI_LABELS, INCOMPRESSIBLE_QOI_HEADER),
+        (INCOMPRESSIBLE_QOI_LABELS, DET_F_INCOMPRESSIBLE_QOI_HEADER),
         (QOI_LABELS_3D, QOI_HEADER_3D),
+        (FSI2_DET_F_QOI_LABELS, DET_F_QOI_HEADER),
+        (DET_F_QOI_LABELS_3D, DET_F_QOI_HEADER_3D),
     ],
-    ids=["fsi2", "lagrange", "incompressible", "3d"],
+    ids=["fsi2", "lagrange", "incompressible", "3d", "fsi2-det-F", "3d-det-F"],
 )
 def test_qoi_labels_are_the_columns_of_the_qoi_header(labels, header):
     assert ["t", *labels] == header.split("\t")
