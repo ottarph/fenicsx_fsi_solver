@@ -78,11 +78,24 @@ LAGRANGE_QOI_LABELS = FSI2_QOI_LABELS | {
     "interface_u_gap": r"$L^2$ norm of the interface displacement gap",
     "interface_v_gap": r"$L^2$ norm of the interface velocity gap",
 }
-INCOMPRESSIBLE_QOI_LABELS = FSI2_QOI_LABELS | {
-    "solid_area_change": "Relative solid area change",
-    "det_F_rms": r"RMS of $\det F - 1$ in the solid",
-    "det_F_max": r"Maximum of $|\det F - 1|$ in the solid",
+# The smallest and largest det(F) of the solid and of the fluid mesh (see DET_F_COLUMNS in xfsi_solver.tools.qoi),
+# written by the solvers that check it.
+DET_F_QOI_LABELS = {
+    "det_F_solid_min": r"Minimum of $\det F$ in the solid",
+    "det_F_solid_max": r"Maximum of $\det F$ in the solid",
+    "det_F_fluid_min": r"Minimum of $\det F$ in the fluid mesh",
+    "det_F_fluid_max": r"Maximum of $\det F$ in the fluid mesh",
 }
+FSI2_DET_F_QOI_LABELS = FSI2_QOI_LABELS | DET_F_QOI_LABELS
+INCOMPRESSIBLE_QOI_LABELS = (
+    FSI2_QOI_LABELS
+    | {
+        "solid_area_change": "Relative solid area change",
+        "det_F_rms": r"RMS of $\det F - 1$ in the solid",
+        "det_F_max": r"Maximum of $|\det F - 1|$ in the solid",
+    }
+    | DET_F_QOI_LABELS
+)
 QOI_LABELS_3D = {
     "drag": "Drag",
     "lift": "Lift",
@@ -90,6 +103,7 @@ QOI_LABELS_3D = {
     "B_y": "$y$-displacement of B [m]",
     "B_z": "$z$-displacement of B [m]",
 }
+DET_F_QOI_LABELS_3D = QOI_LABELS_3D | DET_F_QOI_LABELS
 
 QOI_DIR = Path("output/qoi")
 FIGURE_DIR = Path("output/figures/qoi")

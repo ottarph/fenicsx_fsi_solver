@@ -21,7 +21,7 @@ from xfsi_solver.petsc_options.fsi2d import (
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     MUMPS_ON_SOLID,
 )
-from xfsi_solver.scripts.plot_qois import plot_run_qois
+from xfsi_solver.scripts.plot_qois import FSI2_DET_F_QOI_LABELS, plot_run_qois
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
@@ -961,7 +961,7 @@ def main():
     # opts.view()
 
     if MPI.COMM_WORLD.rank == 0:
-        plot_run_qois(qoi_path, T)
+        plot_run_qois(qoi_path, T, qoi_labels=FSI2_DET_F_QOI_LABELS)
 
 
 if __name__ == "__main__":
