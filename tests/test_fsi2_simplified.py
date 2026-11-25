@@ -628,3 +628,27 @@ def test_fsi2_simplified_interface_ale_converges_to_the_same_state(output_dirs, 
         return np.loadtxt(qoi_path, ndmin=2)
 
     np.testing.assert_allclose(run("ale", True), run("J_0", False), rtol=1e-6, atol=0)
+
+
+def test_fsi2_simplified_under_integrated_interface_ale_converges_to_the_same_state(output_dirs):
+    # A lower quadrature degree for the interface ALE terms only changes the Jacobian, so the converged
+    # QoIs are those without the terms.
+    dt_val = 0.0025
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, interface_ale):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS | converged,
+            max_quadrature_degree=5,
+            interface_ale=interface_ale,
+            interface_ale_quadrature_degree=2,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    np.testing.assert_allclose(run("ale_2", True), run("J_0", False), rtol=1e-6, atol=0)

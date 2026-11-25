@@ -98,6 +98,7 @@ def solve(
     skip_dirichlet_lifting=True,
     snes_converged_reason_on=True,
     interface_ale=False,
+    interface_ale_quadrature_degree=None,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -223,7 +224,9 @@ def solve(
     with ``interface_ale`` the Jacobian is a nest matrix with any ``solver_options``; a direct solver
     such as MUMPS LU factorizes the nest as it is. Each assembly of the Jacobian then also assembles C,
     on the fluid cells with a dof on the interface only, since only these fill the columns of C that K
-    takes.
+    takes. With ``interface_ale_quadrature_degree``, C is integrated with that quadrature degree instead
+    of that of the residual, which makes it an approximation of the derivative, cheaper to assemble at a
+    low degree.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
@@ -761,7 +764,19 @@ def solve(
             integrals = ufl.algorithms.expand_derivatives(form).integrals()
             if any(i.integral_type() != "cell" or i.subdomain_id() != PHYSICAL_MARKERS["ALE_fluid"] for i in integrals):
                 raise ValueError("The derivatives with respect to u_f should only have fluid cell integrals")
-            return ufl.Form([i.reconstruct(subdomain_id=ale_cell_tag, subdomain_data=ale_cell_tags) for i in integrals])
+            metadata = (
+                {}
+                if interface_ale_quadrature_degree is None
+                else {"quadrature_degree": interface_ale_quadrature_degree}
+            )
+            return ufl.Form(
+                [
+                    i.reconstruct(
+                        subdomain_id=ale_cell_tag, subdomain_data=ale_cell_tags, metadata=i.metadata() | metadata
+                    )
+                    for i in integrals
+                ]
+            )
 
         du_f = ufl.TrialFunction(U_f)
         ale_forms = [
@@ -987,6 +1002,12 @@ def solve(
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
+    if not interface_ale:
+        interface_ale_description = "off"
+    elif interface_ale_quadrature_degree is None:
+        interface_ale_description = "on, integrated with the quadrature of the residual"
+    else:
+        interface_ale_description = f"on, integrated with quadrature degree {interface_ale_quadrature_degree}"
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -994,6 +1015,7 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
+            f"  Interface ALE: {interface_ale_description}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
