@@ -4,7 +4,12 @@ import pytest
 import ufl
 from mpi4py import MPI
 
-from xfsi_solver.tools.quadrature import cap_quadrature_degree, estimated_degree, quadrature_description
+from xfsi_solver.tools.quadrature import (
+    cap_quadrature_degree,
+    estimated_degree,
+    fix_quadrature_degree,
+    quadrature_description,
+)
 
 COMM = MPI.COMM_WORLD
 
@@ -53,6 +58,33 @@ def test_capped_form_assembles_close_to_the_exact_one(space):
     exact = dolfinx.fem.assemble_vector(dolfinx.fem.form(form)).array
     capped = dolfinx.fem.assemble_vector(dolfinx.fem.form(cap_quadrature_degree(form, 8))).array
     np.testing.assert_allclose(capped, exact, atol=1e-6 * np.abs(exact).max())
+
+
+def test_fix_sets_the_estimate_or_the_cap(space):
+    form, _ = nonlinear_form(space)
+    mass = ufl.inner(ufl.TrialFunction(space), ufl.TestFunction(space)) * ufl.dx
+    for f in (form, mass):
+        degrees = [integral.metadata()["quadrature_degree"] for integral in fix_quadrature_degree(f, None).integrals()]
+        assert degrees == [estimated_degree(f)]
+    assert [integral.metadata()["quadrature_degree"] for integral in fix_quadrature_degree(form, 8).integrals()] == [8]
+    assert [integral.metadata()["quadrature_degree"] for integral in fix_quadrature_degree(mass, 8).integrals()] == [4]
+
+
+def test_fix_gives_the_derivative_the_degree_of_the_form(space):
+    # UFL estimates a higher degree for the derivative than for the form itself, so without a set
+    # degree the derivative would be integrated with another quadrature than the form.
+    form, u = nonlinear_form(space)
+    assert estimated_degree(ufl.derivative(form, u)) > estimated_degree(form)
+    jacobian = ufl.derivative(fix_quadrature_degree(form, None), u)
+    assert [integral.metadata()["quadrature_degree"] for integral in jacobian.integrals()] == [estimated_degree(form)]
+
+
+def test_fix_without_a_cap_integrates_the_form_as_before(space):
+    form, u = nonlinear_form(space)
+    u.interpolate(lambda x: 0.1 * np.stack([x[1] ** 2, x[2] * x[0], x[0] ** 2]))
+    exact = dolfinx.fem.assemble_vector(dolfinx.fem.form(form)).array
+    fixed = dolfinx.fem.assemble_vector(dolfinx.fem.form(fix_quadrature_degree(form, None))).array
+    np.testing.assert_array_equal(fixed, exact)
 
 
 def test_quadrature_description():

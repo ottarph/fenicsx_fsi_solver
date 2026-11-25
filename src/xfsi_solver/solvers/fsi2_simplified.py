@@ -38,7 +38,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
-from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
+from xfsi_solver.tools.quadrature import fix_quadrature_degree, quadrature_description
 from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
 from xfsi_solver.tools.submesh import SubmeshComposite, all_cells
 from xfsi_solver.tools.vtkhdf import VTKHDFWriter
@@ -183,10 +183,13 @@ def solve(
     after ``T`` raises ``ValueError``, and a new run removes the snapshots of an earlier run in
     ``snapshot_dir``, while a restart keeps those up to the step it resumes from.
 
-    If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
-    Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
-    degree are integrated inexactly at that degree, and the others keep their estimate. With the
-    default None, every integral keeps the degree UFL estimates. The other arguments are those of
+    If ``max_quadrature_degree`` is given, the quadrature degree of the residual and of the drag and
+    lift is capped at it: integrals for which UFL estimates a higher degree are integrated inexactly
+    at that degree, and the others keep their estimate. With the default None, every integral of the
+    residual keeps the degree UFL estimates for it. The Jacobian, and the interface ALE terms, are
+    integrated with the quadrature of the residual, so that they are its exact derivatives (by
+    ``xfsi_solver.tools.quadrature.fix_quadrature_degree``); UFL alone would estimate higher degrees
+    for most of them. The other arguments are those of
     ``fsi2_biharmonic_mixed.solve``, where ``newton_log_path`` has the blocks v and p.
 
     Returns the statistics of the time steps of this run, the same on every rank: the wall time of the
@@ -524,8 +527,9 @@ def solve(
 
     residual_blocks = ufl.extract_blocks(residual)
 
-    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
-    residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
+    # Set the quadrature degree before taking derivatives, so that the Jacobian blocks and the interface
+    # ALE terms are integrated with the quadrature of the residual.
+    residual_blocks = [fix_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
     jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
 
