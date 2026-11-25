@@ -1,4 +1,6 @@
 # Installed into the conda environment with `pip install --no-deps -r requirements-pip.txt`, because these versions
 # are not on conda-forge yet. --no-deps keeps pip from replacing conda's packages, such as the MPI build of h5py.
-io4dolfinx >= 2.2.0
-fenicsx-compat >= 0.7.0
+# io4dolfinx 2.1 is the oldest with what the code needs (io4dolfinx#124); 2.2 changed only the ADIOS2 backend, which
+# then needs fenicsx-compat >= 0.7. eX3's Spack env fenicsx-v011-25112026 has io4dolfinx 2.1.0 and fenicsx-compat 0.6.0.
+io4dolfinx >= 2.1.0
+fenicsx-compat >= 0.5.0
