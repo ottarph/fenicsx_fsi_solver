@@ -770,8 +770,8 @@ def solve(
         v_free.x.array[:] = 1.0
         for bc in bcs:
             v_free.x.array[bc.dof_indices()[0]] = 0.0
-        # K: each owned interface dof of u_f to the dof of v at the same node, times theta * dt, without the
-        # Dirichlet dofs of v.
+        # K: each owned interface dof of u_f to the dof of v at the same node, without the Dirichlet dofs of
+        # v. It is used only to find where the entries of C go in J, below.
         num_owned_u_f = U_f.dofmap.index_map.size_local * block_size_u
         owned = (interface_u_f < num_owned_u_f) & (v_free.x.array[interface_v] == 1.0)
         rows, cols = interface_u_f[owned], interface_v[owned]
@@ -786,22 +786,58 @@ def solve(
         indptr = np.cumsum(indptr).astype(PETSc.IntType)
         K_interface = PETSc.Mat().createAIJ(
             ((num_owned_u_f, None), (num_v, None)),
-            csr=(indptr, cols_global, np.full(len(cols_global), theta_val * dt_val)),
+            csr=(indptr, cols_global, np.ones(len(cols_global))),
             comm=comm,
         )
+        # Where theta * dt * C K goes in J, for each of the two blocks: the positions in the CSR values of C
+        # of the entries of C K, and C K's CSR row pointer and global columns. Set at the first Jacobian.
+        ale_targets: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        ale_num_entries: list[int] = []  # of C, to check that its pattern stays the same
+
+        def find_ale_targets(C: PETSc.Mat, C_indptr: np.ndarray, C_cols: np.ndarray, i: int) -> None:
+            """Find where the entries of C K are in C and in J. C K is C with each interface column moved to
+            the column of v at the same node and the other columns dropped, and the pattern of C does not
+            change, so this is done once. A copy of C whose values are the positions of its entries, plus 1,
+            is multiplied by K: each column of K has at most one entry, a 1, so each entry of the product is
+            exactly one entry of the copy. PETSc's product also finds the columns of v of the interface
+            columns of C held by other ranks."""
+            C_positions = C.duplicate(copy=False)
+            C_positions.setValuesCSR(C_indptr, C_cols, np.arange(1, len(C_cols) + 1, dtype=PETSc.ScalarType))
+            C_positions.assemble()
+            CK = C_positions.matMult(K_interface)
+            CK_indptr, CK_cols, CK_positions = CK.getValuesCSR()
+            CK.destroy()
+            C_positions.destroy()
+            # Checked on all ranks together, so that either all of them raise or none does.
+            if comm.allreduce(bool(np.any(CK_positions < 1)), op=MPI.LOR):
+                raise RuntimeError("Each entry of C K should be one entry of C")
+            num_rows = len(CK_indptr) - 1
+            rows = np.repeat(np.arange(num_rows), np.diff(CK_indptr))
+            # The rows of the Dirichlet dofs of v in the (v, v) block stay as they are.
+            keep = v_free.x.array[rows] == 1.0 if i == 0 else np.ones(len(rows), dtype=bool)
+            ale_indptr = np.zeros(num_rows + 1, dtype=PETSc.IntType)
+            ale_indptr[1:] = np.cumsum(np.bincount(rows[keep], minlength=num_rows))
+            ale_targets.append(
+                (np.rint(CK_positions[keep]).astype(np.int64) - 1, ale_indptr, CK_cols[keep].astype(PETSc.IntType))
+            )
 
         def add_interface_ale(J: PETSc.Mat) -> None:
             """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, with the rows of
-            the Dirichlet dofs of v left out."""
+            the Dirichlet dofs of v left out, as theta * dt times the entries of C in the interface columns."""
             for i, (form, C) in enumerate(zip(ale_forms, ale_matrices, strict=True)):
                 C.zeroEntries()
                 dolfinx.fem.petsc.assemble_matrix(C, form)
                 C.assemble()
-                CK = C.matMult(K_interface)
-                if i == 0:
-                    CK.diagonalScale(L=v_free.x.petsc_vec)
-                J.getNestSubMatrix(i, 0).axpy(1.0, CK, structure=PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN)
-                CK.destroy()
+                C_indptr, C_cols, C_values = C.getValuesCSR()
+                if len(ale_targets) == i:
+                    find_ale_targets(C, C_indptr, C_cols, i)
+                    ale_num_entries.append(len(C_values))
+                elif comm.allreduce(len(C_values) != ale_num_entries[i], op=MPI.LOR):
+                    raise RuntimeError("The pattern of C has changed since the first Jacobian")
+                positions, ale_indptr, ale_cols = ale_targets[i]
+                J.getNestSubMatrix(i, 0).setValuesCSR(
+                    ale_indptr, ale_cols, theta_val * dt_val * C_values[positions], addv=PETSc.InsertMode.ADD_VALUES
+                )
             J.assemble()
 
     def update_displacements() -> None:
