@@ -26,6 +26,7 @@ from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.interface_ale import InterfaceALE, interface_ale_description
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
@@ -38,7 +39,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
-from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
+from xfsi_solver.tools.quadrature import fix_quadrature_degree, quadrature_description
 from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
 from xfsi_solver.tools.submesh import SubmeshComposite, all_cells
 from xfsi_solver.tools.vtkhdf import VTKHDFWriter
@@ -99,6 +100,8 @@ def solve(
     skip_dirichlet_lifting=True,
     newton_log_path=None,
     snes_converged_reason_on=True,
+    interface_ale=False,
+    interface_ale_quadrature_degree=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -184,11 +187,13 @@ def solve(
     after ``T`` raises ``ValueError``, and a new run removes the snapshots of an earlier run in
     ``snapshot_dir``, while a restart keeps those up to the step it resumes from.
 
-    The quadrature degree of the residual, and so of its Jacobian, and of the drag and lift is capped
-    at ``max_quadrature_degree``, by default 8, as in threeDfsi_c0ip: integrals for which UFL estimates
-    a higher degree are integrated inexactly at that degree, and the others keep their estimate. The
-    cap is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The other arguments are
-    those of ``threeDfsi_c0ip.solve``.
+    The quadrature degree of the residual and of the drag and lift is capped at
+    ``max_quadrature_degree``, by default 8, as in threeDfsi_c0ip: integrals for which UFL estimates a
+    higher degree are integrated inexactly at that degree, and the others keep their estimate. The cap
+    is required, and ``max_quadrature_degree=None`` raises ``ValueError``. The Jacobian, and the
+    interface ALE terms, are integrated with the quadrature of the residual, so that they are its exact
+    derivatives (by ``xfsi_solver.tools.quadrature.fix_quadrature_degree``); UFL alone would estimate
+    higher degrees for some of them. The other arguments are those of ``threeDfsi_c0ip.solve``.
 
     The solid is the St. Venant-Kirchhoff material with the Lame parameters ``mu_s`` and ``lambda_s`` (or ``nu_s``)
     by default, ``solid_material="stvk"``. With ``solid_material="mooney_rivlin_3"`` it is the compressible
@@ -228,6 +233,17 @@ def solve(
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
     test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
+
+    With ``interface_ale=True``, the Jacobian also holds the derivatives of the momentum and mass
+    equations with respect to the interface displacement, through the interface dofs of u_f, by
+    ``xfsi_solver.tools.interface_ale.InterfaceALE``, as in fsi2_simplified: theta * dt * C K, with C the
+    derivative of the residual with respect to u_f, assembled on the fluid cells with a dof on the
+    interface, and K the map from v to the interface dofs of u_f. The derivatives through the interior
+    of the fluid mesh are still left out. On FSI2 these terms kept Newton's contraction independent of
+    the mean fluid pressure, which J_0 alone did not. The Jacobian is then a nest matrix with any
+    ``solver_options``; a direct solver such as MUMPS LU factorizes the nest as it is. With
+    ``interface_ale_quadrature_degree``, C is integrated with that quadrature degree instead of that of
+    the residual, which makes it an approximation of the derivative, cheaper to assemble.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     if max_quadrature_degree is None:
@@ -545,8 +561,9 @@ def solve(
     residual = forms.build_residual(v, v_old, p, u_f, u_f_old, u_s_old)
 
     residual_blocks = ufl.extract_blocks(residual)
-    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
-    residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
+    # Set the quadrature degree before taking derivatives, so that the Jacobian blocks and the interface
+    # ALE terms are integrated with the quadrature of the residual.
+    residual_blocks = [fix_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
     jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
 
@@ -556,7 +573,8 @@ def solve(
     # residual -= rho_f * nu_f * ufl.inner(ufl.grad(v).T * n, dv) * ds(PHYSICAL_MARKERS["outflow"])
 
     # The fieldsplit preconditioner takes the (v, v) and (p, p) blocks of the Jacobian, which a nest
-    # matrix holds as separate matrices. MUMPS also works on nest matrices.
+    # matrix holds as separate matrices, and interface_ale adds to its (v, v) and (p, v) blocks. MUMPS
+    # also works on nest matrices.
     use_fieldsplit = solver_options.get("pc_type") == "fieldsplit"
     problem = dolfinx.fem.petsc.NonlinearProblem(
         residual_blocks,
@@ -565,7 +583,7 @@ def solve(
         bcs=bcs,
         petsc_options_prefix="solver_",
         entity_maps=entity_maps,
-        kind="nest" if use_fieldsplit else None,
+        kind="nest" if use_fieldsplit or interface_ale else None,
         petsc_options=solver_options
         if snes_converged_reason_on
         else {key: value for key, value in solver_options.items() if key != "snes_converged_reason"},
@@ -694,6 +712,8 @@ def solve(
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        if interface_ale:
+            interface_ale_terms.add(J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
@@ -770,6 +790,24 @@ def solve(
     v_dof_of_u_f[U_f.dofmap.list[fluid_cells]] = V.dofmap.list[fluid_parent_cells]
     interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
+
+    if interface_ale:
+        interface_ale_terms = InterfaceALE(
+            residual_blocks,
+            u_f,
+            V,
+            cell_tags,
+            facet_tags,
+            PHYSICAL_MARKERS["ALE_fluid"],
+            PHYSICAL_MARKERS["solid_fluid_interface"],
+            entity_maps,
+            bcs,
+            interface_u_f,
+            interface_v,
+            theta_val,
+            dt_val,
+            quadrature_degree=interface_ale_quadrature_degree,
+        )
 
     def update_displacements() -> None:
         """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
@@ -943,6 +981,7 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
+            f"  Interface ALE: {interface_ale_description(interface_ale, interface_ale_quadrature_degree)}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
@@ -966,6 +1005,8 @@ def solve(
     # on different ranks.
     solver.destroy()
     mesh_motion.destroy()
+    if interface_ale:
+        interface_ale_terms.destroy()
 
     return {
         "elapsed_time": end - start,

@@ -61,6 +61,37 @@ def test_threeDfsi_simplified_iterative_solve_matches_direct(output_dirs):
 
 
 @pytest.mark.slow
+def test_threeDfsi_simplified_interface_ale_converges_to_the_same_state(output_dirs):
+    # The interface ALE terms only change the Jacobian, so the converged QoIs are those without them: with
+    # MUMPS LU, which then factorizes a nest Jacobian, and with the fieldsplit, here with the terms
+    # integrated at quadrature degree 2.
+    dt_val = 0.004
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, solver_options, **kwargs):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=solver_options | converged,
+            **kwargs,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    J_0 = run("J_0", DEFAULT_DIRECT_SOLVER_OPTIONS)
+    direct = run("ale_direct", DEFAULT_DIRECT_SOLVER_OPTIONS, interface_ale=True)
+    iterative = run(
+        "ale_iterative", DEFAULT_ITERATIVE_SOLVER_OPTIONS, interface_ale=True, interface_ale_quadrature_degree=2
+    )
+    assert J_0.shape == direct.shape == iterative.shape == (3, NUM_COLUMNS)
+    np.testing.assert_allclose(direct, J_0, rtol=1e-6, atol=0)
+    np.testing.assert_allclose(iterative, J_0, rtol=1e-6, atol=0)
+
+
+@pytest.mark.slow
 def test_threeDfsi_simplified_prediction_options(output_dirs):
     # The default run predicts the displacements, here without Jacobian reuse, so it assembles in
     # every Newton iteration. The other starts from the previous step as it is, with the default

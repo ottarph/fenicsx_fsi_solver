@@ -16,8 +16,8 @@ the fluid mesh, which the mesh motion moves with the interface, are still left o
 
 For a constant fluid pressure P, the pressure term of the momentum equation is P times the integral of
 dv . n over the fluid boundary, so its derivative with respect to the interior mesh nodes vanishes: the
-part of the missing derivative that grows with the mean pressure is all at the interface, and these
-terms keep Newton's convergence independent of the mean pressure.
+part of the missing derivative that grows with the mean pressure is all at the interface, which these
+terms add. On FSI2 they kept Newton's contraction independent of the mean pressure.
 """
 
 import dolfinx
