@@ -36,7 +36,7 @@
 # Before set -u, since the Spack shell setup may read unset variables
 module use /cm/shared/spack-modules/modulefiles
 module load spack
-spack env activate fenicsx-v011
+spack env activate fenicsx-v011-25112026
 
 set -euo pipefail
 

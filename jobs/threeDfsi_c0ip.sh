@@ -30,9 +30,9 @@
 # The meshes are not in git: copy data/meshes/fsi3d/mesh_sec_fine.{xdmf,h5} to the checkout
 # on eX3 first.
 #
-# FEniCSx and PETSc come from the Spack environment fenicsx-v011
-# (https://github.com/finsberg/ex3-spack-envs/tree/main/fenicsx-v0.11): OpenMPI with UCX for
-# InfiniBand and Slurm support, PETSc 3.24 with MUMPS and hypre. xfsi_solver is not installed
+# FEniCSx and PETSc come from the Spack environment fenicsx-v011-25112026, a rebuild of fenicsx-v011
+# (https://github.com/finsberg/ex3-spack-envs/tree/main/fenicsx-v0.11) with io4dolfinx 2.1.0, which the solver
+# needs: OpenMPI with UCX for InfiniBand and Slurm support, PETSc 3.24 with MUMPS and hypre. xfsi_solver is not installed
 # there; it is imported from the checkout through PYTHONPATH. The environment is built for
 # x86_64_v3 (AVX2), which srl-login3 lacks, so check once on srl-login1 or on a compute node
 # (srun), after activating the environment as below, that everything it needs imports:
@@ -56,7 +56,7 @@
 # Before set -u, since the Spack shell setup may read unset variables
 module use /cm/shared/spack-modules/modulefiles
 module load spack
-spack env activate fenicsx-v011
+spack env activate fenicsx-v011-25112026
 
 set -euo pipefail
 

@@ -39,7 +39,7 @@
 # The meshes are not in git: copy data/meshes/fsi3d/mesh_sec_<size>.{xdmf,h5} to the checkout
 # on eX3 first.
 #
-# FEniCSx and PETSc come from the Spack environment fenicsx-v011, as in jobs/threeDfsi_c0ip.sh,
+# FEniCSx and PETSc come from the Spack environment fenicsx-v011-25112026, as in jobs/threeDfsi_c0ip.sh,
 # which describes it and how to check once that the solver's imports resolve there. xfsi_solver
 # is imported from the checkout through PYTHONPATH.
 #
@@ -60,7 +60,7 @@
 # Before set -u, since the Spack shell setup may read unset variables
 module use /cm/shared/spack-modules/modulefiles
 module load spack
-spack env activate fenicsx-v011
+spack env activate fenicsx-v011-25112026
 
 set -euo pipefail
 
