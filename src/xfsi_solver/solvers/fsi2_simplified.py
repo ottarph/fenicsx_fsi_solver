@@ -744,6 +744,9 @@ def solve(
         fluid_parent_cells_all = cell_tags.find(PHYSICAL_MARKERS["ALE_fluid"])
         ale_cells = np.sort(fluid_parent_cells_all[on_interface[V.dofmap.list[fluid_parent_cells_all]].any(axis=1)])
         ale_cell_tag = 1000
+        # Checked on all ranks together, so that either all of them raise or none does.
+        if mesh.comm.allreduce(bool(np.any(cell_tags.values == ale_cell_tag)), op=MPI.LOR):
+            raise ValueError(f"The cell tag {ale_cell_tag}, used for the interface ALE cells, is already in use")
         ale_cell_tags = dolfinx.mesh.meshtags(
             mesh, mesh.topology.dim, ale_cells.astype(np.int32), np.full(len(ale_cells), ale_cell_tag, dtype=np.int32)
         )
