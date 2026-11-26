@@ -22,7 +22,8 @@ J_0^-1 C and their eigenvectors x (complex, x = re + i im, of unit 2-norm), with
   interface is the change of the beam's area that the mode makes, and |Gamma| is the length of the
   interface. It is 1 for a uniform normal displacement, and near 0 for a mode that moves the interface
   without changing the area;
-- where |du_I| peaks: s and the distance to the nearest tip corner.
+- where |du_I| peaks: s and the distance to the nearest tip corner of the sharp outline (with ``fillet``,
+  of the corner before the rounding).
 
     mpirun -n 4 python -m xfsi_solver.scripts.modes_fsi2_biharmonic \\
         --initial-state-dir output/snapshots/fsi2_simplified/t16.0000 --steps 100 --sample-steps 70 80 90 100 \\
@@ -46,30 +47,50 @@ TIP_CORNERS = np.array([[X1, Y0], [X1, Y1]])
 DIFFERENT = PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN
 
 
-def arc_length(x: np.ndarray) -> np.ndarray:
+def arc_length(x: np.ndarray, fillet: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
     """The arc length along the beam's outline at the interface points ``x`` (n x 2): along the bottom
-    from x = X0, up the tip, and back along the top."""
+    from x = X0, up the tip, and back along the top, and the outward unit normal of the solid there. With
+    ``fillet`` r > 0, the tip corners are rounded with quarter circles of radius r."""
     tol = 1e-8
-    s = np.empty(len(x))
-    bottom = np.abs(x[:, 1] - Y0) < tol
-    top = np.abs(x[:, 1] - Y1) < tol
-    tip = ~bottom & ~top & (np.abs(x[:, 0] - X1) < tol)
-    if not np.all(bottom | top | tip):
+    r = fillet
+    s, n = np.empty(len(x)), np.zeros((len(x), 2))
+    straight = x[:, 0] <= X1 - r + tol
+    bottom = straight & (np.abs(x[:, 1] - Y0) < tol)
+    top = straight & (np.abs(x[:, 1] - Y1) < tol)
+    tip = ~bottom & ~top & (np.abs(x[:, 0] - X1) < tol) & (x[:, 1] >= Y0 + r - tol) & (x[:, 1] <= Y1 - r + tol)
+    arcs = {}
+    if r > 0:
+        for name, centre, sign in (("lower", (X1 - r, Y0 + r), -1.0), ("upper", (X1 - r, Y1 - r), 1.0)):
+            d = x - np.array(centre)
+            arcs[name] = (
+                ~bottom & ~top & ~tip & (np.abs(np.linalg.norm(d, axis=1) - r) < 1e-6) & (sign * d[:, 1] >= -tol),
+                np.array(centre),
+            )
+    on_arc = np.zeros(len(x), dtype=bool)
+    for mask, _ in arcs.values():
+        on_arc |= mask
+    if not np.all(bottom | top | tip | on_arc):
         raise ValueError("Interface points off the beam outline")
-    length = X1 - X0
-    s[bottom] = x[bottom, 0] - X0
-    s[tip] = length + x[tip, 1] - Y0
-    s[top] = length + (Y1 - Y0) + X1 - x[top, 0]
-    return s
+    quarter, side, straight_length = 0.5 * np.pi * r, Y1 - Y0 - 2 * r, X1 - r - X0
+    s[bottom], n[bottom] = x[bottom, 0] - X0, (0.0, -1.0)
+    s[tip], n[tip] = straight_length + quarter + x[tip, 1] - Y0 - r, (1.0, 0.0)
+    s[top], n[top] = straight_length + 2 * quarter + side + X1 - r - x[top, 0], (0.0, 1.0)
+    for name, (mask, centre) in arcs.items():
+        d = x[mask] - centre
+        angle = np.arctan2(d[:, 1], d[:, 0])  # -pi/2 to 0 on the lower arc, 0 to pi/2 on the upper
+        start = straight_length if name == "lower" else straight_length + quarter + side
+        s[mask] = start + r * (angle + (0.5 * np.pi if name == "lower" else 0.0))
+        n[mask] = d / np.linalg.norm(d, axis=1)[:, None]
+    return s, n
 
 
-def interface_measures(points: np.ndarray, du: np.ndarray) -> dict:
+def interface_measures(points: np.ndarray, du: np.ndarray, fillet: float = 0.0) -> dict:
     """The measures of the module docstring of a complex interface displacement ``du`` (n x 2) at the
     reference ``points`` (n x 2), all of the interface. The outline is traversed counterclockwise, so the
     outward normal of the solid on each segment is the tangent turned clockwise."""
-    s = arc_length(points)
+    s, node_normals = arc_length(points, fillet)
     order = np.argsort(s, kind="stable")
-    s, points, du = s[order], points[order], du[order]
+    s, points, du, node_normals = s[order], points[order], du[order], node_normals[order]
     segments = np.diff(points, axis=0)
     lengths = np.linalg.norm(segments, axis=1)
     keep = lengths > 1e-12  # a dof can appear twice only by round-off; skip empty segments
@@ -80,12 +101,6 @@ def interface_measures(points: np.ndarray, du: np.ndarray) -> dict:
     magnitude2 = np.sum(np.abs(du) ** 2, axis=1)
     l2 = np.sqrt(np.sum(lengths[keep] * 0.5 * (magnitude2[:-1] + magnitude2[1:])[keep]))
     total = lengths[keep].sum()
-    # The normal component at the nodes, with the normal of the side each node lies on
-    node_normals = np.zeros_like(points)
-    node_normals[np.abs(points[:, 1] - Y0) < 1e-8] = (0.0, -1.0)
-    node_normals[np.abs(points[:, 1] - Y1) < 1e-8] = (0.0, 1.0)
-    on_tip = (np.abs(points[:, 0] - X1) < 1e-8) & ~np.any(node_normals, axis=1)
-    node_normals[on_tip] = (1.0, 0.0)
     peak = int(np.argmax(magnitude2))
     return {
         "area": [float(area.real), float(area.imag)],
@@ -104,8 +119,11 @@ def interface_measures(points: np.ndarray, du: np.ndarray) -> dict:
 class ModeRecorder:
     """The ``jacobian_callback`` of the module docstring; ``records`` gets one dict per sample."""
 
-    def __init__(self, records: list, sample_steps, at_iteration: int = 2, nev: int = 6, tol: float = 1e-6):
+    def __init__(
+        self, records: list, sample_steps, at_iteration: int = 2, nev: int = 6, tol: float = 1e-6, fillet: float = 0.0
+    ):
         self.records = records
+        self.fillet = fillet
         self.sample_steps = set(sample_steps)
         self.at_iteration = at_iteration
         self.nev = nev
@@ -165,7 +183,7 @@ class ModeRecorder:
             all_points = comm.gather(points, root=0)
             all_du = comm.gather(du, root=0)
             if comm.rank == 0:
-                mode["interface"] = interface_measures(np.concatenate(all_points), np.concatenate(all_du))
+                mode["interface"] = interface_measures(np.concatenate(all_points), np.concatenate(all_du), self.fillet)
             record["modes"].append(mode)
         for vec in (y, J0, C, *(v for pair in vectors for v in pair)):
             vec.destroy()
@@ -183,6 +201,7 @@ def main():
     parser.add_argument("--t0", type=float, default=16.0)
     parser.add_argument("--sample-steps", type=int, nargs="+", required=True)
     parser.add_argument("--nev", type=int, default=6)
+    parser.add_argument("--fillet", type=float, default=0.0, help="the radius of the rounded tip corners of the mesh")
     parser.add_argument("--outlet-pressure", type=float, default=0.0)
     parser.add_argument("--outlet-pressure-ramp", type=float, default=None)
     parser.add_argument("--out", required=True, help="the JSON file of the records")
@@ -190,7 +209,7 @@ def main():
 
     stem = args.out.removesuffix(".json")
     records = []
-    recorder = ModeRecorder(records, args.sample_steps, nev=args.nev)
+    recorder = ModeRecorder(records, args.sample_steps, nev=args.nev, fillet=args.fillet)
     solve(
         mesh_path=args.mesh,
         T=args.t0 + args.steps * args.dt,

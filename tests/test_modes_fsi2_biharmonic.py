@@ -55,3 +55,22 @@ def test_modes_on_the_coarse_mesh(output_dirs):
     assert set(first["term_shares"]) == set(FLUID_ALE_TERMS)
     assert "interface" in first  # serial: rank 0 has it
     assert 0.0 <= first["interface"]["area_index"] <= 1.0 + 1e-9
+
+
+def test_area_of_a_uniform_displacement_with_rounded_corners():
+    r, n = 0.005, 400
+    bottom = np.column_stack([np.linspace(X0, X1 - r, n), np.full(n, Y0)])
+    top = np.column_stack([np.linspace(X0, X1 - r, n), np.full(n, Y1)])
+    tip = np.column_stack([np.full(n, X1), np.linspace(Y0 + r, Y1 - r, n)])
+    angles = np.linspace(0.0, 0.5 * np.pi, n)[1:-1]
+    lower = np.column_stack([X1 - r + r * np.sin(angles), Y0 + r - r * np.cos(angles)])
+    upper = np.column_stack([X1 - r + r * np.cos(angles), Y1 - r + r * np.sin(angles)])
+    points = np.concatenate([upper, top, tip, bottom, lower])
+    from xfsi_solver.scripts.modes_fsi2_biharmonic import arc_length
+
+    _, normals = arc_length(points, fillet=r)
+    perimeter = 2 * (X1 - r - X0) + np.pi * r + (Y1 - Y0 - 2 * r)
+    result = interface_measures(points, 1e-3 * normals.astype(complex), fillet=r)
+    assert result["area"][0] == pytest.approx(1e-3 * perimeter, rel=1e-3)
+    assert result["area_index"] == pytest.approx(1.0, abs=1e-3)
+    assert max(result["s"]) == pytest.approx(perimeter, rel=1e-4)
