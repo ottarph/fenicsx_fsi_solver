@@ -1,0 +1,87 @@
+--- a/include/petsc/private/petschpddm.h
++++ b/include/petsc/private/petschpddm.h
+@@ -49,6 +49,9 @@
+   unsigned short        scntl[2];
+   char                  cntl[5];
+   PetscPrecision        precision;
++  PetscBool             cache_recycle_image, recycle_image_valid;
++  PetscObjectId         recycle_matrix_id;
++  PetscObjectState      recycle_matrix_state;
+ };
+ 
+ typedef struct _n_Harmonic *Harmonic;
+--- a/src/ksp/ksp/impls/hpddm/hpddm.cxx
++++ b/src/ksp/ksp/impls/hpddm/hpddm.cxx
+@@ -90,6 +90,7 @@
+       i = (data->cntl[4] == static_cast<char>(PETSC_DECIDE) ? HPDDM_RECYCLE_STRATEGY_A : data->cntl[4]);
+       PetscCall(PetscOptionsEList("-ksp_hpddm_recycle_strategy", "Generalized eigenvalue problem to solve for recycling", "KSPHPDDM", HPDDMRecycleStrategy, PETSC_STATIC_ARRAY_LENGTH(HPDDMRecycleStrategy), HPDDMRecycleStrategy[HPDDM_RECYCLE_STRATEGY_A], &i, nullptr));
+       data->cntl[4] = i;
++      PetscCall(PetscOptionsBool("-ksp_hpddm_cache_recycle_image", "Reuse the GCRODR recycle image on an unchanged matrix", "KSPHPDDM", data->cache_recycle_image, &data->cache_recycle_image, nullptr));
+     }
+   } else {
+     data->cntl[0]  = HPDDM_KRYLOV_METHOD_NONE;
+@@ -142,6 +143,7 @@
+   PetscCall(PetscObjectTypeCompareAny((PetscObject)A, &match, MATSEQKAIJ, MATMPIKAIJ, ""));
+   if (match) n /= bs;
+   data->op = new HPDDM::PETScOperator(ksp, n);
++  data->recycle_image_valid = PETSC_FALSE;
+   if (PetscUnlikely(!ksp->setfromoptionscalled || data->cntl[0] == static_cast<char>(PETSC_DECIDE))) { /* what follows is basically a copy/paste of KSPSetFromOptions_HPDDM, with no call to PetscOptions() */
+     PetscCall(PetscInfo(ksp, "KSPSetFromOptions() not called or uninitialized internal structure, hardwiring default KSPHPDDM options\n"));
+     if (data->cntl[0] == static_cast<char>(PETSC_DECIDE)) data->cntl[0] = 0; /* GMRES by default */
+@@ -188,6 +190,7 @@
+   std::fill_n(data->scntl, PETSC_STATIC_ARRAY_LENGTH(data->scntl), static_cast<unsigned short>(PETSC_DECIDE));
+   std::fill_n(data->cntl, PETSC_STATIC_ARRAY_LENGTH(data->cntl), static_cast<char>(PETSC_DECIDE));
+   data->precision = PETSC_SCALAR_PRECISION;
++  data->cache_recycle_image = data->recycle_image_valid = PETSC_FALSE;
+   PetscFunctionReturn(PETSC_SUCCESS);
+ }
+ 
+@@ -359,9 +362,31 @@
+     if (PetscMemTypeCUDA(type[0])) PetscCall(KSPSolve_HPDDM_Private<PETSC_MEMTYPE_CUDA>(ksp, b, x, 1));
+     else {
+       PetscCheck(PetscMemTypeHost(type[0]), PetscObjectComm((PetscObject)A), PETSC_ERR_SUP, "PetscMemType (%s) is neither PETSC_MEMTYPE_HOST nor PETSC_MEMTYPE_CUDA", PetscMemTypeToString(type[0]));
+-      PetscCall(KSPSolve_HPDDM_Private(ksp, b, x, 1));
++      if (data->cache_recycle_image && !ksp->transpose_solve && data->cntl[0] == HPDDM_KRYLOV_METHOD_GCRODR && data->cntl[1] == HPDDM_VARIANT_FLEXIBLE) {
++        PetscObjectId    id;
++        PetscObjectState state;
++        PetscBool        hit;
++        const char       strategy = data->cntl[4];
++
++        PetscCall(PetscObjectGetId((PetscObject)A, &id));
++        PetscCall(PetscObjectStateGet((PetscObject)A, &state));
++        hit = PetscBool(data->recycle_image_valid && id == data->recycle_matrix_id && state == data->recycle_matrix_state && data->op->storage());
++        PetscCallMPI(MPIU_Allreduce(MPI_IN_PLACE, &hit, 1, MPIU_BOOL, MPI_LAND, PetscObjectComm((PetscObject)ksp)));
++        // The high strategy bits tell HPDDM to reuse C = A U for the same matrix.
++        if (hit) data->cntl[4] = strategy + 4;
++        const PetscErrorCode ierr = KSPSolve_HPDDM_Private(ksp, b, x, 1);
++        data->cntl[4] = strategy;
++        data->recycle_matrix_id = id;
++        data->recycle_matrix_state = state;
++        data->recycle_image_valid = PetscBool(!ierr && ksp->reason > 0 && data->op->storage());
++        PetscCall(ierr);
++      } else {
++        data->recycle_image_valid = PETSC_FALSE;
++        PetscCall(KSPSolve_HPDDM_Private(ksp, b, x, 1));
++      }
+     }
+   } else {
++    data->recycle_image_valid = PETSC_FALSE;
+     PetscCheck(PetscMemTypeHost(type[0]), PetscObjectComm((PetscObject)A), PETSC_ERR_SUP, "PetscMemType (%s) is not PETSC_MEMTYPE_HOST", PetscMemTypeToString(type[0]));
+     PetscCall(MatKAIJGetScaledIdentity(A, &flg));
+     PetscCall(MatKAIJGetAIJ(A, &B));
+@@ -468,6 +493,7 @@
+   PetscCall(PetscObjectTypeCompareAny((PetscObject)U, &match, MATSEQDENSE, MATMPIDENSE, ""));
+   PetscCheck(match, PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Provided deflation space not stored in a dense Mat");
+   PetscCall(MatDenseGetArrayRead(U, &array));
++  data->recycle_image_valid = PETSC_FALSE;
+   copy = op->allocate(m2, 1, N2);
+   PetscCheck(copy, PETSC_COMM_SELF, PETSC_ERR_POINTER, "Memory allocation error");
+   PetscCall(MatDenseGetLDA(U, &ldu));
+@@ -518,6 +544,7 @@
+   PetscFunctionBegin;
+   PetscCall(PetscCitationsRegister(HPDDMCitation, &HPDDMCite));
+   if (!data->op) PetscCall(KSPSetUp(ksp));
++  data->recycle_image_valid = PETSC_FALSE;
+   PetscCall(KSPGetOperators(ksp, &A, nullptr));
+   PetscCall(MatGetLocalSize(B, &n, nullptr));
+   PetscCall(MatDenseGetLDA(B, &lda));
