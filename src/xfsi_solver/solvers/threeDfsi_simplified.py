@@ -802,8 +802,6 @@ def solve(
             PHYSICAL_MARKERS["solid_fluid_interface"],
             entity_maps,
             bcs,
-            interface_u_f,
-            interface_v,
             theta_val,
             dt_val,
             quadrature_degree=interface_ale_quadrature_degree,
@@ -1005,8 +1003,6 @@ def solve(
     # on different ranks.
     solver.destroy()
     mesh_motion.destroy()
-    if interface_ale:
-        interface_ale_terms.destroy()
 
     return {
         "elapsed_time": end - start,
