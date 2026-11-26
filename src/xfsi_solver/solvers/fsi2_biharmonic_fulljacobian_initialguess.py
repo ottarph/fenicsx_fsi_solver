@@ -362,7 +362,9 @@ def solve(
     Jacobian. J - C is the Jacobian J_0 of fsi2_simplified, which neglects them; it keeps the solid
     stress derivative, which shares the block (v, u_int) with C. It also has "momentum_terms", a
     ``TermVectors`` that assembles the terms of the momentum equation as vectors in the layout of
-    the residual, to compare their sizes at the interface.
+    the residual, to compare their sizes at the interface. "u_int_coordinates" holds the reference
+    coordinates of the owned interface dofs of u, in the order of the rows of the group u_int, one
+    point per dof.
 
     With ``snes_converged_reason_on=False``, the SNES does not print why each Newton solve stopped.
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
@@ -734,6 +736,10 @@ def solve(
     # With the same element for u and v, their dofs are numbered alike, and nest_data["v_rows"] holds the
     # rows of v at the dofs of the rows of u_s and u_int, in the same order, for the condensation of the solid.
     nest_data = {}
+    # The reference coordinates of the owned interface dofs of u, one per dof, in the order of the dofs
+    # of the rows of u_int (each dof has as many rows as u has components).
+    owned_interface_dofs = dofs_interface[dofs_interface < U.dofmap.index_map.size_local]
+    nest_data["u_int_coordinates"] = U.tabulate_dof_coordinates()[owned_interface_dofs]
     if elements["U"] == elements["V"]:
         nest_data["v_rows"] = {"u_s": owned_rows(1, V, u_s_dofs), "u_int": owned_rows(1, V, dofs_interface)}
     nest_view = None  # made at the first assembly of the Jacobian, since blocks are only taken of an assembled matrix
