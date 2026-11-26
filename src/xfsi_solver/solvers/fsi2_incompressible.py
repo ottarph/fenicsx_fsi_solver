@@ -57,6 +57,173 @@ PHYSICAL_MARKERS = {
 }
 
 
+def fluid_ale_derivative(
+    *, residual_blocks, u_f, spaces, entity_maps, bcs, problem, num_v, v, interface_u_f, interface_v, scale
+):
+    """The derivative C of the residual blocks with respect to u_f, as a matrix with the rows of the
+    Newton system and the columns of u_f, and S, with the rows of u_f and the columns of the Newton
+    system, which maps v to ``scale`` v at the interface dofs of u_f (``interface_u_f``, unrolled, owned
+    and ghost, at the dofs ``interface_v`` of v). ``spaces`` are the spaces of the blocks. Returns a
+    dict with "assemble", which assembles C and C S at the current state, "add_to", which adds C S to a
+    matrix, "data" (C, S, C S and the number of owned rows of v, "num_v"), "destroy", and "forms", the
+    block forms of C."""
+    U_f = u_f.function_space
+    trial = ufl.TrialFunction(U_f)
+    forms = []
+    for block, space in zip(residual_blocks, spaces, strict=True):
+        derivative = ufl.derivative(block, u_f, trial)
+        if derivative.empty():
+            derivative = ufl.ZeroBaseForm((ufl.TestFunction(space), trial))
+        forms.append([dolfinx.fem.form(derivative, entity_maps=entity_maps)])
+    C = dolfinx.fem.petsc.create_matrix(forms)
+    J = problem.A
+    comm_ = J.getComm()
+
+    # The global row of the Newton system of each owned and ghost dof of v: the owned rows of v come first
+    # in the owned rows of each rank.
+    global_v = dolfinx.fem.Function(v.function_space)
+    global_v.x.array[:num_v] = J.getOwnershipRange()[0] + np.arange(num_v)
+    global_v.x.scatter_forward()
+    index_map = U_f.dofmap.index_map
+    bs = U_f.dofmap.index_map_bs
+    num_u_f = bs * index_map.size_local
+    # The interface dofs of v with Dirichlet conditions (where the interface meets the cylinder) have no
+    # column: their Newton update is zero, and the Jacobian's columns there are those of the identity.
+    dirichlet = np.zeros(v.x.array.size, dtype=bool)
+    for bc in bcs:
+        dofs, _ = bc.dof_indices()
+        dirichlet[dofs] = True
+    owned = (interface_u_f < num_u_f) & ~dirichlet[interface_v]
+    rows = bs * index_map.local_range[0] + interface_u_f[owned]
+    cols = np.rint(global_v.x.array[interface_v[owned]]).astype(PETSc.IntType)
+    S = PETSc.Mat().createAIJ(((num_u_f, bs * index_map.size_global), J.getSizes()[1]), nnz=(1, 1), comm=comm_)
+    S.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, False)
+    for row, col in zip(rows, cols, strict=True):
+        S.setValue(row, col, scale)
+    S.assemble()
+
+    state = {"CS": None, "added": False}
+
+    def assemble():
+        C.zeroEntries()
+        dolfinx.fem.petsc.assemble_matrix(C, forms, bcs=bcs, diag=0.0)
+        C.assemble()
+        if state["CS"] is None:
+            state["CS"] = C.matMult(S)
+        else:
+            C.matMult(S, result=state["CS"])
+        data["CS"] = state["CS"]
+
+    def add_to(matrix):
+        structure = PETSc.Mat.Structure.SUBSET if state["added"] else PETSc.Mat.Structure.DIFFERENT
+        matrix.axpy(1.0, state["CS"], structure=structure)
+        state["added"] = True
+
+    def destroy():
+        for obj in (C, S, state["CS"]):
+            if obj is not None:
+                obj.destroy()
+
+    data = {"C": C, "S": S, "num_v": num_v}
+    return {"assemble": assemble, "add_to": add_to, "data": data, "destroy": destroy, "forms": forms}
+
+
+class ExactFluidALEOperator:
+    """The python context of the exact Jacobian J_0 + C E S: x -> P x + C (E(S x) - S x), where P = J_0
+    + C S is the assembled matrix ``P``, and E(S x) - S x is the extension of the interface values S x
+    into the fluid by the mesh motion ``extension``, less those values themselves."""
+
+    def __init__(self, P, fluid_ale, extended, extension_bc_func, extension):
+        self.P = P
+        self.data = fluid_ale["data"]
+        self.extended = extended
+        self.bc_func = extension_bc_func
+        self.extension = extension
+        self.interface = self.data["S"].createVecLeft()
+        self.interior = self.data["S"].createVecLeft()
+        index_map = extended.function_space.dofmap.index_map
+        self.num_owned = extended.function_space.dofmap.index_map_bs * index_map.size_local
+
+    def mult(self, mat, x, y):
+        self.data["S"].mult(x, self.interface)
+        self.bc_func.x.array[:] = 0.0
+        self.bc_func.x.array[: self.num_owned] = self.interface.getArray(readonly=True)
+        self.bc_func.x.scatter_forward()
+        self.extension.solve()
+        self.interior.getArray()[:] = self.extended.x.array[: self.num_owned] - self.interface.getArray(readonly=True)
+        self.P.mult(x, y)
+        self.data["C"].multAdd(self.interior, y, y)
+
+    def destroy(self, mat=None):
+        for vec in (self.interface, self.interior):
+            vec.destroy()
+
+
+def pressure_derivative_forms(
+    *,
+    p,
+    p_S,
+    v,
+    u_f,
+    u_f_old,
+    u_s_condensed,
+    u_s_old,
+    spaces,
+    other_rows,
+    dt,
+    theta,
+    dx_fluid,
+    dx_solid,
+    entity_maps,
+    max_quadrature_degree,
+):
+    """The block forms of the geometric derivatives of the pressure terms of the momentum equation (times
+    dt): of the fluid term with respect to u_f, as C, and of the solid term with respect to v, with the
+    rows and columns of the Newton system, at the pressures p and p_S ("fluid", "solid") and at a unit
+    pressure in both ("fluid_unit", "solid_unit"). The fluid forms take the rows of p and p_S from
+    ``other_rows``, so only their rows of v are those of the pressure term."""
+    tests = [ufl.TestFunction(space) for space in spaces]
+    dv = tests[0]
+    mesh = v.function_space.mesh
+    gdim = mesh.geometry.dim
+    Id = ufl.Identity(gdim)
+
+    def geometry(u, u_old):
+        F, F_old = Id + ufl.grad(u), Id + ufl.grad(u_old)
+        return theta * ufl.det(F) * ufl.inv(F).T + (1.0 - theta) * ufl.det(F_old) * ufl.inv(F_old).T
+
+    unit = dolfinx.fem.Constant(mesh, 1.0)
+    trial_f = ufl.TrialFunction(u_f.function_space)
+    trial_v = ufl.TrialFunction(v.function_space)
+    result = {}
+    for name, pf, ps in (("", p, p_S), ("_unit", unit, unit)):
+        fluid = dt * ufl.inner(-pf * geometry(u_f, u_f_old), ufl.grad(dv)) * dx_fluid
+        solid = dt * ufl.inner(-ps * geometry(u_s_condensed, u_s_old), ufl.grad(dv)) * dx_solid
+        fluid = cap_quadrature_degree(fluid, max_quadrature_degree)
+        solid = cap_quadrature_degree(solid, max_quadrature_degree)
+        # The rows of p and p_S are those of C (``other_rows``), since dolfinx compiles no empty block
+        # between the solid and the fluid submesh; only the rows of v are of the pressure term.
+        result["fluid" + name] = [[dolfinx.fem.form(ufl.derivative(fluid, u_f, trial_f), entity_maps=entity_maps)]]
+        result["fluid" + name] += other_rows
+        solid_blocks = [[None] * 3 for _ in range(3)]
+        for i in range(3):
+            solid_blocks[i][i] = ufl.ZeroBaseForm((tests[i], ufl.TrialFunction(spaces[i])))
+        solid_blocks[0][0] = ufl.derivative(solid, v, trial_v)
+        result["solid" + name] = [
+            [None if f is None else dolfinx.fem.form(f, entity_maps=entity_maps) for f in row] for row in solid_blocks
+        ]
+    return result
+
+
+def owned_interface_rows(V, mesh, interface_facets, problem):
+    """The global rows of the Newton system of the owned dofs of v on the solid-fluid interface."""
+    dofs = dolfinx.fem.locate_dofs_topological(V, mesh.topology.dim - 1, interface_facets)
+    bs = V.dofmap.index_map_bs
+    dofs = dofs[dofs < V.dofmap.index_map.size_local]
+    first = problem.A.getOwnershipRange()[0]
+    return (first + bs * dofs[:, None] + np.arange(bs)).ravel().astype(PETSc.IntType)
+
+
 def solve(
     mesh_path,
     T,
@@ -95,6 +262,10 @@ def solve(
     predict_displacements=True,
     skip_dirichlet_lifting=True,
     snes_converged_reason_on=True,
+    outlet_pressure=0.0,
+    outlet_pressure_ramp=None,
+    fluid_ale_jacobian=None,
+    jacobian_callback=None,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, with Newton's method on the
     velocities and pressures only.
@@ -212,7 +383,40 @@ def solve(
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
     test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
+
+    With a nonzero ``outlet_pressure`` P0, in Pa, the outflow boundary has the traction -P0 n in place
+    of the zero traction of the do-nothing condition, as the mean pressure of the aneurysm runs does
+    there. With ``outlet_pressure_ramp`` T_r, in s, it rises as P0 (1 - cos(pi (t - t0) / T_r)) / 2 from
+    the start time t0 of the run to t0 + T_r, and stays at P0; with None it is P0 from the first step.
+    Both media are incompressible and the outflow boundary does not move, so a uniform offset of p
+    and p_S by the outlet pressure solves the shifted problem with the same v and displacements: the
+    fluid and solid pressure terms of the offset, with the same theta-averaged geometry, add up to a
+    boundary integral, whose interface parts cancel and whose outflow part the traction balances.
+
+    The Jacobian of the Newton system neglects the derivatives of the fluid terms with respect to the
+    mesh displacement u_f, as fsi2_simplified does (it is J_0); the solid terms, written in terms of v,
+    keep theirs. With ``fluid_ale_jacobian="interface"``, it also has C S, the derivatives with respect
+    to u_f at the interface dofs, through u_f = u_f_old + dt (theta v + (1 - theta) v_old) there: C is
+    the derivative of the fluid residual with respect to u_f, and S maps v to theta dt v at the
+    interface dofs of u_f. With ``fluid_ale_jacobian="full"``, Newton solves with the exact Jacobian
+    J_0 + C E S, where E extends interface values into the fluid by the mesh motion, applied as an
+    operator, by the KSP of ``solver_options`` (for example GMRES), with J_0 + C S assembled as the
+    preconditioner matrix; each product with the operator takes one solve of a second copy of the mesh
+    motion. Both need ``gamma_reassemble=None`` and the direct solver options.
+
+    With ``jacobian_callback``, ``jacobian_callback(snes, data)`` is called after every assembly of the
+    Jacobian (and of C S, if any), with a dict ``data``: "J", the assembled matrix the preconditioner
+    is built from; "C", the matrix of C (rows of (v, p, p_S), columns of u_f), assembled at the
+    iterate; "S"; "pressure_forms", the compiled block forms of the pressure terms' geometric
+    derivatives, "fluid" (with respect to u_f) and "solid" (with respect to v), at the state's
+    pressures and, as "fluid_unit" and "solid_unit", at a unit pressure; "v_int_rows", the global
+    rows of the owned interface dofs of v; "num_v", the number of owned rows of v; "functions", v, p,
+    p_S, u_s and u_f; and "bcs". The callback must be collective.
     """
+    if fluid_ale_jacobian not in (None, "interface", "full"):
+        raise ValueError(f"fluid_ale_jacobian must be None, 'interface' or 'full', not {fluid_ale_jacobian!r}")
+    if fluid_ale_jacobian is not None and gamma_reassemble is not None:
+        raise ValueError("fluid_ale_jacobian needs gamma_reassemble=None")
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 2.0)
 
@@ -602,6 +806,19 @@ def solve(
     residual += dt * A_P_solid(p_S, u_s_condensed, u_s_old)
     residual += A_I_solid(u_s_condensed)
 
+    # The outlet traction -p_outlet n, on the outflow boundary, which does not move, so n is that of the
+    # reference configuration. The momentum equation is multiplied by dt.
+    p_outlet = dolfinx.fem.Constant(mesh, float(outlet_pressure))
+
+    def outlet_pressure_at(t):
+        if outlet_pressure_ramp is None:
+            return outlet_pressure
+        s = min((t - t0) / outlet_pressure_ramp, 1.0)
+        return outlet_pressure * 0.5 * (1.0 - np.cos(np.pi * s))
+
+    if outlet_pressure != 0.0:
+        residual += dt * p_outlet * ufl.inner(ufl.FacetNormal(mesh), dv) * ds(PHYSICAL_MARKERS["outflow"])
+
     residual_blocks = ufl.extract_blocks(residual)
 
     # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
@@ -745,9 +962,21 @@ def solve(
         reuse = gamma_reassemble is not None and jacobian_state["assembled"]
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
-        fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        if fluid_ale_jacobian == "full":
+            # J is the exact operator; the matrix to assemble is P
+            fem_jacobian(snes, x, P, P, *jac_args, **jac_kargs)
+            assembled = P
+        else:
+            fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+            assembled = J
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
+        if fluid_ale is not None:
+            fluid_ale["assemble"]()
+            if fluid_ale_jacobian is not None:
+                fluid_ale["add_to"](assembled)
+        if jacobian_callback is not None:
+            jacobian_callback(snes, {**fluid_ale["data"], "J": assembled})
 
         if use_fieldsplit and requires_v_sub_IS and not jacobian_state["inner_split_set"]:
             # The sub-KSPs of the outer split exist only after its PCSetUp, which needs the assembled J.
@@ -813,6 +1042,62 @@ def solve(
     v_dof_of_u_f[U_f.dofmap.list[fluid_cells]] = V.dofmap.list[fluid_parent_cells]
     interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
+
+    # The fluid ALE derivative C, with respect to u_f, and S, which maps v to theta dt v at the interface
+    # dofs of u_f, for fluid_ale_jacobian and jacobian_callback.
+    fluid_ale = None
+    if fluid_ale_jacobian is not None or jacobian_callback is not None:
+        fluid_ale = fluid_ale_derivative(
+            residual_blocks=residual_blocks,
+            u_f=u_f,
+            spaces=(V, P, P_S),
+            entity_maps=entity_maps,
+            bcs=bcs,
+            problem=problem,
+            num_v=num_v,
+            v=v,
+            interface_u_f=interface_u_f,
+            interface_v=interface_v,
+            scale=theta_val * dt_val,
+        )
+        fluid_ale["data"].update(
+            pressure_forms=pressure_derivative_forms(
+                p=p,
+                p_S=p_S,
+                v=v,
+                u_f=u_f,
+                u_f_old=u_f_old,
+                u_s_condensed=u_s_condensed,
+                u_s_old=u_s_old,
+                spaces=(V, P, P_S),
+                other_rows=fluid_ale["forms"][1:],
+                dt=dt,
+                theta=theta,
+                dx_fluid=dx_fluid,
+                dx_solid=dx_solid,
+                entity_maps=entity_maps,
+                max_quadrature_degree=max_quadrature_degree,
+            ),
+            v_int_rows=owned_interface_rows(V, mesh, interface_facets, problem),
+            functions={"v": v, "p": p, "p_S": p_S, "u_s": u_s, "u_f": u_f},
+            bcs=bcs,
+        )
+
+    if fluid_ale_jacobian == "full":
+        # A second copy of the mesh motion, on its own function, extends interface values into the fluid
+        # for the products with C E S.
+        extended = dolfinx.fem.Function(U_f)
+        extension_bc_func = dolfinx.fem.Function(U_f)
+        extension = mesh_motion_type(
+            extended,
+            [dolfinx.fem.dirichletbc(extension_bc_func, u_f_bc_dofs)],
+            solver_options=mesh_motion_options,
+            petsc_options_prefix="extension_",
+        )
+        exact = ExactFluidALEOperator(J_mat, fluid_ale, extended, extension_bc_func, extension)
+        exact_operator = PETSc.Mat().createPython(J_mat.getSizes(), exact, comm=J_mat.getComm())
+        exact_operator.setUp()
+        solver.setJacobian(wrapped_jacobian, exact_operator, J_mat)
 
     def update_displacements() -> None:
         """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
@@ -889,6 +1174,7 @@ def solve(
         t = t0 + (step + 1) * dt_val
         inflow_bc_func.interpolate(InflowFunc(t))
         inflow_bc_func.x.scatter_forward()
+        p_outlet.value = outlet_pressure_at(t)
 
         v_old.x.array[:] = v.x.array[:]
         u_s_old.x.array[:] = u_s.x.array[:]
@@ -961,6 +1247,12 @@ def solve(
     # on different ranks.
     solver.destroy()
     mesh_motion.destroy()
+    if fluid_ale_jacobian == "full":
+        extension.destroy()
+        exact_operator.destroy()
+        exact.destroy()
+    if fluid_ale is not None:
+        fluid_ale["destroy"]()
 
     return {
         "elapsed_time": end - start,
