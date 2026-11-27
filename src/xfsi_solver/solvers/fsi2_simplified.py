@@ -25,7 +25,7 @@ from xfsi_solver.scripts.plot_qois import plot_run_qois
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
-from xfsi_solver.tools.interface_ale import InterfaceALE, interface_ale_description
+from xfsi_solver.tools.interface_ale import InterfaceALE, check_interface_ale_rows, interface_ale_description
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
@@ -99,6 +99,7 @@ def solve(
     snes_converged_reason_on=True,
     interface_ale=False,
     interface_ale_quadrature_degree=None,
+    interface_ale_rows=("momentum", "mass"),
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -227,8 +228,12 @@ def solve(
     takes. With ``interface_ale_quadrature_degree``, C is integrated with that quadrature degree instead
     of that of the residual, which makes it an approximation of the derivative, cheaper to assemble at a
     low degree.
+    ``interface_ale_rows`` selects the rows that get the terms: ``"momentum"``, those of the (v, v) block,
+    and ``"mass"``, those of the (p, v) block, by default both. On FSI2 the momentum rows gave nearly all of
+    their effect on Newton's convergence.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
+    check_interface_ale_rows(interface_ale_rows)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
     if nu_s is None and lambda_s is None:
         nu_s = 0.4
@@ -752,6 +757,7 @@ def solve(
             theta_val,
             dt_val,
             quadrature_degree=interface_ale_quadrature_degree,
+            rows=interface_ale_rows,
         )
 
     def update_displacements() -> None:
@@ -897,6 +903,7 @@ def solve(
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
+    ale_description = interface_ale_description(interface_ale, interface_ale_quadrature_degree, interface_ale_rows)
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -904,7 +911,7 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
-            f"  Interface ALE: {interface_ale_description(interface_ale, interface_ale_quadrature_degree)}\n"
+            f"  Interface ALE: {ale_description}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"

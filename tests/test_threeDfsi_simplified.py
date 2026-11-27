@@ -264,6 +264,7 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         ({"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 1e6}}, "needs mooney_rivlin_3"),
         ({"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": -1.0}}, "C11"),
         ({"mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": 0.0}}, "but solid_material is"),
+        ({"interface_ale": True, "interface_ale_rows": ("pressure",)}, "interface_ale_rows"),
     ],
     ids=[
         "theta_shift",
@@ -276,6 +277,7 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         "missing_C11",
         "negative_C11",
         "coefficients_without_material",
+        "interface_ale_rows",
     ],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):

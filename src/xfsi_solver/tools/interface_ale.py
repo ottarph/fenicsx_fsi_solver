@@ -28,6 +28,16 @@ import ufl.algorithms
 from mpi4py import MPI
 from petsc4py import PETSc
 
+#: The rows the interface ALE terms can be added to: those of the momentum equation (the (v, v) block) and
+#: of the mass equation (the (p, v) block), in the order of the residual blocks.
+ROWS = ("momentum", "mass")
+
+
+def check_interface_ale_rows(rows) -> None:
+    """Raise ``ValueError`` unless ``rows`` is a non-empty selection of ``ROWS`` without repeats."""
+    if isinstance(rows, str) or len(rows) == 0 or len(set(rows)) != len(rows) or not set(rows) <= set(ROWS):
+        raise ValueError(f"interface_ale_rows must be a non-empty selection of {ROWS} without repeats, not {rows!r}")
+
 
 class InterfaceALE:
     """The interface ALE terms theta * dt * C K, to add to a nest Jacobian of (v, p).
@@ -59,6 +69,8 @@ class InterfaceALE:
         quadrature_degree: if given, C is integrated with this quadrature degree instead of that of the
             residual, which makes it an approximation of the derivative, cheaper to assemble.
         cell_tag: a cell tag not in ``cell_tags``, for the cells on which C is assembled.
+        rows: the rows that get the terms, a selection of ``ROWS``: on FSI2, the momentum rows give nearly all
+            of their effect on Newton's convergence, and the mass rows a third of their cost.
     """
 
     def __init__(
@@ -76,7 +88,9 @@ class InterfaceALE:
         dt: float,
         quadrature_degree: int | None = None,
         cell_tag: int = 1000,
+        rows=ROWS,
     ):
+        check_interface_ale_rows(rows)
         mesh = V.mesh
         comm = mesh.comm
         block_size = V.dofmap.index_map_bs
@@ -117,7 +131,12 @@ class InterfaceALE:
             )
             return ufl.replace(restricted, {du_f: direction})
 
-        self._forms = [dolfinx.fem.form(interface_ale_form(form), entity_maps=entity_maps) for form in residual_blocks]
+        # The block row of each selected form, and the form.
+        self._forms = [
+            (i, dolfinx.fem.form(interface_ale_form(form), entity_maps=entity_maps))
+            for i, (name, form) in enumerate(zip(ROWS, residual_blocks, strict=True))
+            if name in rows
+        ]
 
         # The columns kept are those of the interface nodes without a Dirichlet condition on v.
         free = np.ones(num_nodes * block_size, dtype=bool)
@@ -134,18 +153,20 @@ class InterfaceALE:
         ]
 
     def add(self, J: PETSc.Mat) -> None:
-        """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, and assemble J."""
-        for i, form in enumerate(self._forms):
+        """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, those of the selected
+        rows, and assemble J."""
+        for i, form in self._forms:
             # The condition on the clone zeroes the columns of the dropped nodes; those on v zero the rows of
             # their dofs where the rows are in V, in the (v, v) block.
             dolfinx.fem.petsc.assemble_matrix(J.getNestSubMatrix(i, 0), form, bcs=self._bcs)
         J.assemble()
 
 
-def interface_ale_description(interface_ale: bool, quadrature_degree: int | None) -> str:
+def interface_ale_description(interface_ale: bool, quadrature_degree: int | None, rows=ROWS) -> str:
     """The interface ALE setting, for the summary at the end of a run."""
     if not interface_ale:
         return "off"
+    rows_description = " and ".join(name for name in ROWS if name in rows)
     if quadrature_degree is None:
-        return "on, integrated with the quadrature of the residual"
-    return f"on, integrated with quadrature degree {quadrature_degree}"
+        return f"on, {rows_description} rows, integrated with the quadrature of the residual"
+    return f"on, {rows_description} rows, integrated with quadrature degree {quadrature_degree}"
