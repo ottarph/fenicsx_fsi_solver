@@ -135,3 +135,23 @@ def test_jacobian_holds_the_derivative_of_the_pressure_traction_through_the_inte
 
     assert derivative.norm() > 0.0
     assert (derivative - difference).norm() < 1e-10 * derivative.norm()
+
+
+def test_jacobian_with_a_facet_term_of_the_residual_on_another_measure(state):
+    # dolfinx needs one subdomain data for the facet integrals of a form. An outlet traction in the residual,
+    # on the facet tags, does not depend on the unknowns, so it drops out of the Jacobian next to the terms on
+    # the interface measure.
+    s = state
+    forms, v = s["forms"], s["v"]
+    mesh = v.function_space.mesh
+    mesh.topology.create_connectivity(mesh.topology.dim - 1, mesh.topology.dim)
+    right = dolfinx.mesh.locate_entities_boundary(mesh, 1, lambda x: np.isclose(x[0], 1.0))
+    left = dolfinx.mesh.locate_entities_boundary(mesh, 1, lambda x: np.isclose(x[0], 0.0))
+    tags = dolfinx.mesh.meshtags(mesh, 1, right, np.full(right.size, 3, dtype=np.int32))
+    outlet = ufl.Measure("ds", domain=mesh, subdomain_data=tags)(3)
+    entities = dolfinx.fem.compute_integration_domains(dolfinx.fem.IntegralType.exterior_facet, mesh.topology, left)
+    interface = ufl.Measure("ds", domain=mesh, subdomain_data=[(101, entities)])(101)
+    residual = ufl.inner(v, forms.dv) * ufl.dx + 1.0e4 * ufl.inner(ufl.FacetNormal(mesh), forms.dv) * outlet
+    terms = interface_traction_form("pressure", forms, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface)
+    [[jacobian]] = jacobian_blocks([residual], [v], terms)
+    dolfinx.fem.form(jacobian)

@@ -37,6 +37,7 @@ go together.
 import dolfinx
 import dolfinx.fem.forms
 import ufl
+import ufl.algorithms
 
 from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.fsi.materials import Fluid
@@ -84,11 +85,19 @@ def jacobian_blocks(residual_blocks, unknowns, traction=None, max_quadrature_deg
     """The Jacobian blocks of ``residual_blocks`` with respect to ``unknowns``, with the interface traction
     terms ``traction`` (from ``interface_traction_form``, or None) added to the first, momentum, block before
     differentiating. ``traction`` gets its quadrature degree as the residual blocks do from
-    ``fix_quadrature_degree``, with ``max_quadrature_degree``."""
-    if traction is not None:
-        traction = fix_quadrature_degree(traction, max_quadrature_degree)
-        residual_blocks = [residual_blocks[0] + traction, *residual_blocks[1:]]
-    return dolfinx.fem.forms.derivative_block(residual_blocks, unknowns)
+    ``fix_quadrature_degree``, with ``max_quadrature_degree``.
+
+    dolfinx needs the facet integrals of a form to share their subdomain data, and the interface measure of
+    ``traction`` has its own. The derivatives of the momentum row are therefore expanded, which drops the
+    facet integrals of the residual that do not depend on the unknowns, such as an outlet traction. Facet
+    integrals that do depend on them must be on the same measure as ``traction``."""
+    if traction is None:
+        return dolfinx.fem.forms.derivative_block(residual_blocks, unknowns)
+    traction = fix_quadrature_degree(traction, max_quadrature_degree)
+    momentum, *others = dolfinx.fem.forms.derivative_block(
+        [residual_blocks[0] + traction, *residual_blocks[1:]], unknowns
+    )
+    return [[ufl.algorithms.expand_derivatives(block) for block in momentum], *others]
 
 
 def interface_traction_description(stress) -> str:
