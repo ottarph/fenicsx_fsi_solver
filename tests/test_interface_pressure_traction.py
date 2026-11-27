@@ -7,39 +7,37 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from xfsi_solver.fsi.forms import FSIForms
-from xfsi_solver.tools.interface_traction import (
-    STRESSES,
-    check_interface_traction_jacobian,
+from xfsi_solver.tools.interface_pressure_traction import (
+    check_interface_pressure_traction_jacobian,
     cofactor,
-    interface_traction_description,
-    interface_traction_form,
+    interface_pressure_traction_description,
+    interface_pressure_traction_form,
     jacobian_blocks,
 )
 
 DT, THETA = 0.0025, 0.505
 
 
-@pytest.mark.parametrize("stress", [None, *STRESSES])
-def test_stress_accepted(stress):
-    check_interface_traction_jacobian(stress, interface_ale=False)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bool_accepted(enabled):
+    check_interface_pressure_traction_jacobian(enabled, interface_ale=False)
 
 
-@pytest.mark.parametrize("stress", ["viscous", "Pressure", ("pressure",)])
-def test_stress_rejected(stress):
-    with pytest.raises(ValueError, match="interface_traction_jacobian must be"):
-        check_interface_traction_jacobian(stress, interface_ale=False)
+@pytest.mark.parametrize("enabled", [None, "pressure", 1])
+def test_other_values_rejected(enabled):
+    with pytest.raises(ValueError, match="interface_pressure_traction_jacobian must be True or False"):
+        check_interface_pressure_traction_jacobian(enabled, interface_ale=False)
 
 
 def test_rejected_with_interface_ale():
-    check_interface_traction_jacobian(None, interface_ale=True)
+    check_interface_pressure_traction_jacobian(False, interface_ale=True)
     with pytest.raises(ValueError, match="does not go with interface_ale"):
-        check_interface_traction_jacobian("pressure", interface_ale=True)
+        check_interface_pressure_traction_jacobian(True, interface_ale=True)
 
 
 def test_description():
-    assert interface_traction_description(None) == "off"
-    assert "pressure's" in interface_traction_description("pressure")
-    assert "viscous" in interface_traction_description("stress")
+    assert interface_pressure_traction_description(False) == "off"
+    assert interface_pressure_traction_description(True).startswith("on, ")
 
 
 @pytest.fixture
@@ -77,9 +75,9 @@ def state():
     return {"forms": forms, "v": v, "v_old": v_old, "p": p, "u_f": u_f, "u_f_old": u_f_old, "ds": ds}
 
 
-def traction(stress, state):
+def traction(state):
     s = state
-    return interface_traction_form(stress, s["forms"], s["v"], s["v_old"], s["p"], s["u_f"], s["u_f_old"], s["ds"])
+    return interface_pressure_traction_form(s["forms"], s["v"], s["v_old"], s["p"], s["u_f"], s["u_f_old"], s["ds"])
 
 
 def assemble_vector(form):
@@ -88,19 +86,14 @@ def assemble_vector(form):
     return vector
 
 
-def test_no_terms_without_a_stress(state):
-    assert traction(None, state) is None
-
-
-@pytest.mark.parametrize("stress", STRESSES)
-def test_terms_are_zero_where_u_f_holds_the_kinematic_relation(stress, state):
+def test_terms_are_zero_where_u_f_holds_the_kinematic_relation(state):
     # The pressure traction of the new geometry alone, for the scale
     s = state
     forms, n = s["forms"], ufl.FacetNormal(s["u_f"].function_space.mesh)
     one_side = DT * THETA * ufl.inner(-s["p"] * cofactor(s["u_f"]) * n, forms.dv) * s["ds"]
     scale = assemble_vector(one_side).norm()
     assert scale > 1.0
-    assert assemble_vector(traction(stress, state)).norm() < 1e-13 * scale
+    assert assemble_vector(traction(state)).norm() < 1e-13 * scale
 
 
 def test_jacobian_holds_the_derivative_of_the_pressure_traction_through_the_interface_motion(state):
@@ -110,7 +103,7 @@ def test_jacobian_holds_the_derivative_of_the_pressure_traction_through_the_inte
     s = state
     forms, v = s["forms"], s["v"]
     residual = ufl.inner(v, forms.dv) * ufl.dx
-    [[with_terms]] = jacobian_blocks([residual], [v], traction("pressure", state))
+    [[with_terms]] = jacobian_blocks([residual], [v], traction(state))
     [[without]] = jacobian_blocks([residual], [v])
     matrices = []
     for form in (with_terms, without):
@@ -152,6 +145,6 @@ def test_jacobian_with_a_facet_term_of_the_residual_on_another_measure(state):
     entities = dolfinx.fem.compute_integration_domains(dolfinx.fem.IntegralType.exterior_facet, mesh.topology, left)
     interface = ufl.Measure("ds", domain=mesh, subdomain_data=[(101, entities)])(101)
     residual = ufl.inner(v, forms.dv) * ufl.dx + 1.0e4 * ufl.inner(ufl.FacetNormal(mesh), forms.dv) * outlet
-    terms = interface_traction_form("pressure", forms, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface)
+    terms = interface_pressure_traction_form(forms, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface)
     [[jacobian]] = jacobian_blocks([residual], [v], terms)
     dolfinx.fem.form(jacobian)
