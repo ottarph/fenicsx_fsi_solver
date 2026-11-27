@@ -136,6 +136,8 @@ def main():
     parser.add_argument("--outlet-pressure", type=float, default=0.0)
     parser.add_argument("--outlet-pressure-ramp", type=float, default=None)
     parser.add_argument("--snes-rtol", type=float, default=1e-10)
+    parser.add_argument("--snes-atol", type=float, default=0.0)
+    parser.add_argument("--snes-max-it", type=int, default=40)
     parser.add_argument("--out", required=True, help="the JSON file of the records")
     args = parser.parse_args()
 
@@ -150,7 +152,7 @@ def main():
         qoi_path=f"{stem}_qoi.txt",
         newton_log_path=f"{stem}_newton.txt",
         initial_state_dir=args.initial_state_dir,
-        solver_options=solver_options(args.mode, args.snes_rtol),
+        solver_options=solver_options(args.mode, args.snes_rtol, args.snes_max_it, args.snes_atol),
         gamma_reassemble=None,
         outlet_pressure=args.outlet_pressure,
         outlet_pressure_ramp=args.outlet_pressure_ramp,
