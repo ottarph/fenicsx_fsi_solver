@@ -26,6 +26,12 @@ from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
 from xfsi_solver.tools.interface_ale import InterfaceALE, check_interface_ale_rows, interface_ale_description
+from xfsi_solver.tools.interface_traction import (
+    check_interface_traction_jacobian,
+    interface_traction_description,
+    interface_traction_form,
+    jacobian_blocks,
+)
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
@@ -100,6 +106,7 @@ def solve(
     interface_ale=False,
     interface_ale_quadrature_degree=None,
     interface_ale_rows=("momentum", "mass"),
+    interface_traction_jacobian=None,
 ):
     """Solve the FSI2 benchmark with Newton's method on the velocity and pressure only.
 
@@ -231,9 +238,22 @@ def solve(
     ``interface_ale_rows`` selects the rows that get the terms: ``"momentum"``, those of the (v, v) block,
     and ``"mass"``, those of the (p, v) block, by default both. On FSI2 the momentum rows gave nearly all of
     their effect on Newton's convergence.
+
+    With ``interface_traction_jacobian="pressure"``, the Jacobian also holds the derivative of the fluid
+    pressure's force on the interface with respect to the interface's motion, through the geometric factor
+    cof(F) N of the traction, by ``xfsi_solver.tools.interface_traction``: the form the Jacobian is derived
+    from gets dt * theta * (-p) (cof(F(u_interface)) - cof(F(u_f))) N . dv on the fluid side of the
+    interface, with u_interface = u_f_old + dt * (theta * v + (1 - theta) * v_old). This is zero, since u_f
+    holds that value on the interface, but its derivative with respect to v is not. The residual is
+    unchanged, so the solution is that of J_0. With a mean fluid pressure on FSI2, it kept Newton's
+    convergence close to that at zero pressure, where J_0 alone slows down and stalls, as ``interface_ale``
+    does, at the cost of one integral over the interface facets, and with any ``solver_options`` and matrix
+    type. ``"stress"`` adds the viscous stress to the pressure. The
+    interface ALE terms already hold this derivative, so the two do not go together.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
     check_interface_ale_rows(interface_ale_rows)
+    check_interface_traction_jacobian(interface_traction_jacobian, interface_ale)
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 1.0)
     if nu_s is None and lambda_s is None:
         nu_s = 0.4
@@ -539,7 +559,11 @@ def solve(
     # ALE terms are integrated with the quadrature of the residual.
     residual_blocks = [fix_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
-    jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
+    # The interface traction terms change only the Jacobian, so they are not in the residual.
+    traction = interface_traction_form(
+        interface_traction_jacobian, forms, v, v_old, p, u_f, u_f_old, ds_interface_fluid
+    )
+    jacobian = jacobian_blocks(residual_blocks, (v, p), traction, max_quadrature_degree)
 
     # --------------------------------------------
 
@@ -907,6 +931,7 @@ def solve(
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
     ale_description = interface_ale_description(interface_ale, interface_ale_quadrature_degree, interface_ale_rows)
+    traction_description = interface_traction_description(interface_traction_jacobian)
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -917,6 +942,7 @@ def solve(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
             f"  Interface ALE: {ale_description}\n"
+            f"  Interface traction Jacobian: {traction_description}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
@@ -983,6 +1009,8 @@ def main():
     interface_ale = True  # Jacobian blocks of dv, dp rows wrt. u_f applied on the interface dofs
     interface_ale_quadrature_degree = 2  # Fast, but accurate enough for robustness
     interface_ale_rows = ("momentum",)
+    # "pressure": the derivative of the interface pressure force only, cheaper; not with interface_ale
+    interface_traction_jacobian = None
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     requires_v_sub_IS = False
@@ -1014,6 +1042,7 @@ def main():
         interface_ale=interface_ale,
         interface_ale_quadrature_degree=interface_ale_quadrature_degree,
         interface_ale_rows=interface_ale_rows,
+        interface_traction_jacobian=interface_traction_jacobian,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,

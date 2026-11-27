@@ -689,3 +689,48 @@ def test_fsi2_simplified_rejects_invalid_interface_ale_rows(output_dirs):
             interface_ale=True,
             interface_ale_rows=(),
         )
+
+
+@pytest.mark.parametrize("stress, solver", [("pressure", "direct"), ("pressure", "iterative"), ("stress", "direct")])
+def test_fsi2_simplified_interface_traction_jacobian_converges_to_the_same_state(output_dirs, stress, solver):
+    # The interface traction terms only change the Jacobian, so the converged QoIs are those without them,
+    # with MUMPS LU on the assembled Jacobian and with the fieldsplit on a nest Jacobian.
+    dt_val = 0.0025
+    base = {"iterative": DEFAULT_ITERATIVE_SOLVER_OPTIONS, "direct": DEFAULT_DIRECT_SOLVER_OPTIONS}[solver]
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, interface_traction_jacobian):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=base | converged,
+            max_quadrature_degree=5,
+            interface_traction_jacobian=interface_traction_jacobian,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    np.testing.assert_allclose(run(f"traction_{stress}", stress), run("J_0", None), rtol=1e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"interface_traction_jacobian": "viscous"}, "interface_traction_jacobian must be"),
+        ({"interface_traction_jacobian": "pressure", "interface_ale": True}, "does not go with interface_ale"),
+    ],
+)
+def test_fsi2_simplified_rejects_invalid_interface_traction_jacobian(output_dirs, kwargs, match):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            **kwargs,
+        )

@@ -95,6 +95,32 @@ def test_threeDfsi_simplified_interface_ale_converges_to_the_same_state(output_d
 
 
 @pytest.mark.slow
+def test_threeDfsi_simplified_interface_traction_jacobian_converges_to_the_same_state(output_dirs):
+    # The interface traction terms only change the Jacobian, so the converged QoIs are those without them,
+    # with MUMPS LU on the assembled Jacobian.
+    dt_val = 0.004
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, interface_traction_jacobian):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=2 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS | converged,
+            interface_traction_jacobian=interface_traction_jacobian,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    J_0 = run("J_0", None)
+    traction = run("traction", "pressure")
+    assert J_0.shape == traction.shape == (3, NUM_COLUMNS)
+    np.testing.assert_allclose(traction, J_0, rtol=1e-6, atol=0)
+
+
+@pytest.mark.slow
 def test_threeDfsi_simplified_prediction_options(output_dirs):
     # The default run predicts the displacements, here without Jacobian reuse, so it assembles in
     # every Newton iteration. The other starts from the previous step as it is, with the default
@@ -265,6 +291,8 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         ({"solid_material": "mooney_rivlin_3", "mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": -1.0}}, "C11"),
         ({"mooney_rivlin_3": {"C10": 0.0, "C01": 1e6, "C11": 0.0}}, "but solid_material is"),
         ({"interface_ale": True, "interface_ale_rows": ("pressure",)}, "interface_ale_rows"),
+        ({"interface_traction_jacobian": "viscous"}, "interface_traction_jacobian must be"),
+        ({"interface_traction_jacobian": "pressure", "interface_ale": True}, "does not go with interface_ale"),
     ],
     ids=[
         "theta_shift",
@@ -278,6 +306,8 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         "negative_C11",
         "coefficients_without_material",
         "interface_ale_rows",
+        "interface_traction_value",
+        "interface_traction_with_ale",
     ],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):
