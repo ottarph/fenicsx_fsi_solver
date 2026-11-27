@@ -7,9 +7,9 @@ from xfsi_solver.solvers.fsi2_biharmonic_fulljacobian_initialguess import FLUID_
 MESH = "data/meshes/fsi2/mesh_sec_coarse.xdmf"
 
 
-def run(output_dirs, name, mode, steps=2, **kwargs):
+def run(output_dirs, name, mode, steps=2, light=False, **kwargs):
     records = []
-    recorder = InterfaceRecorder(mode, records)
+    recorder = InterfaceRecorder(mode, records, light=light)
     dt_val = 0.0025
     solve(
         mesh_path=MESH,
@@ -57,6 +57,18 @@ def test_j_0_changes_the_newton_step(output_dirs):
     full = run(output_dirs, "interface_rate_full", "full")
     j_0 = run(output_dirs, "interface_rate_J_0", "J_0")
     assert abs(first_contraction(j_0) / first_contraction(full) - 1.0) > 1e-3
+
+
+@pytest.mark.parametrize("mode", ["interface_ale", "J_0"])
+def test_light_recorder_takes_the_same_steps(output_dirs, mode):
+    """Without the diagnostics, the recorder still solves with the same Jacobian."""
+    heavy = run(output_dirs, f"heavy_{mode}", mode)
+    light = run(output_dirs, f"light_{mode}", mode, light=True)
+    assert len(light) == len(heavy)
+    for a, b in zip(light, heavy, strict=True):
+        assert set(a) == {"iteration", "residual"}
+        for g in a["residual"]:
+            assert a["residual"][g]["l2"] == pytest.approx(b["residual"][g]["l2"], rel=1e-9, abs=1e-14)
 
 
 def test_ramped_outlet_pressure(output_dirs):

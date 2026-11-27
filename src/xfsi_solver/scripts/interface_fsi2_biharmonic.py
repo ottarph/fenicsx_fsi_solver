@@ -58,10 +58,11 @@ class InterfaceRecorder:
     """The ``jacobian_callback`` of the module docstring; ``records`` gets one dict per Newton
     iteration."""
 
-    def __init__(self, mode: str, records: list):
+    def __init__(self, mode: str, records: list, light: bool = False):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
         self.mode = mode
+        self.light = light
         self.records = records
         self.ready = False
         self.pending = None  # (record, x, {name: C}) of the last Jacobian, for the product with its step
@@ -108,11 +109,12 @@ class InterfaceRecorder:
         record = {
             "iteration": snes.getIterationNumber(),
             "residual": {g: _norms(residual, self.local[g], self.comm) for g in ROW_GROUPS},
-            "blocks": {
+        }
+        if not self.light:
+            record["blocks"] = {
                 name: {f"{r},{c}": self._block_norm(mat, r, c) for r in ROW_GROUPS for c in COLUMN_GROUPS}
                 for name, mat in C.items()
-            },
-        }
+            }
 
         total = None
         for mat in C.values():
@@ -120,15 +122,17 @@ class InterfaceRecorder:
                 total = mat.duplicate(copy=True)
             else:
                 total.axpy(1.0, mat, structure=PETSc.Mat.Structure.DIFFERENT_NONZERO_PATTERN)
-        remainder = J.duplicate(copy=True)
-        remainder.axpy(-1.0, total, structure=SUBSET)
-        record["check"] = {
-            key: self._block_norm(remainder, *key.split(",")) / max(self._block_norm(total, *key.split(",")), 1e-300)
-            for key in ("v_other,u_f", "p,u_int", "p,u_f", "v_int,u_f")
-        }
-        # What remains of the (v_int, u_int) block without C: the solid stress derivative.
-        record["solid_v_int_u_int"] = self._block_norm(remainder, "v_int", "u_int")
-        remainder.destroy()
+        if not self.light:
+            remainder = J.duplicate(copy=True)
+            remainder.axpy(-1.0, total, structure=SUBSET)
+            record["check"] = {
+                key: self._block_norm(remainder, *key.split(","))
+                / max(self._block_norm(total, *key.split(",")), 1e-300)
+                for key in ("v_other,u_f", "p,u_int", "p,u_f", "v_int,u_f")
+            }
+            # What remains of the (v_int, u_int) block without C: the solid stress derivative.
+            record["solid_v_int_u_int"] = self._block_norm(remainder, "v_int", "u_int")
+            remainder.destroy()
 
         if self.mode == "J_0":
             J.axpy(-1.0, total, structure=SUBSET)
@@ -141,12 +145,14 @@ class InterfaceRecorder:
         if self.mode != "full":
             nest_view.update()
 
+        self.records.append(record)
+        if self.light:
+            return
         if self.pending is not None:
             for mat in self.pending[2].values():
                 mat.destroy()
             self.pending[1].destroy()
         self.pending = (record, snes.getSolution().copy(), {n: m.duplicate(copy=True) for n, m in C.items()})
-        self.records.append(record)
 
     def monitor(self, snes: PETSc.SNES, its: int, fnorm: float) -> None:
         """After the step from the iterate of the last Jacobian: the products of each term of C with
@@ -216,11 +222,16 @@ def main():
     parser.add_argument("--snes-rtol", type=float, default=1e-10)
     parser.add_argument("--snes-max-it", type=int, default=40)
     parser.add_argument("--out", required=True, help="the JSON file of the records")
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="record only the residual by row group, without the blocks, the check and the products of C",
+    )
     args = parser.parse_args()
 
     stem = args.out.removesuffix(".json")
     records = []
-    recorder = InterfaceRecorder(args.mode, records)
+    recorder = InterfaceRecorder(args.mode, records, light=args.light)
     solve(
         mesh_path=args.mesh,
         T=args.t0 + args.steps * args.dt,
