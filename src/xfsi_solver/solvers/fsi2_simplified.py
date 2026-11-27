@@ -829,8 +829,9 @@ def solve(
 
     first_step = step
     num_newton_iterations = 0
+    num_linear_iterations = 0
     # Newton iterations and Jacobian assemblies of each time step of this run
-    iterations_per_step, assemblies_per_step = [], []
+    iterations_per_step, assemblies_per_step, linear_iterations_per_step = [], [], []
     J_solid_per_step, J_fluid_per_step = [], []
     start = timer()
     while step < num_steps:
@@ -842,15 +843,17 @@ def solve(
         u_s_old.x.array[:] = u_s.x.array[:]
         u_f_old.x.array[:] = u_f.x.array[:]
 
-        PETSc.Sys.Print(f"\n\n{t = :.3f}")
+        PETSc.Sys.Print(f"\n{t = :.3f}")
 
         if newton_log_path is not None:
             newton_log.start_step(t)
         num_assemblies_before = jacobian_state["num_assemblies"]
         problem.solve()
         num_newton_iterations += solver.getIterationNumber()
+        num_linear_iterations += solver.getLinearSolveIterations()
         iterations_per_step.append(solver.getIterationNumber())
         assemblies_per_step.append(jacobian_state["num_assemblies"] - num_assemblies_before)
+        linear_iterations_per_step.append(solver.getLinearSolveIterations())
         check_converged(problem, f"t = {t:.4f}", writers=writers, ksp_check=None)
 
         step += 1
@@ -908,6 +911,8 @@ def solve(
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
         print(f"Time per step: {(end - start) / max(step - first_step, 1):.3f} s")
+        if use_fieldsplit and num_newton_iterations > 0:
+            print(f"Linear iterations per solve: {num_linear_iterations / num_newton_iterations:.1f}")
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
@@ -922,7 +927,7 @@ def solve(
             f"  Initial guess: {initial_guess_description}\n"
             f"  Lifting of the Dirichlet conditions of v: {dirichlet_description}\n"
             f"  Jacobian reuse: {reuse_description}\n"
-            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
+            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations"
             f"over {step - first_step} time steps\n"
         )
 
@@ -942,6 +947,7 @@ def solve(
         "num_assemblies": jacobian_state["num_assemblies"],
         "iterations_per_step": iterations_per_step,
         "assemblies_per_step": assemblies_per_step,
+        "linear_iterations_per_step": linear_iterations_per_step,
         "J_solid_per_step": J_solid_per_step,
         "J_fluid_per_step": J_fluid_per_step,
     }
@@ -974,11 +980,15 @@ def main():
     output_every = None
     gamma_reassemble = 0.05  # Default 0.05.
     max_quadrature_degree = 5  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+    interface_ale = True  # Jacobian blocks of dv, dp rows wrt. u_f applied on the interface dofs
+    interface_ale_quadrature_degree = 2  # Fast, but accurate enough for robustness
+    interface_ale_rows = ("momentum",)
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     requires_v_sub_IS = False
-    # solver_options = MUMPS_ON_SOLID
-    # requires_v_sub_IS = True
+    solver_options = MUMPS_ON_SOLID
+    # solver_options = MUMPS_ON_SOLID | {"ksp_converged_reason_view_cancel": None}
+    requires_v_sub_IS = True
     initial_state_dir = args.initial_state_dir
     restart = args.restart
     # restart = True
@@ -1001,6 +1011,9 @@ def main():
         output_every=output_every,
         gamma_reassemble=gamma_reassemble,  # Default 0.05.
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap. 6 gives the same QoIs, 20% faster.
+        interface_ale=interface_ale,
+        interface_ale_quadrature_degree=interface_ale_quadrature_degree,
+        interface_ale_rows=interface_ale_rows,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,

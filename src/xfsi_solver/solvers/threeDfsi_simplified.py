@@ -1054,6 +1054,9 @@ def main():
     gamma_reassemble = 0.1  # Default 0.1.
     max_quadrature_degree = 6  # Default 8.
     mesh_motion_max_quadrature_degree = 6  # Default 8.
+    interface_ale = True  # Jacobian blocks of dv, dp rows wrt. u_f applied on the interface dofs
+    interface_ale_quadrature_degree = 2  # Fast, but accurate enough for robustness
+    interface_ale_rows = ("momentum", "mass")
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     # requires_v_sub_IS = False
     solver_options = MUMPS_ON_SOLID
@@ -1077,6 +1080,9 @@ def main():
         gamma_reassemble=gamma_reassemble,
         max_quadrature_degree=max_quadrature_degree,
         mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,
+        interface_ale=interface_ale,
+        interface_ale_quadrature_degree=interface_ale_quadrature_degree,
+        interface_ale_rows=interface_ale_rows,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,
