@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""The interface pressure traction terms of the Jacobian of the solvers on (v, p) only (fsi2_simplified,
-threeDfsi_simplified).
+"""The interface pressure traction terms of the Jacobian of the solvers on the velocity and pressures only
+(fsi2_simplified, threeDfsi_simplified, fsi2_incompressible).
 
 These solvers set the interface values of the fluid displacement u_f by the kinematic relation,
 u_f = u_f_old + dt * (theta * v + (1 - theta) * v_old), and their Jacobian is that of the residual with
-respect to (v, p) alone, so it lacks the derivative of the fluid pressure's force on the interface with
-respect to the interface's motion.
+respect to (v, p) alone (and the solid pressure p_S in fsi2_incompressible), so it lacks the derivative
+of the fluid pressure's force on the interface with respect to the interface's motion.
 
 By the Piola identity, div(cof(F)) = 0 with cof(F) = det(F) F^-T and F = I + grad(u_f), the pressure term
 of the momentum equation, -p cof(F) : grad(dv) on the fluid, equals grad(p) . cof(F) dv on the fluid minus
@@ -38,12 +38,19 @@ import dolfinx.fem.forms
 import ufl
 import ufl.algorithms
 
-from xfsi_solver.fsi.forms import FSIForms
 from xfsi_solver.tools.quadrature import fix_quadrature_degree
 
 
-def check_interface_pressure_traction_jacobian(enabled, interface_ale: bool) -> None:
-    """Raise ``ValueError`` unless ``enabled`` is a bool, and not True together with ``interface_ale``."""
+def check_interface_pressure_traction_jacobian(enabled, interface_ale: bool, quadrature_degree=None) -> None:
+    """Raise ``ValueError`` unless ``enabled`` is a bool, and not True together with ``interface_ale``, and
+    ``quadrature_degree`` is None or a non-negative integer."""
+    if quadrature_degree is not None and (
+        isinstance(quadrature_degree, bool) or not isinstance(quadrature_degree, int) or quadrature_degree < 0
+    ):
+        raise ValueError(
+            "interface_pressure_traction_quadrature_degree must be None or a non-negative integer, "
+            f"not {quadrature_degree!r}"
+        )
     if not isinstance(enabled, bool):
         raise ValueError(f"interface_pressure_traction_jacobian must be True or False, not {enabled!r}")
     if enabled and interface_ale:
@@ -58,22 +65,34 @@ def cofactor(u):
     return ufl.cofac(ufl.Identity(u.ufl_shape[0]) + ufl.grad(u))
 
 
-def interface_pressure_traction_form(forms: FSIForms, v, v_old, p, u_f, u_f_old, ds_interface):
-    """The interface pressure traction terms, as a form in the momentum rows:
+def interface_pressure_traction_form(
+    dv, dt, theta, v, v_old, p, u_f, u_f_old, ds_interface, quadrature_degree: int | None = None
+):
+    """The interface pressure traction terms, as a form in the momentum rows, with the test function ``dv``:
     dt * theta * (-p) (cof(F(u_interface)) - cof(F(u_f))) N . dv over ``ds_interface``, the fluid side of the
-    interface, with the test function, dt and theta of ``forms``. They are zero wherever u_f holds the
-    kinematic relation on the interface."""
-    dt, theta = forms.dt, forms.theta
+    interface. They are zero wherever u_f holds the kinematic relation on the interface.
+
+    With ``quadrature_degree``, they are integrated with that quadrature degree, which makes their
+    derivative an approximation of that of the pressure traction, cheaper to assemble at a low degree.
+    Otherwise ``jacobian_blocks`` sets the degree UFL estimates for them, capped as the residual's."""
     u_interface = u_f_old + dt * (theta * v + (1.0 - theta) * v_old)
     n = ufl.FacetNormal(ds_interface.ufl_domain())
-    return dt * theta * ufl.inner(-p * (cofactor(u_interface) - cofactor(u_f)) * n, forms.dv) * ds_interface
+    form = dt * theta * ufl.inner(-p * (cofactor(u_interface) - cofactor(u_f)) * n, dv) * ds_interface
+    if quadrature_degree is None:
+        return form
+    return ufl.Form(
+        [
+            integral.reconstruct(metadata=integral.metadata() | {"quadrature_degree": quadrature_degree})
+            for integral in form.integrals()
+        ]
+    )
 
 
 def jacobian_blocks(residual_blocks, unknowns, traction=None, max_quadrature_degree=None):
     """The Jacobian blocks of ``residual_blocks`` with respect to ``unknowns``, with the interface pressure
     traction terms ``traction`` (from ``interface_pressure_traction_form``, or None) added to the first,
-    momentum, block before differentiating. ``traction`` gets its quadrature degree as the residual blocks do
-    from ``fix_quadrature_degree``, with ``max_quadrature_degree``.
+    momentum, block before differentiating. Unless its quadrature degree is set already, ``traction`` gets
+    it as the residual blocks do from ``fix_quadrature_degree``, with ``max_quadrature_degree``.
 
     dolfinx needs the facet integrals of a form to share their subdomain data, and the interface measure of
     ``traction`` has its own. The derivatives of the momentum row are therefore expanded, which drops the
@@ -88,8 +107,11 @@ def jacobian_blocks(residual_blocks, unknowns, traction=None, max_quadrature_deg
     return [[ufl.algorithms.expand_derivatives(block) for block in momentum], *others]
 
 
-def interface_pressure_traction_description(enabled: bool) -> str:
+def interface_pressure_traction_description(enabled: bool, quadrature_degree: int | None = None) -> str:
     """The interface pressure traction terms, for the summary at the end of a run."""
     if not enabled:
         return "off"
-    return "on, the derivative of the pressure's interface traction through the interface's motion"
+    description = "on, the derivative of the pressure's interface traction through the interface's motion"
+    if quadrature_degree is None:
+        return f"{description},\n    integrated with the degree UFL estimates, capped as the residual's"
+    return f"{description},\n    integrated with quadrature degree {quadrature_degree}"

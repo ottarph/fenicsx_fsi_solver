@@ -35,9 +35,23 @@ def test_rejected_with_interface_ale():
         check_interface_pressure_traction_jacobian(True, interface_ale=True)
 
 
+@pytest.mark.parametrize("degree", [None, 0, 2, 5])
+def test_quadrature_degree_accepted(degree):
+    check_interface_pressure_traction_jacobian(True, interface_ale=False, quadrature_degree=degree)
+
+
+@pytest.mark.parametrize("degree", [-1, 2.0, "2", True])
+def test_quadrature_degree_rejected(degree):
+    with pytest.raises(ValueError, match="interface_pressure_traction_quadrature_degree must be None or"):
+        check_interface_pressure_traction_jacobian(True, interface_ale=False, quadrature_degree=degree)
+
+
 def test_description():
     assert interface_pressure_traction_description(False) == "off"
+    assert interface_pressure_traction_description(False, 2) == "off"
     assert interface_pressure_traction_description(True).startswith("on, ")
+    assert interface_pressure_traction_description(True).endswith("capped as the residual's")
+    assert interface_pressure_traction_description(True, 2).endswith("integrated with quadrature degree 2")
 
 
 @pytest.fixture
@@ -75,9 +89,11 @@ def state():
     return {"forms": forms, "v": v, "v_old": v_old, "p": p, "u_f": u_f, "u_f_old": u_f_old, "ds": ds}
 
 
-def traction(state):
-    s = state
-    return interface_pressure_traction_form(s["forms"], s["v"], s["v_old"], s["p"], s["u_f"], s["u_f_old"], s["ds"])
+def traction(state, quadrature_degree=None):
+    s, forms = state, state["forms"]
+    return interface_pressure_traction_form(
+        forms.dv, forms.dt, forms.theta, s["v"], s["v_old"], s["p"], s["u_f"], s["u_f_old"], s["ds"], quadrature_degree
+    )
 
 
 def assemble_vector(form):
@@ -145,6 +161,39 @@ def test_jacobian_with_a_facet_term_of_the_residual_on_another_measure(state):
     entities = dolfinx.fem.compute_integration_domains(dolfinx.fem.IntegralType.exterior_facet, mesh.topology, left)
     interface = ufl.Measure("ds", domain=mesh, subdomain_data=[(101, entities)])(101)
     residual = ufl.inner(v, forms.dv) * ufl.dx + 1.0e4 * ufl.inner(ufl.FacetNormal(mesh), forms.dv) * outlet
-    terms = interface_pressure_traction_form(forms, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface)
+    terms = interface_pressure_traction_form(
+        forms.dv, forms.dt, forms.theta, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface
+    )
     [[jacobian]] = jacobian_blocks([residual], [v], terms)
     dolfinx.fem.form(jacobian)
+
+
+def test_quadrature_degree_is_kept_by_jacobian_blocks(state):
+    # The degree given is that of the terms' integrals and of their derivative, whatever the cap; without one,
+    # jacobian_blocks sets the degree UFL estimates, capped.
+    v, forms = state["v"], state["forms"]
+    residual = ufl.inner(v, forms.dv) * ufl.dx
+
+    def facet_degrees(quadrature_degree, max_quadrature_degree):
+        [[block]] = jacobian_blocks([residual], [v], traction(state, quadrature_degree), max_quadrature_degree)
+        return {
+            integral.metadata()["quadrature_degree"]
+            for integral in block.integrals()
+            if integral.integral_type() == "exterior_facet"
+        }
+
+    assert facet_degrees(1, None) == {1}
+    assert facet_degrees(1, 5) == {1}
+    assert facet_degrees(None, 2) == {2}
+    estimated = facet_degrees(None, None)
+    assert len(estimated) == 1 and estimated.pop() > 2
+
+
+def test_under_integrated_terms_are_zero_where_u_f_holds_the_kinematic_relation(state):
+    # Both cofactors are integrated with the same quadrature, so the terms vanish at any degree.
+    s = state
+    forms, n = s["forms"], ufl.FacetNormal(s["u_f"].function_space.mesh)
+    one_side = DT * THETA * ufl.inner(-s["p"] * cofactor(s["u_f"]) * n, forms.dv) * s["ds"]
+    scale = assemble_vector(one_side).norm()
+    for degree in (0, 1, 2):
+        assert assemble_vector(traction(state, degree)).norm() < 1e-13 * scale

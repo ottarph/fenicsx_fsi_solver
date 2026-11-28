@@ -691,10 +691,16 @@ def test_fsi2_simplified_rejects_invalid_interface_ale_rows(output_dirs):
         )
 
 
-@pytest.mark.parametrize("solver", ["direct", "iterative"])
-def test_fsi2_simplified_interface_pressure_traction_jacobian_converges_to_the_same_state(output_dirs, solver):
+@pytest.mark.parametrize(
+    "solver, quadrature_degree",
+    [("direct", None), ("iterative", None), ("direct", 1)],
+    ids=["direct", "iterative", "degree_1"],
+)
+def test_fsi2_simplified_interface_pressure_traction_jacobian_converges_to_the_same_state(
+    output_dirs, solver, quadrature_degree
+):
     # The interface pressure traction terms only change the Jacobian, so the converged QoIs are those without them,
-    # with MUMPS LU on the assembled Jacobian and with the fieldsplit on a nest Jacobian.
+    # with MUMPS LU on the assembled Jacobian and with the fieldsplit on a nest Jacobian, also integrated inexactly.
     dt_val = 0.0025
     base = {"iterative": DEFAULT_ITERATIVE_SOLVER_OPTIONS, "direct": DEFAULT_DIRECT_SOLVER_OPTIONS}[solver]
     converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
@@ -710,6 +716,7 @@ def test_fsi2_simplified_interface_pressure_traction_jacobian_converges_to_the_s
             solver_options=base | converged,
             max_quadrature_degree=5,
             interface_pressure_traction_jacobian=interface_pressure_traction_jacobian,
+            interface_pressure_traction_quadrature_degree=quadrature_degree,
         )
         return np.loadtxt(qoi_path, ndmin=2)
 
@@ -721,6 +728,7 @@ def test_fsi2_simplified_interface_pressure_traction_jacobian_converges_to_the_s
     [
         ({"interface_pressure_traction_jacobian": "pressure"}, "interface_pressure_traction_jacobian must be"),
         ({"interface_pressure_traction_jacobian": True, "interface_ale": True}, "does not go with interface_ale"),
+        ({"interface_pressure_traction_quadrature_degree": 1.5}, "interface_pressure_traction_quadrature_degree"),
     ],
 )
 def test_fsi2_simplified_rejects_invalid_interface_pressure_traction_jacobian(output_dirs, kwargs, match):

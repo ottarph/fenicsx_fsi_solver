@@ -293,6 +293,7 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         ({"interface_ale": True, "interface_ale_rows": ("pressure",)}, "interface_ale_rows"),
         ({"interface_pressure_traction_jacobian": "pressure"}, "interface_pressure_traction_jacobian must be"),
         ({"interface_pressure_traction_jacobian": True, "interface_ale": True}, "does not go with interface_ale"),
+        ({"interface_pressure_traction_quadrature_degree": -1}, "interface_pressure_traction_quadrature_degree"),
     ],
     ids=[
         "theta_shift",
@@ -308,6 +309,7 @@ def test_threeDfsi_simplified_mooney_rivlin_3_matches_svk_at_small_strain(output
         "interface_ale_rows",
         "interface_pressure_traction_value",
         "interface_pressure_traction_with_ale",
+        "interface_pressure_traction_quadrature_degree",
     ],
 )
 def test_threeDfsi_simplified_rejects_invalid_options(output_dirs, kwargs, match):
