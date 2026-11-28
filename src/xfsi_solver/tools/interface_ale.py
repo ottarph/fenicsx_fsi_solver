@@ -2,17 +2,18 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""The interface ALE terms of the Jacobian of the solvers on (v, p) only (fsi2_simplified,
-threeDfsi_simplified).
+"""The interface ALE terms of the Jacobian of the solvers on the velocity and pressures only
+(fsi2_simplified, threeDfsi_simplified, fsi2_incompressible).
 
 These solvers set the displacements from v after each linear solve: the solid displacement and the
 interface values of the fluid displacement u_f by the kinematic relation, u_f = u_f_old + dt * (theta * v
 + (1 - theta) * v_old) at the interface dofs, and the interior of u_f by the mesh motion. Their Jacobian
-is that of the residual with respect to (v, p) alone, so it lacks the derivatives of the fluid residual
-through the mesh. The interface ALE terms add those through the interface dofs of u_f: theta * dt * C K
-in the (v, v) and (p, v) blocks, with C the derivative of the momentum and mass residuals with respect to
-u_f and K the map from v to the interface dofs of u_f, at the same nodes. Those through the interior of
-the fluid mesh, which the mesh motion moves with the interface, are still left out.
+is that of the residual with respect to (v, p) alone (and the solid pressure p_S in fsi2_incompressible),
+so it lacks the derivatives of the fluid residual through the mesh. The interface ALE terms add those
+through the interface dofs of u_f: theta * dt * C K in the (v, v) and (p, v) blocks, with C the
+derivative of the momentum and mass residuals with respect to u_f and K the map from v to the interface
+dofs of u_f, at the same nodes. Those through the interior of the fluid mesh, which the mesh motion moves
+with the interface, are still left out.
 
 For a constant fluid pressure P, the pressure term of the momentum equation is P times the integral of
 dv . n over the fluid boundary, so its derivative with respect to the interior mesh nodes vanishes: the
@@ -40,19 +41,21 @@ def check_interface_ale_rows(rows) -> None:
 
 
 class InterfaceALE:
-    """The interface ALE terms theta * dt * C K, to add to a nest Jacobian of (v, p).
+    """The interface ALE terms theta * dt * C K, to add to a nest Jacobian of (v, p), or to a monolithic
+    Jacobian of (v, p, ...) with the blocks ``block_spaces``.
 
-    They are assembled straight into the (v, v) and (p, v) blocks, from the derivative of the residual
-    with respect to u_f in the direction theta * dt * w, with w a trial function on a clone of V. U_f and
-    V have the same element, so this is C K' with K' the map from v to all dofs of u_f at the same
-    nodes. The clone shares the element, dofmap and global numbering of V, so the columns are those of
-    the blocks, but it is another space: a Dirichlet condition on it zeroes columns only. One on every
-    node of the clone but the free interface nodes keeps the interface columns of C K', which are those
-    of C K. The Dirichlet conditions of v zero the rows of their dofs in the (v, v) block; they leave the
-    (p, v) block alone, whose rows are in the pressure space. Neither form has the same test and trial
-    space, so no diagonal is inserted. The terms are assembled only on the fluid cells with a dof on
-    the interface, the only cells with an entry in an interface column. They couple dofs that share a
-    cell, so they fit the pattern of the Jacobian.
+    They are assembled straight into the (v, v) and (p, v) blocks, the submatrices of a nest Jacobian or
+    the local submatrices of the blocks of a monolithic one, as dolfinx assembles a blocked form, from the
+    derivative of the residual with respect to u_f in the direction theta * dt * w, with w a trial
+    function on a clone of V. U_f and V have the same element, so this is C K' with K' the map from v to
+    all dofs of u_f at the same nodes. The clone shares the element, dofmap and global numbering of V, so
+    the columns are those of the blocks, but it is another space: a Dirichlet condition on it zeroes
+    columns only. One on every node of the clone but the free interface nodes keeps the interface columns
+    of C K', which are those of C K. The Dirichlet conditions of v zero the rows of their dofs in the
+    (v, v) block; they leave the (p, v) block alone, whose rows are in the pressure space. Neither form has
+    the same test and trial space, so no diagonal is inserted. The terms are assembled only on the fluid
+    cells with a dof on the interface, the only cells with an entry in an interface column. They couple
+    dofs that share a cell, so they fit the pattern of the Jacobian.
 
     Args:
         residual_blocks: the momentum and mass residuals, in this order, with their quadrature degree set
@@ -71,6 +74,8 @@ class InterfaceALE:
         cell_tag: a cell tag not in ``cell_tags``, for the cells on which C is assembled.
         rows: the rows that get the terms, a selection of ``ROWS``: on FSI2, the momentum rows give nearly all
             of their effect on Newton's convergence, and the mass rows a third of their cost.
+        block_spaces: the function spaces of the unknowns, (V, Q, ...), in the order of the blocks of a
+            monolithic Jacobian, which ``add`` then takes. Not needed for a nest Jacobian.
     """
 
     def __init__(
@@ -89,6 +94,7 @@ class InterfaceALE:
         quadrature_degree: int | None = None,
         cell_tag: int = 1000,
         rows=ROWS,
+        block_spaces=None,
     ):
         check_interface_ale_rows(rows)
         mesh = V.mesh
@@ -152,13 +158,40 @@ class InterfaceALE:
             *bcs,
         ]
 
+        # The local index sets of the blocks of a monolithic Jacobian, as dolfinx makes them to assemble a
+        # blocked form into it.
+        self._index_sets = None
+        if block_spaces is not None:
+            self._index_sets = dolfinx.cpp.la.petsc.create_index_sets(
+                [(space.dofmap.index_map, space.dofmap.index_map_bs) for space in block_spaces]
+            )
+
     def add(self, J: PETSc.Mat) -> None:
-        """Add theta * dt * C K to the (v, v) and (p, v) blocks of the nest Jacobian J, those of the selected
-        rows, and assemble J."""
-        for i, form in self._forms:
-            # The condition on the clone zeroes the columns of the dropped nodes; those on v zero the rows of
-            # their dofs where the rows are in V, in the (v, v) block.
-            dolfinx.fem.petsc.assemble_matrix(J.getNestSubMatrix(i, 0), form, bcs=self._bcs)
+        """Add theta * dt * C K to the (v, v) and (p, v) blocks of the Jacobian J, those of the selected rows,
+        and assemble J. J is a nest matrix, or a monolithic one with the blocks ``block_spaces``."""
+        # The condition on the clone zeroes the columns of the dropped nodes; those on v zero the rows of
+        # their dofs where the rows are in V, in the (v, v) block.
+        if J.getType() == PETSc.Mat.Type.NEST:
+            for i, form in self._forms:
+                dolfinx.fem.petsc.assemble_matrix(J.getNestSubMatrix(i, 0), form, bcs=self._bcs)
+        else:
+            if self._index_sets is None:
+                raise ValueError("Adding the interface ALE terms to a monolithic Jacobian needs block_spaces")
+            bcs = [bc._cpp_object for bc in self._bcs]
+            columns = self._index_sets[0]
+            for i, form in self._forms:
+                block = J.getLocalSubMatrix(self._index_sets[i], columns)
+                # Unrolled, with the dofs of each node one by one, as dolfinx assembles the blocks of a
+                # monolithic matrix
+                dolfinx.cpp.fem.petsc.assemble_matrix(
+                    block,
+                    form._cpp_object,
+                    dolfinx.fem.pack_constants(form),
+                    dolfinx.fem.pack_coefficients(form),
+                    bcs,
+                    True,
+                )
+                J.restoreLocalSubMatrix(self._index_sets[i], columns, block)
         J.assemble()
 
 
