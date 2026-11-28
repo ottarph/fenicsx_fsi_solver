@@ -1,0 +1,199 @@
+import dolfinx
+import dolfinx.fem.petsc
+import numpy as np
+import pytest
+import ufl
+from mpi4py import MPI
+from petsc4py import PETSc
+
+from xfsi_solver.fsi.forms import FSIForms
+from xfsi_solver.tools.interface_pressure_traction import (
+    check_interface_pressure_traction_jacobian,
+    cofactor,
+    interface_pressure_traction_description,
+    interface_pressure_traction_form,
+    jacobian_blocks,
+)
+
+DT, THETA = 0.0025, 0.505
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_bool_accepted(enabled):
+    check_interface_pressure_traction_jacobian(enabled, interface_ale=False)
+
+
+@pytest.mark.parametrize("enabled", [None, "pressure", 1])
+def test_other_values_rejected(enabled):
+    with pytest.raises(ValueError, match="interface_pressure_traction_jacobian must be True or False"):
+        check_interface_pressure_traction_jacobian(enabled, interface_ale=False)
+
+
+def test_rejected_with_interface_ale():
+    check_interface_pressure_traction_jacobian(False, interface_ale=True)
+    with pytest.raises(ValueError, match="does not go with interface_ale"):
+        check_interface_pressure_traction_jacobian(True, interface_ale=True)
+
+
+@pytest.mark.parametrize("degree", [None, 0, 2, 5])
+def test_quadrature_degree_accepted(degree):
+    check_interface_pressure_traction_jacobian(True, interface_ale=False, quadrature_degree=degree)
+
+
+@pytest.mark.parametrize("degree", [-1, 2.0, "2", True])
+def test_quadrature_degree_rejected(degree):
+    with pytest.raises(ValueError, match="interface_pressure_traction_quadrature_degree must be None or"):
+        check_interface_pressure_traction_jacobian(True, interface_ale=False, quadrature_degree=degree)
+
+
+def test_description():
+    assert interface_pressure_traction_description(False) == "off"
+    assert interface_pressure_traction_description(False, 2) == "off"
+    assert interface_pressure_traction_description(True).startswith("on, ")
+    assert interface_pressure_traction_description(True).endswith("capped as the residual's")
+    assert interface_pressure_traction_description(True, 2).endswith("integrated with quadrature degree 2")
+
+
+@pytest.fixture
+def state():
+    """Fields on the unit square, whose whole boundary stands in for the interface, with u_f set by the
+    kinematic relation from u_f_old, v and v_old, as the solvers set it on the interface."""
+    mesh = dolfinx.mesh.create_unit_square(MPI.COMM_WORLD, 4, 4)
+    V = dolfinx.fem.functionspace(mesh, ("Lagrange", 2, (2,)))
+    P = dolfinx.fem.functionspace(mesh, ("Lagrange", 1))
+    v, v_old, u_f, u_f_old = (dolfinx.fem.Function(V) for _ in range(4))
+    v.interpolate(lambda x: np.stack([np.sin(3 * x[1]), x[0] * x[1]]))
+    v_old.interpolate(lambda x: np.stack([x[1] ** 2, np.cos(2 * x[0])]))
+    u_f_old.interpolate(lambda x: np.stack([0.05 * x[0] * x[1], 0.08 * np.sin(np.pi * x[0])]))
+    u_f.x.array[:] = u_f_old.x.array + DT * (THETA * v.x.array + (1.0 - THETA) * v_old.x.array)
+    p = dolfinx.fem.Function(P)
+    p.interpolate(lambda x: 1.0e4 + 300.0 * x[0] - 200.0 * x[1] ** 2)
+
+    def constant(value):
+        return dolfinx.fem.Constant(mesh, value)
+
+    forms = FSIForms(
+        dv=ufl.TestFunction(V),
+        dp=ufl.TestFunction(P),
+        dx_fluid=ufl.dx,
+        dx_solid=ufl.dx,
+        rho_f=constant(1.0e3),
+        nu_f=constant(1.0e-3),
+        rho_s=constant(1.0e4),
+        mu_s=constant(5.0e5),
+        lambda_s=constant(2.0e6),
+        dt=constant(DT),
+        theta=constant(THETA),
+    )
+    ds = ufl.Measure("ds", domain=mesh)
+    return {"forms": forms, "v": v, "v_old": v_old, "p": p, "u_f": u_f, "u_f_old": u_f_old, "ds": ds}
+
+
+def traction(state, quadrature_degree=None):
+    s, forms = state, state["forms"]
+    return interface_pressure_traction_form(
+        forms.dv, forms.dt, forms.theta, s["v"], s["v_old"], s["p"], s["u_f"], s["u_f_old"], s["ds"], quadrature_degree
+    )
+
+
+def assemble_vector(form):
+    vector = dolfinx.fem.petsc.assemble_vector(dolfinx.fem.form(form))
+    vector.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+    return vector
+
+
+def test_terms_are_zero_where_u_f_holds_the_kinematic_relation(state):
+    # The pressure traction of the new geometry alone, for the scale
+    s = state
+    forms, n = s["forms"], ufl.FacetNormal(s["u_f"].function_space.mesh)
+    one_side = DT * THETA * ufl.inner(-s["p"] * cofactor(s["u_f"]) * n, forms.dv) * s["ds"]
+    scale = assemble_vector(one_side).norm()
+    assert scale > 1.0
+    assert assemble_vector(traction(state)).norm() < 1e-13 * scale
+
+
+def test_jacobian_holds_the_derivative_of_the_pressure_traction_through_the_interface_motion(state):
+    # The terms' derivative with respect to v, in the direction w, is that of the pressure's traction
+    # dt * theta * (-p) cof(F(u_f)) N . dv as u_f moves by theta * dt * w. In 2d, cof(F) is linear in grad(u_f),
+    # so a central difference gives the derivative to round-off.
+    s = state
+    forms, v = s["forms"], s["v"]
+    residual = ufl.inner(v, forms.dv) * ufl.dx
+    [[with_terms]] = jacobian_blocks([residual], [v], traction(state))
+    [[without]] = jacobian_blocks([residual], [v])
+    matrices = []
+    for form in (with_terms, without):
+        matrix = dolfinx.fem.petsc.assemble_matrix(dolfinx.fem.form(form))
+        matrix.assemble()
+        matrices.append(matrix)
+    w = dolfinx.fem.Function(v.function_space)
+    w.interpolate(lambda x: np.stack([np.cos(x[0] + 2 * x[1]), x[0] ** 2 - x[1]]))
+    derivative = matrices[0].createVecLeft()
+    matrices[0].axpy(-1.0, matrices[1])
+    matrices[0].mult(w.x.petsc_vec, derivative)
+
+    u = dolfinx.fem.Function(v.function_space)
+    n = ufl.FacetNormal(v.function_space.mesh)
+    force = DT * THETA * ufl.inner(-s["p"] * cofactor(u) * n, forms.dv) * s["ds"]
+    eps = 1.0e-3
+    forces = []
+    for sign in (1.0, -1.0):
+        u.x.array[:] = s["u_f"].x.array + sign * eps * THETA * DT * w.x.array
+        forces.append(assemble_vector(force))
+    difference = (forces[0] - forces[1]) / (2 * eps)
+
+    assert derivative.norm() > 0.0
+    assert (derivative - difference).norm() < 1e-10 * derivative.norm()
+
+
+def test_jacobian_with_a_facet_term_of_the_residual_on_another_measure(state):
+    # dolfinx needs one subdomain data for the facet integrals of a form. An outlet traction in the residual,
+    # on the facet tags, does not depend on the unknowns, so it drops out of the Jacobian next to the terms on
+    # the interface measure.
+    s = state
+    forms, v = s["forms"], s["v"]
+    mesh = v.function_space.mesh
+    mesh.topology.create_connectivity(mesh.topology.dim - 1, mesh.topology.dim)
+    right = dolfinx.mesh.locate_entities_boundary(mesh, 1, lambda x: np.isclose(x[0], 1.0))
+    left = dolfinx.mesh.locate_entities_boundary(mesh, 1, lambda x: np.isclose(x[0], 0.0))
+    tags = dolfinx.mesh.meshtags(mesh, 1, right, np.full(right.size, 3, dtype=np.int32))
+    outlet = ufl.Measure("ds", domain=mesh, subdomain_data=tags)(3)
+    entities = dolfinx.fem.compute_integration_domains(dolfinx.fem.IntegralType.exterior_facet, mesh.topology, left)
+    interface = ufl.Measure("ds", domain=mesh, subdomain_data=[(101, entities)])(101)
+    residual = ufl.inner(v, forms.dv) * ufl.dx + 1.0e4 * ufl.inner(ufl.FacetNormal(mesh), forms.dv) * outlet
+    terms = interface_pressure_traction_form(
+        forms.dv, forms.dt, forms.theta, v, s["v_old"], s["p"], s["u_f"], s["u_f_old"], interface
+    )
+    [[jacobian]] = jacobian_blocks([residual], [v], terms)
+    dolfinx.fem.form(jacobian)
+
+
+def test_quadrature_degree_is_kept_by_jacobian_blocks(state):
+    # The degree given is that of the terms' integrals and of their derivative, whatever the cap; without one,
+    # jacobian_blocks sets the degree UFL estimates, capped.
+    v, forms = state["v"], state["forms"]
+    residual = ufl.inner(v, forms.dv) * ufl.dx
+
+    def facet_degrees(quadrature_degree, max_quadrature_degree):
+        [[block]] = jacobian_blocks([residual], [v], traction(state, quadrature_degree), max_quadrature_degree)
+        return {
+            integral.metadata()["quadrature_degree"]
+            for integral in block.integrals()
+            if integral.integral_type() == "exterior_facet"
+        }
+
+    assert facet_degrees(1, None) == {1}
+    assert facet_degrees(1, 5) == {1}
+    assert facet_degrees(None, 2) == {2}
+    estimated = facet_degrees(None, None)
+    assert len(estimated) == 1 and estimated.pop() > 2
+
+
+def test_under_integrated_terms_are_zero_where_u_f_holds_the_kinematic_relation(state):
+    # Both cofactors are integrated with the same quadrature, so the terms vanish at any degree.
+    s = state
+    forms, n = s["forms"], ufl.FacetNormal(s["u_f"].function_space.mesh)
+    one_side = DT * THETA * ufl.inner(-s["p"] * cofactor(s["u_f"]) * n, forms.dv) * s["ds"]
+    scale = assemble_vector(one_side).norm()
+    for degree in (0, 1, 2):
+        assert assemble_vector(traction(state, degree)).norm() < 1e-13 * scale

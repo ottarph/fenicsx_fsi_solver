@@ -25,6 +25,13 @@ from xfsi_solver.scripts.plot_qois import INCOMPRESSIBLE_QOI_LABELS, plot_run_qo
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
+from xfsi_solver.tools.interface_ale import InterfaceALE, check_interface_ale_rows, interface_ale_description
+from xfsi_solver.tools.interface_pressure_traction import (
+    check_interface_pressure_traction_jacobian,
+    interface_pressure_traction_description,
+    interface_pressure_traction_form,
+    jacobian_blocks,
+)
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import theta_value
 from xfsi_solver.tools.qoi import (
@@ -38,7 +45,7 @@ from xfsi_solver.tools.qoi import (
     init_qoi_file,
     point_value,
 )
-from xfsi_solver.tools.quadrature import cap_quadrature_degree, quadrature_description
+from xfsi_solver.tools.quadrature import fix_quadrature_degree, quadrature_description
 from xfsi_solver.tools.rigid_body_modes import rigid_body_modes
 from xfsi_solver.tools.submesh import SubmeshComposite, all_cells
 from xfsi_solver.tools.vtkhdf import VTKHDFWriter
@@ -95,6 +102,11 @@ def solve(
     predict_displacements=True,
     skip_dirichlet_lifting=True,
     snes_converged_reason_on=True,
+    interface_ale=False,
+    interface_ale_quadrature_degree=None,
+    interface_ale_rows=("momentum", "mass"),
+    interface_pressure_traction_jacobian=False,
+    interface_pressure_traction_quadrature_degree=None,
 ):
     """Solve the FSI2i benchmark, FSI2 with an incompressible solid, with Newton's method on the
     velocities and pressures only.
@@ -183,11 +195,13 @@ def solve(
     ``xfsi_solver.tools.qoi.drag_lift_forms``), which makes them second order in time; from v and u_f of t^{n+1}
     they would be first order. In the row of a start state they are those of the state.
 
-    If ``max_quadrature_degree`` is given, the quadrature degree of the residual, and so of its
-    Jacobian, and of the drag and lift is capped at it: integrals for which UFL estimates a higher
-    degree are integrated inexactly at that degree, and the others keep their estimate. With the
-    default None, every integral keeps the degree UFL estimates. The measures of the violation of
-    det(F) = 1 are not capped.
+    If ``max_quadrature_degree`` is given, the quadrature degree of the residual and of the drag and
+    lift is capped at it: integrals for which UFL estimates a higher degree are integrated inexactly
+    at that degree, and the others keep their estimate. With the default None, every integral of the
+    residual keeps the degree UFL estimates for it. The Jacobian is integrated with the quadrature of
+    the residual, so that it is its exact derivative (by
+    ``xfsi_solver.tools.quadrature.fix_quadrature_degree``); UFL alone would estimate higher degrees
+    for most of its blocks. The measures of the violation of det(F) = 1 are not capped.
 
     With ``skip_dirichlet_lifting=True``, the residual is assembled without lifting the Dirichlet
     conditions of v, and every Newton iterate holds their values exactly, by
@@ -212,8 +226,43 @@ def solve(
     Printing it makes PETSc keep a stdout viewer for the communicator of the mesh, in a table of
     fixed size, until PetscFinalize, so a process that creates a few hundred meshes, such as the
     test suite, which turns it off in tests/conftest.py, overflows the table and crashes.
+
+    With ``interface_ale=True``, the Jacobian also holds the derivatives of the momentum and continuity
+    equations with respect to the interface displacement, through the interface dofs of u_f, which the
+    kinematic relation sets to u_f_old + dt * (theta * v + (1 - theta) * v_old): theta * dt * C K, with
+    C the derivative of the residual with respect to u_f and K the map from v to the interface dofs of
+    u_f, at the same nodes, by ``xfsi_solver.tools.interface_ale``, as in fsi2_simplified. The constraint
+    det(F) = 1 does not depend on u_f. The derivatives through the interior of the fluid mesh, which the
+    mesh motion moves with the interface, are still left out. The added entries couple dofs that share a
+    cell, so they fit the pattern of the Jacobian, into whose (v, v) and (p, v) blocks they are assembled,
+    with any ``solver_options``. Each assembly of the Jacobian then also assembles C, on the fluid cells
+    with a dof on the interface only. With ``interface_ale_quadrature_degree``, C is integrated with that
+    quadrature degree instead of that of the residual, which makes it an approximation of the derivative,
+    cheaper to assemble at a low degree. ``interface_ale_rows`` selects the rows that get the terms:
+    ``"momentum"``, those of the (v, v) block, and ``"mass"``, those of the (p, v) block, by default both.
+    The fluid pressure's force on the interface gets the derivative of its geometric factor with
+    respect to the interface's motion from these terms, which the solid pressure's force has in J_0
+    already: with a mean pressure, which both pressures take up in FSI2i, J_0 alone converges more
+    slowly the higher the pressure.
+
+    With ``interface_pressure_traction_jacobian=True``, the Jacobian holds only that derivative of the
+    fluid pressure's force on the interface, through the geometric factor cof(F) N of its traction, by
+    ``xfsi_solver.tools.interface_pressure_traction``, as in fsi2_simplified: the form the Jacobian is
+    derived from gets dt * theta * (-p) (cof(F(u_interface)) - cof(F(u_f))) N . dv on the fluid side of the
+    interface, with u_interface = u_f_old + dt * (theta * v + (1 - theta) * v_old). This is zero, since u_f
+    holds that value on the interface, but its derivative with respect to v is not. The residual is
+    unchanged, so the solution is that of J_0. It is a lighter alternative to ``interface_ale``, at the
+    cost of one integral over the interface facets; the interface ALE terms already hold this derivative,
+    so the two do not go together. With ``interface_pressure_traction_quadrature_degree``, the terms are
+    integrated with that quadrature degree instead of the degree UFL estimates for them, capped at
+    ``max_quadrature_degree``, which makes their derivative an approximation, cheaper to assemble at a low
+    degree.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
+    check_interface_ale_rows(interface_ale_rows)
+    check_interface_pressure_traction_jacobian(
+        interface_pressure_traction_jacobian, interface_ale, interface_pressure_traction_quadrature_degree
+    )
     theta_val = theta_value(dt_val, absolute_theta_shift, relative_theta_shift, 2.0)
 
     if solver_options is None:
@@ -604,10 +653,26 @@ def solve(
 
     residual_blocks = ufl.extract_blocks(residual)
 
-    # Cap the quadrature degree before taking derivatives, so that the Jacobian blocks keep it.
-    residual_blocks = [cap_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
+    # Set the quadrature degree before taking derivatives, so that the Jacobian blocks are integrated with the
+    # quadrature of the residual.
+    residual_blocks = [fix_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
-    jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p, p_S))
+    # The interface pressure traction terms change only the Jacobian, so they are not in the residual.
+    traction = None
+    if interface_pressure_traction_jacobian:
+        traction = interface_pressure_traction_form(
+            dv,
+            dt,
+            theta,
+            v,
+            v_old,
+            p,
+            u_f,
+            u_f_old,
+            ds_interface_fluid,
+            interface_pressure_traction_quadrature_degree,
+        )
+    jacobian = jacobian_blocks(residual_blocks, (v, p, p_S), traction, max_quadrature_degree)
 
     # --------------------------------------------
 
@@ -746,6 +811,8 @@ def solve(
         if reuse and (previous_norm is None or norm <= gamma_reassemble * previous_norm):
             return
         fem_jacobian(snes, x, J, P, *jac_args, **jac_kargs)
+        if interface_ale:
+            interface_ale_terms.add(J)
         jacobian_state["assembled"] = True
         jacobian_state["num_assemblies"] += 1
 
@@ -813,6 +880,25 @@ def solve(
     v_dof_of_u_f[U_f.dofmap.list[fluid_cells]] = V.dofmap.list[fluid_parent_cells]
     interface_u_f = (block_size_u * fluid_movable_dofs[:, None] + np.arange(block_size_u)).ravel()  # unrolled
     interface_v = (block_size_u * v_dof_of_u_f[fluid_movable_dofs][:, None] + np.arange(block_size_u)).ravel()
+
+    if interface_ale:
+        # The momentum and continuity residuals; the constraint, the third block, does not depend on u_f.
+        interface_ale_terms = InterfaceALE(
+            residual_blocks[:2],
+            u_f,
+            V,
+            cell_tags,
+            facet_tags,
+            PHYSICAL_MARKERS["ALE_fluid"],
+            PHYSICAL_MARKERS["solid_fluid_interface"],
+            entity_maps,
+            bcs,
+            theta_val,
+            dt_val,
+            quadrature_degree=interface_ale_quadrature_degree,
+            rows=interface_ale_rows,
+            block_spaces=(V, P, P_S),
+        )
 
     def update_displacements() -> None:
         """Set u_s and the interface values of u_f from v by the kinematic relation, node by node, and u_f
@@ -931,6 +1017,10 @@ def solve(
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
+    ale_description = interface_ale_description(interface_ale, interface_ale_quadrature_degree, interface_ale_rows)
+    traction_description = interface_pressure_traction_description(
+        interface_pressure_traction_jacobian, interface_pressure_traction_quadrature_degree
+    )
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -938,6 +1028,8 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
+            f"  Interface ALE: {ale_description}\n"
+            f"  Interface pressure traction Jacobian: {traction_description}\n"
             f"  Time stepping: theta = 0.5 + {theta_val - 0.5:g} = {theta_val:g}\n"
             f"  Solid: incompressible Mooney-Rivlin, c1 = {c1.value:g}, c2 = {c2.value:g}, with solid pressure p_S\n"
             "    for det(F) = 1, elastic stress theta-averaged, pressure and constraint fully implicit\n"
@@ -1000,6 +1092,12 @@ def main():
     output_every = None
     gamma_reassemble = 0.05  # Default 0.05.
     max_quadrature_degree = None  # Default None, no cap.
+    interface_ale = True  # Jacobian blocks of dv, dp rows wrt. u_f applied on the interface dofs
+    interface_ale_quadrature_degree = 2  # Fast, but accurate enough for robustness
+    interface_ale_rows = ("momentum",)
+    # A lighter alternative to interface_ale, for the pressure robustness only; not with interface_ale
+    interface_pressure_traction_jacobian = False
+    interface_pressure_traction_quadrature_degree = None  # Default None, the estimate, capped
     solver_options = DEFAULT_DIRECT_SOLVER_OPTIONS
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     requires_v_sub_IS = False
@@ -1027,6 +1125,11 @@ def main():
         output_every=output_every,
         gamma_reassemble=gamma_reassemble,  # Default 0.05.
         max_quadrature_degree=max_quadrature_degree,  # Default None, no cap.
+        interface_ale=interface_ale,
+        interface_ale_quadrature_degree=interface_ale_quadrature_degree,
+        interface_ale_rows=interface_ale_rows,
+        interface_pressure_traction_jacobian=interface_pressure_traction_jacobian,
+        interface_pressure_traction_quadrature_degree=interface_pressure_traction_quadrature_degree,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,

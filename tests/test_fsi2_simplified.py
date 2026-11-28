@@ -652,3 +652,93 @@ def test_fsi2_simplified_under_integrated_interface_ale_converges_to_the_same_st
         return np.loadtxt(qoi_path, ndmin=2)
 
     np.testing.assert_allclose(run("ale_2", True), run("J_0", False), rtol=1e-6, atol=0)
+
+
+def test_fsi2_simplified_momentum_row_interface_ale_converges_to_the_same_state(output_dirs):
+    # The interface ALE terms in the momentum rows only still only change the Jacobian.
+    dt_val = 0.0025
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, interface_ale):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS | converged,
+            max_quadrature_degree=5,
+            interface_ale=interface_ale,
+            interface_ale_rows=("momentum",),
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    np.testing.assert_allclose(run("ale_momentum", True), run("J_0", False), rtol=1e-6, atol=0)
+
+
+def test_fsi2_simplified_rejects_invalid_interface_ale_rows(output_dirs):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match="interface_ale_rows"):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            interface_ale=True,
+            interface_ale_rows=(),
+        )
+
+
+@pytest.mark.parametrize(
+    "solver, quadrature_degree",
+    [("direct", None), ("iterative", None), ("direct", 1)],
+    ids=["direct", "iterative", "degree_1"],
+)
+def test_fsi2_simplified_interface_pressure_traction_jacobian_converges_to_the_same_state(
+    output_dirs, solver, quadrature_degree
+):
+    # The interface pressure traction terms only change the Jacobian, so the converged QoIs are those without them,
+    # with MUMPS LU on the assembled Jacobian and with the fieldsplit on a nest Jacobian, also integrated inexactly.
+    dt_val = 0.0025
+    base = {"iterative": DEFAULT_ITERATIVE_SOLVER_OPTIONS, "direct": DEFAULT_DIRECT_SOLVER_OPTIONS}[solver]
+    converged = {"snes_atol": 1e-12, "ksp_atol": 1e-14}
+
+    def run(name, interface_pressure_traction_jacobian):
+        qoi_path = output_dirs["qoi"] / f"{name}.txt"
+        solve(
+            mesh_path=MESH,
+            T=3 * dt_val,
+            dt_val=dt_val,
+            output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+            qoi_path=str(qoi_path),
+            solver_options=base | converged,
+            max_quadrature_degree=5,
+            interface_pressure_traction_jacobian=interface_pressure_traction_jacobian,
+            interface_pressure_traction_quadrature_degree=quadrature_degree,
+        )
+        return np.loadtxt(qoi_path, ndmin=2)
+
+    np.testing.assert_allclose(run("pressure_traction", True), run("J_0", False), rtol=1e-6, atol=0)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"interface_pressure_traction_jacobian": "pressure"}, "interface_pressure_traction_jacobian must be"),
+        ({"interface_pressure_traction_jacobian": True, "interface_ale": True}, "does not go with interface_ale"),
+        ({"interface_pressure_traction_quadrature_degree": 1.5}, "interface_pressure_traction_quadrature_degree"),
+    ],
+)
+def test_fsi2_simplified_rejects_invalid_interface_pressure_traction_jacobian(output_dirs, kwargs, match):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            **kwargs,
+        )

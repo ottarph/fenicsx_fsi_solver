@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from mpi4py import MPI
 from newton_log_helpers import check_solver_newton_log
+from petsc4py import PETSc
 from restart_helpers import check_restart_reproduces_continuous_run, check_start_from_initial_state
 
 from xfsi_solver.petsc_options.fsi2d import (
@@ -9,8 +10,10 @@ from xfsi_solver.petsc_options.fsi2d import (
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     MUMPS_ON_SOLID,
 )
+from xfsi_solver.solvers import fsi2_incompressible
 from xfsi_solver.solvers.fsi2_incompressible import solve
 from xfsi_solver.tools import vtkhdf
+from xfsi_solver.tools.interface_ale import InterfaceALE
 
 # The checkpoints hold the displacement as one function u on the full mesh; p and p_S live on the fluid
 # and solid submeshes but are checkpointed on the full mesh.
@@ -187,8 +190,9 @@ def test_fsi2_incompressible_restart_reproduces_continuous_run(output_dirs, tmp_
         tmp_path,
         rtol=1e-6,
         qoi_rtol=1e-6,
-        # The solid area change is round-off on these few steps, so only its size is compared
-        qoi_column_rtol={"solid_area_change": 1.0},
+        # The solid area change is round-off on these few steps, so only its size is compared: two round-off
+        # values of that size differ by up to twice it.
+        qoi_column_rtol={"solid_area_change": 2.0},
         first_ranks=ranks[0],
         restart_ranks=ranks[1],
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
@@ -204,7 +208,7 @@ def test_fsi2_incompressible_starts_from_initial_state(output_dirs, tmp_path):
         tmp_path,
         rtol=1e-6,
         qoi_rtol=1e-6,
-        qoi_column_rtol={"solid_area_change": 1.0},
+        qoi_column_rtol={"solid_area_change": 2.0},  # round-off, as in the restart test
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
         start_row_new_columns=("drag", "lift"),
     )
@@ -237,3 +241,160 @@ def test_fsi2_incompressible_skipped_dirichlet_lifting_gives_the_lifted_qois(out
     scale = np.abs(lifted[1:, 1:]).max(axis=0)[other]
     np.testing.assert_array_less(np.abs(held[1:, 1:] - lifted[1:, 1:])[:, other] / scale, 1e-4)
     np.testing.assert_array_equal(held[:, 0], lifted[:, 0])
+
+
+def run_jacobian_variant(output_dirs, name, solver_options=DEFAULT_DIRECT_SOLVER_OPTIONS, **kwargs):
+    """Three steps on MESH, converged tightly; the QoI rows and the statistics of the run."""
+    dt_val = 0.0025
+    qoi_path = output_dirs["qoi"] / f"{name}.txt"
+    stats = solve(
+        mesh_path=MESH,
+        T=3 * dt_val,
+        dt_val=dt_val,
+        output_path=str(output_dirs["pv"] / f"{name}.vtkhdf"),
+        qoi_path=str(qoi_path),
+        solver_options=solver_options | {"snes_atol": 1e-12, "ksp_atol": 1e-14},
+        **kwargs,
+    )
+    return np.loadtxt(qoi_path, ndmin=2), stats
+
+
+def check_same_qois(qoi, qoi_0):
+    """The QoIs ``qoi`` are ``qoi_0``, the solid area change, round-off, by its size."""
+    other = np.arange(NUM_COLUMNS) != AREA_CHANGE
+    np.testing.assert_allclose(qoi[:, other], qoi_0[:, other], rtol=1e-6, atol=0)
+    np.testing.assert_allclose(qoi[:, AREA_CHANGE], qoi_0[:, AREA_CHANGE], rtol=0, atol=1e-13)
+
+
+@pytest.fixture
+def interface_ale_calls(monkeypatch):
+    """The matrix types of the calls of ``InterfaceALE.add``, which adds the interface ALE terms to the
+    Jacobian. In the first steps from rest the interface hardly moves, and the terms change the residual
+    norms of the Newton log by less than its printed digits, so the tests count the calls instead. The
+    terms themselves are tested in tests/test_interface_ale.py."""
+    calls = []
+    add = InterfaceALE.add
+
+    def counted_add(self, J):
+        calls.append(J.getType())
+        add(self, J)
+
+    monkeypatch.setattr(InterfaceALE, "add", counted_add)
+    return calls
+
+
+@pytest.mark.parametrize("solver_options", ["direct", "iterative", "mumps_on_solid"])
+def test_fsi2_incompressible_interface_ale_converges_to_the_same_state(
+    output_dirs, interface_ale_calls, solver_options
+):
+    # The interface ALE terms only change the Jacobian, the monolithic AIJ matrix, into whose blocks they
+    # are assembled at every assembly, with MUMPS LU and the fieldsplits.
+    options, kwargs = {
+        "direct": (DEFAULT_DIRECT_SOLVER_OPTIONS, {}),
+        "iterative": (DEFAULT_ITERATIVE_SOLVER_OPTIONS, {}),
+        "mumps_on_solid": (MUMPS_ON_SOLID, {"requires_v_sub_IS": True}),
+    }[solver_options]
+    qoi, stats = run_jacobian_variant(output_dirs, "ale", options, interface_ale=True, **kwargs)
+    assert len(interface_ale_calls) == stats["num_assemblies"] > 0
+    assert PETSc.Mat.Type.NEST not in interface_ale_calls
+    check_same_qois(qoi, run_jacobian_variant(output_dirs, "J_0", options, **kwargs)[0])
+    assert len(interface_ale_calls) == stats["num_assemblies"]  # none without interface_ale
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"interface_ale_quadrature_degree": 2, "max_quadrature_degree": 5},
+        {"interface_ale_rows": ("momentum",)},
+        {"interface_ale_rows": ("mass",)},
+    ],
+    ids=["degree_2", "momentum_rows", "mass_rows"],
+)
+def test_fsi2_incompressible_interface_ale_variants_converge_to_the_same_state(
+    output_dirs, interface_ale_calls, kwargs
+):
+    qoi, stats = run_jacobian_variant(output_dirs, "ale_variant", interface_ale=True, **kwargs)
+    assert len(interface_ale_calls) == stats["num_assemblies"] > 0
+    J_0 = run_jacobian_variant(output_dirs, "J_0", max_quadrature_degree=kwargs.get("max_quadrature_degree"))
+    check_same_qois(qoi, J_0[0])
+
+
+def test_fsi2_incompressible_rejects_invalid_interface_ale_rows(output_dirs):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match="interface_ale_rows"):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            interface_ale=True,
+            interface_ale_rows=(),
+        )
+
+
+@pytest.fixture
+def traction_terms(monkeypatch):
+    """The interface pressure traction terms the solver passes to ``jacobian_blocks``, None without them."""
+    terms = []
+    jacobian_blocks = fsi2_incompressible.jacobian_blocks
+
+    def recorded(residual_blocks, unknowns, traction=None, max_quadrature_degree=None):
+        terms.append(traction)
+        return jacobian_blocks(residual_blocks, unknowns, traction, max_quadrature_degree)
+
+    monkeypatch.setattr(fsi2_incompressible, "jacobian_blocks", recorded)
+    return terms
+
+
+@pytest.mark.parametrize(
+    "solver_options, quadrature_degree",
+    [("direct", None), ("mumps_on_solid", None), ("direct", 1)],
+    ids=["direct", "mumps_on_solid", "degree_1"],
+)
+def test_fsi2_incompressible_interface_pressure_traction_jacobian_converges_to_the_same_state(
+    output_dirs, traction_terms, solver_options, quadrature_degree
+):
+    # The interface pressure traction terms only change the Jacobian, so the converged QoIs are those without
+    # them, also integrated inexactly. The terms are on the interface facets of the fluid, at the degree given.
+    options, kwargs = {
+        "direct": (DEFAULT_DIRECT_SOLVER_OPTIONS, {}),
+        "mumps_on_solid": (MUMPS_ON_SOLID, {"requires_v_sub_IS": True}),
+    }[solver_options]
+    qoi, _ = run_jacobian_variant(
+        output_dirs,
+        "pressure_traction",
+        options,
+        interface_pressure_traction_jacobian=True,
+        interface_pressure_traction_quadrature_degree=quadrature_degree,
+        **kwargs,
+    )
+    qoi_0, _ = run_jacobian_variant(output_dirs, "J_0", options, **kwargs)
+    check_same_qois(qoi, qoi_0)
+    traction, none = traction_terms
+    assert none is None
+    [integral] = traction.integrals()
+    assert integral.integral_type() == "exterior_facet"
+    assert integral.metadata().get("quadrature_degree") == quadrature_degree
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"interface_pressure_traction_jacobian": 1}, "interface_pressure_traction_jacobian must be"),
+        ({"interface_pressure_traction_jacobian": True, "interface_ale": True}, "does not go with interface_ale"),
+        ({"interface_pressure_traction_quadrature_degree": -1}, "interface_pressure_traction_quadrature_degree"),
+    ],
+    ids=["value", "with_ale", "quadrature_degree"],
+)
+def test_fsi2_incompressible_rejects_invalid_interface_pressure_traction_jacobian(output_dirs, kwargs, match):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            **kwargs,
+        )

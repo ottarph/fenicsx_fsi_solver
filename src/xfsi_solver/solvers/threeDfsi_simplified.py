@@ -26,7 +26,13 @@ from xfsi_solver.scripts.plot_qois import QOI_LABELS_3D, plot_run_qois
 from xfsi_solver.tools import skip_dirichlet_lifting as dirichlet_lifting
 from xfsi_solver.tools.checkpoint import SnapshotWriter, check_start_options, load_start_state, start_time
 from xfsi_solver.tools.convergence import check_converged
-from xfsi_solver.tools.interface_ale import InterfaceALE, interface_ale_description
+from xfsi_solver.tools.interface_ale import InterfaceALE, check_interface_ale_rows, interface_ale_description
+from xfsi_solver.tools.interface_pressure_traction import (
+    check_interface_pressure_traction_jacobian,
+    interface_pressure_traction_description,
+    interface_pressure_traction_form,
+    jacobian_blocks,
+)
 from xfsi_solver.tools.newton_log import NewtonLog, field_blocks
 from xfsi_solver.tools.parameters import lame_lambda, solid_material_coefficients, theta_value
 from xfsi_solver.tools.qoi import (
@@ -102,6 +108,9 @@ def solve(
     snes_converged_reason_on=True,
     interface_ale=False,
     interface_ale_quadrature_degree=None,
+    interface_ale_rows=("momentum", "mass"),
+    interface_pressure_traction_jacobian=False,
+    interface_pressure_traction_quadrature_degree=None,
 ):
     """Solve the 3d FSI benchmark of Failer & Richter (J. Sci. Comput. 82:28, 2020, Sect. 5.1.2), an
     elastic beam attached to a cylinder in a channel of square cross section, with Newton's method on
@@ -244,8 +253,30 @@ def solve(
     ``solver_options``; a direct solver such as MUMPS LU factorizes the nest as it is. With
     ``interface_ale_quadrature_degree``, C is integrated with that quadrature degree instead of that of
     the residual, which makes it an approximation of the derivative, cheaper to assemble.
+    ``interface_ale_rows`` selects the rows that get the terms: ``"momentum"``, those of the (v, v) block,
+    and ``"mass"``, those of the (p, v) block, by default both. On FSI2 the momentum rows gave nearly all of
+    their effect on Newton's convergence.
+
+    With ``interface_pressure_traction_jacobian=True``, the Jacobian also holds the derivative of the fluid
+    pressure's force on the interface with respect to the interface's motion, through the geometric factor
+    cof(F) N of the traction, by ``xfsi_solver.tools.interface_pressure_traction``: the form the Jacobian is
+    derived from gets dt * theta * (-p) (cof(F(u_interface)) - cof(F(u_f))) N . dv on the fluid side of the
+    interface, with u_interface = u_f_old + dt * (theta * v + (1 - theta) * v_old). This is zero, since u_f
+    holds that value on the interface, but its derivative with respect to v is not. The residual is
+    unchanged, so the solution is that of J_0. It is a lighter alternative to ``interface_ale``: with a mean
+    fluid pressure on FSI2, it kept Newton's convergence close to that at zero pressure, where J_0 alone
+    slows down and stalls, at the cost of one integral over the interface facets, with any
+    ``solver_options`` and matrix type. The interface ALE terms already hold this derivative, so the two do
+    not go together. With ``interface_pressure_traction_quadrature_degree``, the terms are integrated with
+    that quadrature degree instead of the degree UFL estimates for them, capped at
+    ``max_quadrature_degree``, which makes their derivative an approximation, cheaper to assemble at a low
+    degree.
     """
     check_start_options(restart, checkpoint_dir, checkpoint_every, initial_state_dir, snapshot_dir, snapshot_times)
+    check_interface_ale_rows(interface_ale_rows)
+    check_interface_pressure_traction_jacobian(
+        interface_pressure_traction_jacobian, interface_ale, interface_pressure_traction_quadrature_degree
+    )
     if max_quadrature_degree is None:
         raise ValueError(
             "the 3d solver needs a quadrature cap, so max_quadrature_degree cannot be None: the degrees that "
@@ -565,7 +596,22 @@ def solve(
     # ALE terms are integrated with the quadrature of the residual.
     residual_blocks = [fix_quadrature_degree(form, max_quadrature_degree) for form in residual_blocks]
 
-    jacobian = dolfinx.fem.forms.derivative_block(residual_blocks, (v, p))
+    # The interface pressure traction terms change only the Jacobian, so they are not in the residual.
+    traction = None
+    if interface_pressure_traction_jacobian:
+        traction = interface_pressure_traction_form(
+            forms.dv,
+            forms.dt,
+            forms.theta,
+            v,
+            v_old,
+            p,
+            u_f,
+            u_f_old,
+            ds_interface_fluid,
+            interface_pressure_traction_quadrature_degree,
+        )
+    jacobian = jacobian_blocks(residual_blocks, (v, p), traction, max_quadrature_degree)
 
     # --------------------------------------------
 
@@ -805,6 +851,7 @@ def solve(
             theta_val,
             dt_val,
             quadrature_degree=interface_ale_quadrature_degree,
+            rows=interface_ale_rows,
         )
 
     def update_displacements() -> None:
@@ -967,6 +1014,10 @@ def solve(
         dirichlet_description = "skipped, since every Newton iterate holds the values exactly"
     else:
         dirichlet_description = "in every residual evaluation (dolfinx's assemble_residual)"
+    ale_description = interface_ale_description(interface_ale, interface_ale_quadrature_degree, interface_ale_rows)
+    traction_description = interface_pressure_traction_description(
+        interface_pressure_traction_jacobian, interface_pressure_traction_quadrature_degree
+    )
     if comm.rank == 0:
         print(f"\n{comm.size = }")
         print(f"Elapsed time: {end - start:.3f} s")
@@ -979,7 +1030,8 @@ def solve(
         print(
             "\nSolver setup:\n"
             f"  Quadrature degree: {quadrature_description(max_quadrature_degree)}\n"
-            f"  Interface ALE: {interface_ale_description(interface_ale, interface_ale_quadrature_degree)}\n"
+            f"  Interface ALE: {ale_description}\n"
+            f"  Interface pressure traction Jacobian: {traction_description}\n"
             f"  Solid material: {solid_description}\n"
             f"  Range of J = det(F) over the time steps: {J_description}\n"
             "  Solid stress: in terms of v, via u_s = u_s_old + dt * (theta * v + (1 - theta) * v_old)\n"
@@ -1047,6 +1099,12 @@ def main():
     gamma_reassemble = 0.1  # Default 0.1.
     max_quadrature_degree = 6  # Default 8.
     mesh_motion_max_quadrature_degree = 6  # Default 8.
+    interface_ale = True  # Jacobian blocks of dv, dp rows wrt. u_f applied on the interface dofs
+    interface_ale_quadrature_degree = 2  # Fast, but accurate enough for robustness
+    interface_ale_rows = ("momentum", "mass")
+    # A lighter alternative to interface_ale, for the pressure robustness only; not with interface_ale
+    interface_pressure_traction_jacobian = False
+    interface_pressure_traction_quadrature_degree = None  # Default None, the estimate, capped
     # solver_options = DEFAULT_ITERATIVE_SOLVER_OPTIONS
     # requires_v_sub_IS = False
     solver_options = MUMPS_ON_SOLID
@@ -1070,6 +1128,11 @@ def main():
         gamma_reassemble=gamma_reassemble,
         max_quadrature_degree=max_quadrature_degree,
         mesh_motion_max_quadrature_degree=mesh_motion_max_quadrature_degree,
+        interface_ale=interface_ale,
+        interface_ale_quadrature_degree=interface_ale_quadrature_degree,
+        interface_ale_rows=interface_ale_rows,
+        interface_pressure_traction_jacobian=interface_pressure_traction_jacobian,
+        interface_pressure_traction_quadrature_degree=interface_pressure_traction_quadrature_degree,
         solver_options=solver_options,
         requires_v_sub_IS=requires_v_sub_IS,
         restart=restart,
