@@ -187,8 +187,9 @@ def test_fsi2_incompressible_restart_reproduces_continuous_run(output_dirs, tmp_
         tmp_path,
         rtol=1e-6,
         qoi_rtol=1e-6,
-        # The solid area change is round-off on these few steps, so only its size is compared
-        qoi_column_rtol={"solid_area_change": 1.0},
+        # The solid area change is round-off on these few steps, so only its size is compared: two round-off
+        # values of that size differ by up to twice it.
+        qoi_column_rtol={"solid_area_change": 2.0},
         first_ranks=ranks[0],
         restart_ranks=ranks[1],
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
@@ -204,7 +205,7 @@ def test_fsi2_incompressible_starts_from_initial_state(output_dirs, tmp_path):
         tmp_path,
         rtol=1e-6,
         qoi_rtol=1e-6,
-        qoi_column_rtol={"solid_area_change": 1.0},
+        qoi_column_rtol={"solid_area_change": 2.0},  # round-off, as in the restart test
         solve_kwargs={"solver_options": CONVERGED_SOLVER_OPTIONS},
         start_row_new_columns=("drag", "lift"),
     )
