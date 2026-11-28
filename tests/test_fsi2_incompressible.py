@@ -10,6 +10,7 @@ from xfsi_solver.petsc_options.fsi2d import (
     DEFAULT_ITERATIVE_SOLVER_OPTIONS,
     MUMPS_ON_SOLID,
 )
+from xfsi_solver.solvers import fsi2_incompressible
 from xfsi_solver.solvers.fsi2_incompressible import solve
 from xfsi_solver.tools import vtkhdf
 from xfsi_solver.tools.interface_ale import InterfaceALE
@@ -329,4 +330,71 @@ def test_fsi2_incompressible_rejects_invalid_interface_ale_rows(output_dirs):
             qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
             interface_ale=True,
             interface_ale_rows=(),
+        )
+
+
+@pytest.fixture
+def traction_terms(monkeypatch):
+    """The interface pressure traction terms the solver passes to ``jacobian_blocks``, None without them."""
+    terms = []
+    jacobian_blocks = fsi2_incompressible.jacobian_blocks
+
+    def recorded(residual_blocks, unknowns, traction=None, max_quadrature_degree=None):
+        terms.append(traction)
+        return jacobian_blocks(residual_blocks, unknowns, traction, max_quadrature_degree)
+
+    monkeypatch.setattr(fsi2_incompressible, "jacobian_blocks", recorded)
+    return terms
+
+
+@pytest.mark.parametrize(
+    "solver_options, quadrature_degree",
+    [("direct", None), ("mumps_on_solid", None), ("direct", 1)],
+    ids=["direct", "mumps_on_solid", "degree_1"],
+)
+def test_fsi2_incompressible_interface_pressure_traction_jacobian_converges_to_the_same_state(
+    output_dirs, traction_terms, solver_options, quadrature_degree
+):
+    # The interface pressure traction terms only change the Jacobian, so the converged QoIs are those without
+    # them, also integrated inexactly. The terms are on the interface facets of the fluid, at the degree given.
+    options, kwargs = {
+        "direct": (DEFAULT_DIRECT_SOLVER_OPTIONS, {}),
+        "mumps_on_solid": (MUMPS_ON_SOLID, {"requires_v_sub_IS": True}),
+    }[solver_options]
+    qoi, _ = run_jacobian_variant(
+        output_dirs,
+        "pressure_traction",
+        options,
+        interface_pressure_traction_jacobian=True,
+        interface_pressure_traction_quadrature_degree=quadrature_degree,
+        **kwargs,
+    )
+    qoi_0, _ = run_jacobian_variant(output_dirs, "J_0", options, **kwargs)
+    check_same_qois(qoi, qoi_0)
+    traction, none = traction_terms
+    assert none is None
+    [integral] = traction.integrals()
+    assert integral.integral_type() == "exterior_facet"
+    assert integral.metadata().get("quadrature_degree") == quadrature_degree
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"interface_pressure_traction_jacobian": 1}, "interface_pressure_traction_jacobian must be"),
+        ({"interface_pressure_traction_jacobian": True, "interface_ale": True}, "does not go with interface_ale"),
+        ({"interface_pressure_traction_quadrature_degree": -1}, "interface_pressure_traction_quadrature_degree"),
+    ],
+    ids=["value", "with_ale", "quadrature_degree"],
+)
+def test_fsi2_incompressible_rejects_invalid_interface_pressure_traction_jacobian(output_dirs, kwargs, match):
+    # Raised before the mesh is read
+    with pytest.raises(ValueError, match=match):
+        solve(
+            mesh_path="nonexistent.xdmf",
+            T=0.0025,
+            dt_val=0.0025,
+            output_path=str(output_dirs["pv"] / "invalid.vtkhdf"),
+            qoi_path=str(output_dirs["qoi"] / "invalid.txt"),
+            **kwargs,
         )
