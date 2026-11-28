@@ -972,7 +972,7 @@ def solve(
             f"  Initial guess: {initial_guess_description}\n"
             f"  Lifting of the Dirichlet conditions of v: {dirichlet_description}\n"
             f"  Jacobian reuse: {reuse_description}\n"
-            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations"
+            f"  Jacobian assemblies: {jacobian_state['num_assemblies']} in {num_newton_iterations} Newton iterations "
             f"over {step - first_step} time steps\n"
         )
 
