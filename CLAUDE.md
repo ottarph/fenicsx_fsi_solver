@@ -32,6 +32,11 @@ conda run --no-capture-output -n fenicsx-env .venv/bin/python -m pytest
   `pytest` leaves them out (`addopts = "-m 'not slow'"` in `pyproject.toml`). When a change needs them, for example
   for the restart and initial-state paths of the 3D solvers, ask first.
 - Pass this rule on in the brief of any session or subagent that may run tests.
+- `pytest-xdist` is installed in `fenicsx-env`. `pytest -n 8` runs the tests in 8 serial worker processes
+  (`-n auto` uses one per CPU, `--dist loadfile` keeps each file on one worker). It speeds up the whole suite, not
+  a single test: every worker is one rank. Tests that launch their own `mpiexec` still work but briefly use extra
+  cores, so leave cores free and follow the core-count rules under "Running MPI simulations". Tests must write
+  only under `tmp_path`, never to a fixed path, or workers can collide.
 
 # Knowledge library
 

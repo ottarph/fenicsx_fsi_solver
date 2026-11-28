@@ -23,6 +23,7 @@ dependencies:
   - matplotlib
   - tqdm
   - pytest
+  - pytest-xdist
   - ruff
 
 variables:
